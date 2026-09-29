@@ -569,7 +569,7 @@ export class CodeMapGenerator {
       const styleStats = await this.queryStyleStats();
       if (styleStats.totalDeclarations > 0) {
         sections.styles = {
-          text: this.formatStylesSection(styleStats),
+          text: formatStylesSection(styleStats),
           description: "Style intelligence — mechanism usage, property histograms, and tokens",
           metadata: {
             totalDeclarations: styleStats.totalDeclarations,
@@ -605,7 +605,7 @@ export class CodeMapGenerator {
       const archStats = await this.queryArchitectureStats();
       if (archStats.communityCount > 0 || archStats.martinEntries.length > 0) {
         sections.architecture = {
-          text: this.formatArchitectureSection(archStats),
+          text: formatArchitectureSection(archStats),
           description: "Import-graph architecture — communities, directory purity, and Martin instability metrics",
           metadata: {
             communityCount: archStats.communityCount,
@@ -620,10 +620,10 @@ export class CodeMapGenerator {
 
     // Coverage section (Spec 15 R4) — coverage by risk decile
     try {
-      const coverageStats = await this.queryCoverageStats();
+      const coverageStats = await queryCoverageStats();
       if (coverageStats.byRiskDecile.length > 0) {
         sections.coverage = {
-          text: this.formatCoverageSection(coverageStats),
+          text: formatCoverageSection(coverageStats),
           description: "Test coverage by risk decile — measured or static-reach coverage data",
           metadata: {
             totalFunctions: coverageStats.totalFunctions,
@@ -829,68 +829,6 @@ export class CodeMapGenerator {
     };
   }
 
-  /**
-   * Format the styles intelligence section as terminal-friendly text.
-   */
-  private formatStylesSection(stats: StyleStats): string {
-    const lines: string[] = [];
-    lines.push('🎨 STYLE INTELLIGENCE\n');
-
-    // Total
-    lines.push(`Declarations indexed: ${stats.totalDeclarations}`);
-
-    // Mechanism summary
-    lines.push('');
-    lines.push('Mechanism          Count');
-    lines.push('─────────          ──────');
-    for (const m of stats.mechanisms) {
-      const label = (m.mechanism || '(unknown)').padEnd(18);
-      lines.push(`${label} ${m.cnt}`);
-    }
-
-    // Property histogram
-    if (stats.properties.length > 0) {
-      lines.push('');
-      lines.push('Property               Count  Distinct values');
-      lines.push('────────               ─────  ───────────────');
-      for (const p of stats.properties) {
-        const label = p.property.padEnd(22);
-        const cnt = String(p.cnt).padStart(5);
-        lines.push(`${label} ${cnt}  ${p.distinct_values}`);
-      }
-    }
-
-    // Z-index inventory
-    if (stats.zIndexes.length > 0) {
-      lines.push('');
-      lines.push(`Z-index inventory (${stats.zIndexes.length} distinct values)`);
-      for (const z of stats.zIndexes) {
-        lines.push(`  z-index: ${z.value} (used ${z.count}×)`);
-      }
-    }
-
-    // Token bypass
-    if (stats.bypassCount > 0) {
-      lines.push('');
-      lines.push(`⚠️  Token bypass: ${stats.bypassCount} declaration(s) match known token values without referencing the token`);
-    }
-
-    // Top tokens
-    if (stats.tokens.length > 0) {
-      lines.push('');
-      lines.push('Design tokens (top 20)');
-      lines.push('Token                    Value                 Used');
-      lines.push('─────                    ─────                 ────');
-      for (const t of stats.tokens) {
-        const name = t.name.substring(0, 24).padEnd(24);
-        const val = t.value.substring(0, 20).padEnd(20);
-        lines.push(`${name} ${val} ${t.usage_count}×`);
-      }
-    }
-
-    return lines.join('\n');
-  }
-
   // ── Graph risk (Spec 14) ─────────────────────────────────────────────
 
   /**
@@ -990,167 +928,6 @@ export class CodeMapGenerator {
     };
   }
 
-  /**
-   * Format the architecture section as terminal-friendly text.
-   */
-  private formatArchitectureSection(stats: ArchitectureStats): string {
-    const lines: string[] = [];
-    lines.push('🏗️  ARCHITECTURE\n');
-
-    // Community overview
-    lines.push(`Communities detected: ${stats.communityCount}`);
-    lines.push(`Structure-agreement score: ${stats.agreementScore.toFixed(2)} (1.0 = directories match communities)\n`);
-
-    // Split candidates
-    if (stats.splitCandidates.length > 0) {
-      lines.push('Split candidates (directories spanning multiple communities):');
-      for (const s of stats.splitCandidates) {
-        lines.push(`  ${s.directory} — ${s.communities.length} communities: ${s.communities.map((c: number, i: number) => `C${c}(${s.fileCounts[i]})`).join(', ')}`);
-      }
-      lines.push('');
-    }
-
-    // Merge candidates
-    if (stats.mergeCandidates.length > 0) {
-      lines.push('Merge candidates (one community dominating multiple directories):');
-      for (const m of stats.mergeCandidates) {
-        lines.push(`  Community ${m.community} — ${m.directories.length} dirs: ${m.directories.join(', ')} (${m.fileCount} files)`);
-      }
-      lines.push('');
-    }
-
-    // Martin metrics
-    if (stats.martinEntries.length > 0) {
-      lines.push('Martin instability metrics (top 15 by distance from main sequence):');
-      lines.push('Directory              Ce   Ca     I      A      D');
-      lines.push('─────────              ──   ──   ─────  ─────  ─────');
-
-      for (const m of stats.martinEntries) {
-        const dir = m.directory.substring(0, 22).padEnd(22);
-        const ce = String(m.ce).padStart(2);
-        const ca = String(m.ca).padStart(4);
-        const inst = m.instability.toFixed(3).padStart(5);
-        const abst = m.abstractness.toFixed(3).padStart(5);
-        const dist = m.distanceFromMain.toFixed(3).padStart(5);
-        lines.push(`${dir} ${ce}  ${ca}  ${inst}  ${abst}  ${dist}`);
-      }
-    }
-
-    return lines.join('\n');
-  }
-
-  /**
-   * Query coverage statistics from the DB for the code-map coverage section (Spec 15 R4).
-   */
-  private async queryCoverageStats(): Promise<CoverageStats> {
-    const db = CodeIndexDB.getInstance();
-    const rawDb = db.rawDb;
-
-    const totalResult = rawDb
-      .prepare('SELECT COUNT(*) as cnt FROM functions WHERE exported = 1')
-      .get() as { cnt: number } | undefined;
-    const totalFunctions = totalResult?.cnt ?? 0;
-
-    let coveredFunctions = 0;
-    try {
-      const coverageResult = rawDb
-        .prepare('SELECT COUNT(DISTINCT function_name || \'|\' || file_path) as cnt FROM coverage_data')
-        .get() as { cnt: number } | undefined;
-      coveredFunctions = coverageResult?.cnt ?? 0;
-    } catch {
-      // coverage_data table may not exist yet
-    }
-
-    const coverageRate = totalFunctions > 0 ? coveredFunctions / totalFunctions : 0;
-
-    // Build risk decile breakdown
-    const byRiskDecile: CoverageStats['byRiskDecile'] = [];
-    try {
-      const riskResult = rawDb
-        .prepare(`WITH ranked AS (
-          SELECT f.function_name, f.file_path, h.risk_score,
-            NTILE(10) OVER (ORDER BY h.risk_score DESC) AS decile
-          FROM functions f
-          JOIN hotspot_scores h ON h.function_id = f.function_id
-          WHERE f.exported = 1
-        ), decile_stats AS (
-          SELECT decile, COUNT(*) as total,
-            SUM(CASE WHEN cd.function_name IS NOT NULL THEN 1 ELSE 0 END) as covered
-          FROM ranked r
-          LEFT JOIN coverage_data cd ON cd.function_name = r.function_name AND cd.file_path = r.file_path
-          GROUP BY decile
-        )
-        SELECT * FROM decile_stats ORDER BY decile`)
-        .all() as Array<{ decile: number; total: number; covered: number }>;
-
-      for (const row of riskResult) {
-        byRiskDecile.push({
-          decile: row.decile,
-          covered: row.covered,
-          total: row.total,
-          rate: row.total > 0 ? row.covered / row.total : 0,
-        });
-      }
-    } catch {
-      // hotspot_scores or coverage_data may not exist
-    }
-
-    // Untested top-decile functions
-    const untestedTopDecile: CoverageStats['untestedTopDecile'] = [];
-    try {
-      const untested = db.getUntestedTopDecile(0.1);
-      for (const fn of untested) {
-        untestedTopDecile.push({
-          functionName: fn.functionName,
-          filePath: fn.filePath,
-          riskScore: fn.riskScore,
-        });
-      }
-    } catch {
-      // DB method may throw if tables don't exist
-    }
-
-    return { totalFunctions, coveredFunctions, coverageRate, byRiskDecile, untestedTopDecile };
-  }
-
-  /**
-   * Format the coverage section as terminal-friendly text (Spec 15 R4).
-   */
-  private formatCoverageSection(stats: CoverageStats): string {
-    const lines: string[] = [];
-    lines.push('🧪 COVERAGE\n');
-
-    const pct = (stats.coverageRate * 100).toFixed(1);
-    lines.push(`Functions: ${stats.totalFunctions} total, ${stats.coveredFunctions} covered (${pct}%)\n`);
-
-    if (stats.byRiskDecile.length > 0) {
-      lines.push('Coverage rate by risk decile (1 = highest risk):');
-      lines.push('Decile  Covered/Total  Rate    Bar');
-      lines.push('──────  ─────────────  ──────  ────────────────────');
-      for (const d of stats.byRiskDecile) {
-        const label = `#${String(d.decile).padStart(2)}`;
-        const counts = `${String(d.covered).padStart(3)}/${String(d.total).padStart(3)}`;
-        const rate = (d.rate * 100).toFixed(0).padStart(3) + '%';
-        const barLen = Math.round(d.rate * 20);
-        const bar = '█'.repeat(barLen) + '░'.repeat(20 - barLen);
-        lines.push(` ${label}    ${counts}          ${rate}   ${bar}`);
-      }
-      lines.push('');
-    }
-
-    if (stats.untestedTopDecile.length > 0) {
-      lines.push(`Untested high-risk functions (top ${stats.untestedTopDecile.length}):`);
-      for (const fn of stats.untestedTopDecile.slice(0, 10)) {
-        const score = fn.riskScore.toFixed(4);
-        lines.push(`  ${fn.functionName}  (${fn.filePath})  risk=${score}`);
-      }
-      if (stats.untestedTopDecile.length > 10) {
-        lines.push(`  ... and ${stats.untestedTopDecile.length - 10} more`);
-      }
-    }
-
-    return lines.join('\n');
-  }
 }
 
 /** Statistics queried from the style index for the code-map styles section. */
@@ -1199,4 +976,234 @@ interface CoverageStats {
   coverageRate: number;
   byRiskDecile: Array<{ decile: number; covered: number; total: number; rate: number }>;
   untestedTopDecile: Array<{ functionName: string; filePath: string; riskScore: number }>;
+}
+
+// ---------------------------------------------------------------------------
+// Section formatters + stats queries extracted from `CodeMapGenerator` so the
+// class stays under the class-size method ceiling. They are pure over their
+// arguments (or the singleton DB) and called from `createCodeMapSections`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Format the styles intelligence section as terminal-friendly text.
+ */
+function formatStylesSection(stats: StyleStats): string {
+  const lines: string[] = [];
+  lines.push('🎨 STYLE INTELLIGENCE\n');
+
+  // Total
+  lines.push(`Declarations indexed: ${stats.totalDeclarations}`);
+
+  // Mechanism summary
+  lines.push('');
+  lines.push('Mechanism          Count');
+  lines.push('─────────          ──────');
+  for (const m of stats.mechanisms) {
+    const label = (m.mechanism || '(unknown)').padEnd(18);
+    lines.push(`${label} ${m.cnt}`);
+  }
+
+  // Property histogram
+  if (stats.properties.length > 0) {
+    lines.push('');
+    lines.push('Property               Count  Distinct values');
+    lines.push('────────               ─────  ───────────────');
+    for (const p of stats.properties) {
+      const label = p.property.padEnd(22);
+      const cnt = String(p.cnt).padStart(5);
+      lines.push(`${label} ${cnt}  ${p.distinct_values}`);
+    }
+  }
+
+  // Z-index inventory
+  if (stats.zIndexes.length > 0) {
+    lines.push('');
+    lines.push(`Z-index inventory (${stats.zIndexes.length} distinct values)`);
+    for (const z of stats.zIndexes) {
+      lines.push(`  z-index: ${z.value} (used ${z.count}×)`);
+    }
+  }
+
+  // Token bypass
+  if (stats.bypassCount > 0) {
+    lines.push('');
+    lines.push(`⚠️  Token bypass: ${stats.bypassCount} declaration(s) match known token values without referencing the token`);
+  }
+
+  // Top tokens
+  if (stats.tokens.length > 0) {
+    lines.push('');
+    lines.push('Design tokens (top 20)');
+    lines.push('Token                    Value                 Used');
+    lines.push('─────                    ─────                 ────');
+    for (const t of stats.tokens) {
+      const name = t.name.substring(0, 24).padEnd(24);
+      const val = t.value.substring(0, 20).padEnd(20);
+      lines.push(`${name} ${val} ${t.usage_count}×`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format the architecture section as terminal-friendly text.
+ */
+function formatArchitectureSection(stats: ArchitectureStats): string {
+  const lines: string[] = [];
+  lines.push('🏗️  ARCHITECTURE\n');
+
+  // Community overview
+  lines.push(`Communities detected: ${stats.communityCount}`);
+  lines.push(`Structure-agreement score: ${stats.agreementScore.toFixed(2)} (1.0 = directories match communities)\n`);
+
+  // Split candidates
+  if (stats.splitCandidates.length > 0) {
+    lines.push('Split candidates (directories spanning multiple communities):');
+    for (const s of stats.splitCandidates) {
+      lines.push(`  ${s.directory} — ${s.communities.length} communities: ${s.communities.map((c: number, i: number) => `C${c}(${s.fileCounts[i]})`).join(', ')}`);
+    }
+    lines.push('');
+  }
+
+  // Merge candidates
+  if (stats.mergeCandidates.length > 0) {
+    lines.push('Merge candidates (one community dominating multiple directories):');
+    for (const m of stats.mergeCandidates) {
+      lines.push(`  Community ${m.community} — ${m.directories.length} dirs: ${m.directories.join(', ')} (${m.fileCount} files)`);
+    }
+    lines.push('');
+  }
+
+  // Martin metrics
+  if (stats.martinEntries.length > 0) {
+    lines.push('Martin instability metrics (top 15 by distance from main sequence):');
+    lines.push('Directory              Ce   Ca     I      A      D');
+    lines.push('─────────              ──   ──   ─────  ─────  ─────');
+
+    for (const m of stats.martinEntries) {
+      const dir = m.directory.substring(0, 22).padEnd(22);
+      const ce = String(m.ce).padStart(2);
+      const ca = String(m.ca).padStart(4);
+      const inst = m.instability.toFixed(3).padStart(5);
+      const abst = m.abstractness.toFixed(3).padStart(5);
+      const dist = m.distanceFromMain.toFixed(3).padStart(5);
+      lines.push(`${dir} ${ce}  ${ca}  ${inst}  ${abst}  ${dist}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format the coverage section as terminal-friendly text (Spec 15 R4).
+ */
+function formatCoverageSection(stats: CoverageStats): string {
+  const lines: string[] = [];
+  lines.push('🧪 COVERAGE\n');
+
+  const pct = (stats.coverageRate * 100).toFixed(1);
+  lines.push(`Functions: ${stats.totalFunctions} total, ${stats.coveredFunctions} covered (${pct}%)\n`);
+
+  if (stats.byRiskDecile.length > 0) {
+    lines.push('Coverage rate by risk decile (1 = highest risk):');
+    lines.push('Decile  Covered/Total  Rate    Bar');
+    lines.push('──────  ─────────────  ──────  ────────────────────');
+    for (const d of stats.byRiskDecile) {
+      const label = `#${String(d.decile).padStart(2)}`;
+      const counts = `${String(d.covered).padStart(3)}/${String(d.total).padStart(3)}`;
+      const rate = (d.rate * 100).toFixed(0).padStart(3) + '%';
+      const barLen = Math.round(d.rate * 20);
+      const bar = '█'.repeat(barLen) + '░'.repeat(20 - barLen);
+      lines.push(` ${label}    ${counts}          ${rate}   ${bar}`);
+    }
+    lines.push('');
+  }
+
+  if (stats.untestedTopDecile.length > 0) {
+    lines.push(`Untested high-risk functions (top ${stats.untestedTopDecile.length}):`);
+    for (const fn of stats.untestedTopDecile.slice(0, 10)) {
+      const score = fn.riskScore.toFixed(4);
+      lines.push(`  ${fn.functionName}  (${fn.filePath})  risk=${score}`);
+    }
+    if (stats.untestedTopDecile.length > 10) {
+      lines.push(`  ... and ${stats.untestedTopDecile.length - 10} more`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Query coverage statistics from the DB for the code-map coverage section (Spec 15 R4).
+ */
+async function queryCoverageStats(): Promise<CoverageStats> {
+  const db = CodeIndexDB.getInstance();
+  const rawDb = db.rawDb;
+
+  const totalResult = rawDb
+    .prepare('SELECT COUNT(*) as cnt FROM functions WHERE exported = 1')
+    .get() as { cnt: number } | undefined;
+  const totalFunctions = totalResult?.cnt ?? 0;
+
+  let coveredFunctions = 0;
+  try {
+    const coverageResult = rawDb
+      .prepare('SELECT COUNT(DISTINCT function_name || \'|\' || file_path) as cnt FROM coverage_data')
+      .get() as { cnt: number } | undefined;
+    coveredFunctions = coverageResult?.cnt ?? 0;
+  } catch {
+    // coverage_data table may not exist yet
+  }
+
+  const coverageRate = totalFunctions > 0 ? coveredFunctions / totalFunctions : 0;
+
+  // Build risk decile breakdown
+  const byRiskDecile: CoverageStats['byRiskDecile'] = [];
+  try {
+    const riskResult = rawDb
+      .prepare(`WITH ranked AS (
+        SELECT f.function_name, f.file_path, h.risk_score,
+          NTILE(10) OVER (ORDER BY h.risk_score DESC) AS decile
+        FROM functions f
+        JOIN hotspot_scores h ON h.function_id = f.function_id
+        WHERE f.exported = 1
+      ), decile_stats AS (
+        SELECT decile, COUNT(*) as total,
+          SUM(CASE WHEN cd.function_name IS NOT NULL THEN 1 ELSE 0 END) as covered
+        FROM ranked r
+        LEFT JOIN coverage_data cd ON cd.function_name = r.function_name AND cd.file_path = r.file_path
+        GROUP BY decile
+      )
+      SELECT * FROM decile_stats ORDER BY decile`)
+      .all() as Array<{ decile: number; total: number; covered: number }>;
+
+    for (const row of riskResult) {
+      byRiskDecile.push({
+        decile: row.decile,
+        covered: row.covered,
+        total: row.total,
+        rate: row.total > 0 ? row.covered / row.total : 0,
+      });
+    }
+  } catch {
+    // hotspot_scores or coverage_data may not exist
+  }
+
+  // Untested top-decile functions
+  const untestedTopDecile: CoverageStats['untestedTopDecile'] = [];
+  try {
+    const untested = db.getUntestedTopDecile(0.1);
+    for (const fn of untested) {
+      untestedTopDecile.push({
+        functionName: fn.functionName,
+        filePath: fn.filePath,
+        riskScore: fn.riskScore,
+      });
+    }
+  } catch {
+    // DB method may throw if tables don't exist
+  }
+
+  return { totalFunctions, coveredFunctions, coverageRate, byRiskDecile, untestedTopDecile };
 }

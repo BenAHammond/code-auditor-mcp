@@ -65,6 +65,14 @@ const RETRY_AFTER_MAX_MS = 30_000;
 /** Seed phases, in completion order. Each is priced on its own observed rate. */
 type SeedPhase = DaemonSeedPhase;
 
+/** Files/reducer progress counters the retry-ETA math derives from. */
+interface SeedProgress {
+  filesIndexed: number;
+  filesTotal: number;
+  sourceTotal: number;
+  orphanTotal: number;
+}
+
 export interface DaemonCoreOptions {
   projectRoot: string;
   configName?: string;
@@ -86,7 +94,7 @@ export class DaemonCore extends EventEmitter {
 
   private status: DaemonStatus = 'starting';
   private snapshot: NextFileSnapshot | null = null;
-  private progress = { filesIndexed: 0, filesTotal: 0, sourceTotal: 0, orphanTotal: 0 };
+  private progress: SeedProgress = { filesIndexed: 0, filesTotal: 0, sourceTotal: 0, orphanTotal: 0 };
   private seedStartedAt = 0;
 
   // Phase machine for `retryAfterMs`: the seed runs files → reducers → derived →
@@ -172,78 +180,10 @@ export class DaemonCore extends EventEmitter {
    */
   private deriveRetryAfterMs(): number | null {
     const now = Date.now();
-    if (this.phase === 'files') return this.deriveFilesEta(now);
-    return this.derivePhaseEta(now);
-  }
-
-  /**
-   * Files phase — the two-population split. Source files (parsed, ~11ms each)
-   * are priced at the source rate; orphan files (raw, mostly no visitor) at the
-   * orphan rate. Discovery classifies both up front, so the split is known
-   * before the first sample. During the source phase the orphan rate is not yet
-   * observed, so orphans are priced at the source rate (the honest fallback —
-   * conservative, never an underestimate); once the source phase completes, the
-   * orphan tail is priced on its own (much faster) rate.
-   */
-  private deriveFilesEta(now: number): number | null {
-    const elapsedSec = (now - this.seedStartedAt) / 1000;
-    const { filesIndexed, filesTotal, sourceTotal } = this.progress;
-    if (filesIndexed <= 0 || elapsedSec <= 0) return null; // throughput unknown yet
-
-    // Degenerate case: no source files — the whole corpus is orphan, priced at
-    // the cumulative rate (there is no source phase to complete first).
-    if (sourceTotal <= 0) {
-      const rate = filesIndexed / elapsedSec;
-      if (rate <= 0) return null;
-      return this.clampRetry(((filesTotal - filesIndexed) / rate) * 1000);
+    if (this.phase === 'files') {
+      return deriveFilesEta(now, this.seedStartedAt, this.progress, this.orphanStartedAt);
     }
-
-    const sourceIndexed = Math.min(filesIndexed, sourceTotal);
-    const orphanIndexed = Math.max(0, filesIndexed - sourceTotal);
-
-    if (sourceIndexed < sourceTotal) {
-      // Source phase: orphans priced at the source rate (fallback). This equals
-      // the cumulative estimate — pessimistic early, honest about what it knows.
-      const sourceRate = sourceIndexed / elapsedSec;
-      if (sourceRate <= 0) return null;
-      const remaining = filesTotal - sourceIndexed; // source remaining + all orphans
-      return this.clampRetry((remaining / sourceRate) * 1000);
-    }
-
-    // Orphan phase: source is done; price the orphan tail on its own rate.
-    // (`orphanStartedAt` is set the first time `filesIndexed >= sourceTotal`; a
-    // still-unset boundary can only mean `orphanIndexed` is 0, which is handled
-    // by the `sourceIndexed < sourceTotal` branch above.)
-    const orphanElapsedSec = (now - this.orphanStartedAt) / 1000;
-    if (orphanElapsedSec <= 0) return RETRY_AFTER_MAX_MS;
-    const orphanRate = orphanIndexed / orphanElapsedSec;
-    if (orphanRate <= 0) return RETRY_AFTER_MAX_MS;
-    const orphanRemaining = this.progress.orphanTotal - orphanIndexed;
-    if (orphanRemaining <= 0) return RETRY_AFTER_MIN_MS;
-    return this.clampRetry((orphanRemaining / orphanRate) * 1000);
-  }
-
-  /** Reducer/derived/finalize phases — uniform unit, priced on the phase's own window. */
-  private derivePhaseEta(now: number): number | null {
-    const { phaseCurrent, phaseTotal, phaseStartedAt } = this;
-    if (phaseTotal <= 0) return RETRY_AFTER_MAX_MS; // no work priced in this phase — conservative
-    if (phaseCurrent <= 0) return RETRY_AFTER_MAX_MS; // rate unknown yet, work known to remain
-    const phaseElapsedSec = (now - phaseStartedAt) / 1000;
-    if (phaseElapsedSec <= 0) return RETRY_AFTER_MAX_MS;
-    const rate = phaseCurrent / phaseElapsedSec;
-    if (rate <= 0) return RETRY_AFTER_MAX_MS;
-    const remaining = phaseTotal - phaseCurrent;
-    const rawMs = remaining <= 0 ? 0 : (remaining / rate) * 1000;
-    const eta = this.clampRetry(rawMs);
-    // The 250ms floor means "almost ready". That is only ever true in the final
-    // phase: in reducers/derived a later phase has not started, so a floor-level
-    // estimate would understate time-to-ready and must stay conservative.
-    if (this.phase !== 'finalize' && eta === RETRY_AFTER_MIN_MS) return RETRY_AFTER_MAX_MS;
-    return eta;
-  }
-
-  private clampRetry(ms: number): number {
-    return Math.min(RETRY_AFTER_MAX_MS, Math.max(RETRY_AFTER_MIN_MS, Math.round(ms)));
+    return derivePhaseEta(now, this.phase, this.phaseCurrent, this.phaseTotal, this.phaseStartedAt);
   }
 
   /** Map pipeline + local progress events onto the phase machine (R3). */
@@ -339,21 +279,6 @@ export class DaemonCore extends EventEmitter {
   }
 
   /**
-   * True if a watcher-flagged path belongs to the audited corpus (R5). The
-   * watcher reports every change under the root — including the SQLite DB, WAL,
-   * and SHM files this process writes to `node_modules/.cache` — so the
-   * reconcile gate must filter to source extensions and never infra dirs, or a
-   * single persist would re-audit the corpus and loop.
-   */
-  private isSourcePath(abs: string): boolean {
-    const rel = path.relative(this.projectRoot, abs);
-    if (!rel || rel === '.' || rel.startsWith('..') || path.isAbsolute(rel)) return false;
-    const parts = rel.split(path.sep);
-    if (parts.some((p) => p === 'node_modules' || p === '.git' || p === '.cache')) return false;
-    return KNOWN_SOURCE_EXTENSIONS.includes(path.extname(abs).toLowerCase());
-  }
-
-  /**
    * R4 — validate that the served findings are current. Cheap-first: compare the
    * recorded mtime; only when it diverges (or the file is new/missing) is the
    * content re-hashed. `files` narrows the check to a specific read; `undefined`
@@ -432,11 +357,15 @@ export class DaemonCore extends EventEmitter {
     // files (R4's file-set hash would be empty) even though the pipeline's own
     // discovery (defaults against the project root) finds the corpus.
     this.config = configPath ? (await loadConfig({ configPath, projectRoot: this.projectRoot })).config : null;
-    this.db = CodeIndexDB.getInstance(undefined, this.projectRoot);
-    await this.db.initialize();
 
-    this.claimLease();
-    this.startIdleTimer();
+    const db = CodeIndexDB.getInstance(undefined, this.projectRoot);
+    this.db = db;
+    await db.initialize();
+
+    const { leaseRunId, heartbeat } = claimLease(db, this.projectRoot);
+    this.leaseRunId = leaseRunId;
+    this.heartbeat = heartbeat;
+    this.idleTimer = startIdleTimer(() => this.checkIdle());
 
     await this.seed();
 
@@ -444,53 +373,6 @@ export class DaemonCore extends EventEmitter {
     this.markActivity();
     this.emitState();
     this.startWatcher();
-  }
-
-  private claimLease(): void {
-    if (!this.db) return;
-    // Reclaim any stale daemon lease from a prior crashed instance (R5).
-    try {
-      reclaimStaleRunning(this.db.rawDb, this.projectRoot, DAEMON_LEASE_TTL_MS);
-    } catch {
-      // best-effort — the socket bind is the primary exclusivity guard.
-    }
-
-    const runInput = detectRunInput(
-      'daemon',
-      'daemon',
-      'all',
-      this.projectRoot,
-      PACKAGE_VERSION,
-    );
-    this.leaseRunId = createLedgerRun(this.db.rawDb, runInput, {
-      status: 'running',
-      projectRoot: this.projectRoot,
-    });
-    const now = new Date().toISOString();
-    patchLedgerRun(this.db.rawDb, this.leaseRunId, {
-      startedAt: now,
-      heartbeatAt: now,
-      runnerPid: process.pid,
-      runnerPidStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
-      runnerHost: hostname(),
-    });
-
-    const heartbeatMs = Math.max(5000, Math.floor(DAEMON_LEASE_TTL_MS / 3));
-    this.heartbeat = setInterval(() => {
-      try {
-        if (this.leaseRunId && this.db) {
-          patchLedgerRun(this.db.rawDb, this.leaseRunId, { heartbeatAt: new Date().toISOString() });
-        }
-      } catch {
-        // best-effort heartbeat
-      }
-    }, heartbeatMs);
-    this.heartbeat.unref?.();
-  }
-
-  private startIdleTimer(): void {
-    this.idleTimer = setInterval(() => this.checkIdle(), 1000);
-    this.idleTimer.unref?.();
   }
 
   private checkIdle(): void {
@@ -604,7 +486,7 @@ export class DaemonCore extends EventEmitter {
         // SQLite DB under `node_modules/.cache` every ~20s; without this filter
         // that would (a) reset the idle timer forever and (b) re-audit on every
         // heartbeat. Only a source-path change is a corpus change.
-        if (!this.isSourcePath(abs)) return;
+        if (!isSourcePath(abs, this.projectRoot)) return;
         this.markActivity();
         this.pendingWatchPaths.add(abs);
         if (this.watchDebounce) clearTimeout(this.watchDebounce);
@@ -648,7 +530,7 @@ export class DaemonCore extends EventEmitter {
         // A bare "something changed" signal would re-audit (near the full
         // corpus) on every persist and loop. Only source paths are a corpus
         // change; drop infra + non-source noise before classification.
-        if (!this.isSourcePath(abs)) continue;
+        if (!isSourcePath(abs, this.projectRoot)) continue;
         const key = path.relative(this.projectRoot, abs);
         const rec = this.snapshot.files[key];
         if (!existsSync(abs)) {
@@ -689,7 +571,7 @@ export class DaemonCore extends EventEmitter {
       // (the next-file double-pipeline, defect #48).
       if (hasSchemaDefinitionChange(changed, added, deleted)) {
         await this.seed();
-        this.emitFindings();
+        emitFindings(this, this.snapshot);
         return;
       }
 
@@ -711,7 +593,7 @@ export class DaemonCore extends EventEmitter {
       const schemaCatalogTouched = (result.metadata?.tableCatalog?.length ?? 0) > 0;
       if (schemaCatalogTouched) {
         await this.seed();
-        this.emitFindings();
+        emitFindings(this, this.snapshot);
         return;
       }
 
@@ -734,7 +616,7 @@ export class DaemonCore extends EventEmitter {
       this.snapshot.schemaFindings = merged.schemaFindings;
 
       this.persistCurrent(flattenSnapshot(this.snapshot), durationMs, result.metadata?.coverage);
-      this.emitFindings();
+      emitFindings(this, this.snapshot);
     } finally {
       this.reindexing = false;
       if (!this.shutdownRequested) this.status = prevStatus;
@@ -746,10 +628,6 @@ export class DaemonCore extends EventEmitter {
   private emitState(): void {
     const state = this.getState();
     this.emit('state', state);
-  }
-
-  private emitFindings(): void {
-    if (this.snapshot) this.emit('findings', this.snapshot);
   }
 
   /**
@@ -792,4 +670,148 @@ function flattenSnapshot(s: NextFileSnapshot): Violation[] {
     ...s.corpusFindings,
     ...s.schemaFindings,
   ];
+}
+
+// ---------------------------------------------------------------------------
+// Seed ETA + lease/idle helpers. Extracted from `DaemonCore` so the class stays
+// under the class-size method ceiling; they are pure functions over the state
+// they are given rather than `this`.
+// ---------------------------------------------------------------------------
+
+function clampRetry(ms: number): number {
+  return Math.min(RETRY_AFTER_MAX_MS, Math.max(RETRY_AFTER_MIN_MS, Math.round(ms)));
+}
+
+/**
+ * Files phase — the two-population split. Source files (parsed, ~11ms each)
+ * are priced at the source rate; orphan files (raw, mostly no visitor) at the
+ * orphan rate. Discovery classifies both up front, so the split is known
+ * before the first sample. During the source phase the orphan rate is not yet
+ * observed, so orphans are priced at the source rate (the honest fallback —
+ * conservative, never an underestimate); once the source phase completes, the
+ * orphan tail is priced on its own (much faster) rate.
+ */
+function deriveFilesEta(
+  now: number,
+  seedStartedAt: number,
+  progress: SeedProgress,
+  orphanStartedAt: number,
+): number | null {
+  const elapsedSec = (now - seedStartedAt) / 1000;
+  const { filesIndexed, filesTotal, sourceTotal } = progress;
+  if (filesIndexed <= 0 || elapsedSec <= 0) return null; // throughput unknown yet
+
+  // Degenerate case: no source files — the whole corpus is orphan, priced at
+  // the cumulative rate (there is no source phase to complete first).
+  if (sourceTotal <= 0) {
+    const rate = filesIndexed / elapsedSec;
+    if (rate <= 0) return null;
+    return clampRetry(((filesTotal - filesIndexed) / rate) * 1000);
+  }
+
+  const sourceIndexed = Math.min(filesIndexed, sourceTotal);
+  const orphanIndexed = Math.max(0, filesIndexed - sourceTotal);
+
+  if (sourceIndexed < sourceTotal) {
+    // Source phase: orphans priced at the source rate (fallback). This equals
+    // the cumulative estimate — pessimistic early, honest about what it knows.
+    const sourceRate = sourceIndexed / elapsedSec;
+    if (sourceRate <= 0) return null;
+    const remaining = filesTotal - sourceIndexed; // source remaining + all orphans
+    return clampRetry((remaining / sourceRate) * 1000);
+  }
+
+  // Orphan phase: source is done; price the orphan tail on its own rate.
+  // (`orphanStartedAt` is set the first time `filesIndexed >= sourceTotal`; a
+  // still-unset boundary can only mean `orphanIndexed` is 0, which is handled
+  // by the `sourceIndexed < sourceTotal` branch above.)
+  const orphanElapsedSec = (now - orphanStartedAt) / 1000;
+  if (orphanElapsedSec <= 0) return RETRY_AFTER_MAX_MS;
+  const orphanRate = orphanIndexed / orphanElapsedSec;
+  if (orphanRate <= 0) return RETRY_AFTER_MAX_MS;
+  const orphanRemaining = progress.orphanTotal - orphanIndexed;
+  if (orphanRemaining <= 0) return RETRY_AFTER_MIN_MS;
+  return clampRetry((orphanRemaining / orphanRate) * 1000);
+}
+
+/** Reducer/derived/finalize phases — uniform unit, priced on the phase's own window. */
+function derivePhaseEta(
+  now: number,
+  phase: SeedPhase,
+  phaseCurrent: number,
+  phaseTotal: number,
+  phaseStartedAt: number,
+): number | null {
+  if (phaseTotal <= 0) return RETRY_AFTER_MAX_MS; // no work priced in this phase — conservative
+  if (phaseCurrent <= 0) return RETRY_AFTER_MAX_MS; // rate unknown yet, work known to remain
+  const phaseElapsedSec = (now - phaseStartedAt) / 1000;
+  if (phaseElapsedSec <= 0) return RETRY_AFTER_MAX_MS;
+  const rate = phaseCurrent / phaseElapsedSec;
+  if (rate <= 0) return RETRY_AFTER_MAX_MS;
+  const remaining = phaseTotal - phaseCurrent;
+  const rawMs = remaining <= 0 ? 0 : (remaining / rate) * 1000;
+  const eta = clampRetry(rawMs);
+  // The 250ms floor means "almost ready". That is only ever true in the final
+  // phase: in reducers/derived a later phase has not started, so a floor-level
+  // estimate would understate time-to-ready and must stay conservative.
+  if (phase !== 'finalize' && eta === RETRY_AFTER_MIN_MS) return RETRY_AFTER_MAX_MS;
+  return eta;
+}
+
+/**
+ * True if a watcher-flagged path belongs to the audited corpus (R5). The
+ * watcher reports every change under the root — including the SQLite DB, WAL,
+ * and SHM files this process writes to `node_modules/.cache` — so the
+ * reconcile gate must filter to source extensions and never infra dirs, or a
+ * single persist would re-audit the corpus and loop.
+ */
+function isSourcePath(abs: string, projectRoot: string): boolean {
+  const rel = path.relative(projectRoot, abs);
+  if (!rel || rel === '.' || rel.startsWith('..') || path.isAbsolute(rel)) return false;
+  const parts = rel.split(path.sep);
+  if (parts.some((p) => p === 'node_modules' || p === '.git' || p === '.cache')) return false;
+  return KNOWN_SOURCE_EXTENSIONS.includes(path.extname(abs).toLowerCase());
+}
+
+/** Claim the daemon lease row and start the heartbeat (R5). Returns the lease id + timer. */
+function claimLease(db: CodeIndexDB, projectRoot: string): { leaseRunId: string; heartbeat: NodeJS.Timeout } {
+  // Reclaim any stale daemon lease from a prior crashed instance (R5).
+  try {
+    reclaimStaleRunning(db.rawDb, projectRoot, DAEMON_LEASE_TTL_MS);
+  } catch {
+    // best-effort — the socket bind is the primary exclusivity guard.
+  }
+
+  const runInput = detectRunInput('daemon', 'daemon', 'all', projectRoot, PACKAGE_VERSION);
+  const leaseRunId = createLedgerRun(db.rawDb, runInput, { status: 'running', projectRoot });
+  const now = new Date().toISOString();
+  patchLedgerRun(db.rawDb, leaseRunId, {
+    startedAt: now,
+    heartbeatAt: now,
+    runnerPid: process.pid,
+    runnerPidStartedAt: new Date(Date.now() - process.uptime() * 1000).toISOString(),
+    runnerHost: hostname(),
+  });
+
+  const heartbeatMs = Math.max(5000, Math.floor(DAEMON_LEASE_TTL_MS / 3));
+  const heartbeat = setInterval(() => {
+    try {
+      patchLedgerRun(db.rawDb, leaseRunId, { heartbeatAt: new Date().toISOString() });
+    } catch {
+      // best-effort heartbeat
+    }
+  }, heartbeatMs);
+  heartbeat.unref?.();
+  return { leaseRunId, heartbeat };
+}
+
+/** Arm the idle timer that shuts the daemon down after `idleTimeoutMs` of inactivity. */
+function startIdleTimer(checkIdle: () => void): NodeJS.Timeout {
+  const timer = setInterval(checkIdle, 1000);
+  timer.unref?.();
+  return timer;
+}
+
+function emitFindings(core: DaemonCore, snapshot: NextFileSnapshot | null): void {
+  if (snapshot) core.emit('findings', snapshot);
 }
