@@ -465,6 +465,314 @@ export interface FunctionIndexEntry {
 }
 
 /**
+ * Collect function/method/component entries from an AST in three passes:
+ * (1) named function declarations and methods, (2) arrow functions assigned
+ * to variables, (3) React component detection. Returns the deduplicated list
+ * of `FunctionIndexEntry` rows destined for the `functions` index table.
+ */
+function collectFunctionEntries(
+  root: ASTNode,
+  sourceCode: string,
+  importMap: Map<string, any>,
+  filePath: string
+): FunctionIndexEntry[] {
+  const fnEntries: FunctionIndexEntry[] = [];
+
+  // Pass 1 — named function declarations and methods
+  walkAST(root, (node) => {
+    if (node.type === 'function_declaration') {
+      const nameNode = node.children?.find((c) => c.type === 'identifier');
+      if (!nameNode) return;
+      const name = getNodeText(nameNode, sourceCode);
+      if (!name) return;
+
+      const { line } = getLineAndColumn(node);
+      const endLine = node.location.end.line;
+      const body = getFunctionBody(node, sourceCode);
+      const calls = extractFunctionCalls(node, sourceCode, importMap);
+      const callNames = [...new Set(calls.map((c) => c.callee))];
+
+      fnEntries.push({
+        name,
+        line,
+        endLine,
+        entityType: 'function',
+        componentType: null,
+        isExported: isExported(node),
+        complexity: calculateComplexity(node),
+        body,
+        functionCalls: callNames,
+      });
+    }
+
+    // Class methods
+    if (node.type === 'method_definition') {
+      const nameNode = node.children?.find((c) => c.type === 'identifier');
+      if (!nameNode) return;
+      const methodName = getNodeText(nameNode, sourceCode);
+      if (!methodName) return;
+
+      // Walk up to find class name
+      let parent = (node as any).parent;
+      let className = 'AnonymousClass';
+      while (parent) {
+        if (parent.type === 'class_declaration') {
+          const cn = parent.children?.find((c: any) => c.type === 'identifier');
+          if (cn) className = getNodeText(cn, sourceCode);
+          break;
+        }
+        parent = parent.parent;
+      }
+
+      const { line } = getLineAndColumn(node);
+      const endLine = node.location.end.line;
+      const body = getFunctionBody(node, sourceCode);
+      const calls = extractFunctionCalls(node, sourceCode, importMap);
+      const callNames = [...new Set(calls.map((c) => c.callee))];
+
+      fnEntries.push({
+        name: `${className}.${methodName}`,
+        line,
+        endLine,
+        entityType: 'method',
+        componentType: null,
+        isExported: isExported(node),
+        complexity: calculateComplexity(node),
+        body,
+        functionCalls: callNames,
+      });
+    }
+  });
+
+  // Pass 2 — arrow functions assigned to variables
+  walkAST(root, (node) => {
+    if (node.type !== 'variable_declarator') return;
+    const nameNode = node.children?.find((c) => c.type === 'identifier');
+    const arrowFunc = node.children?.find((c) => c.type === 'arrow_function');
+    if (!nameNode || !arrowFunc) return;
+    const name = getNodeText(nameNode, sourceCode);
+    if (!name) return;
+
+    // Don't duplicate if already covered as function_declaration
+    // (shouldn't happen — function_declaration is a different node type)
+    const { line } = getLineAndColumn(arrowFunc);
+    const endLine = arrowFunc.location.end.line;
+    const body = getFunctionBody(arrowFunc, sourceCode);
+    const calls = extractFunctionCalls(arrowFunc, sourceCode, importMap);
+    const callNames = [...new Set(calls.map((c) => c.callee))];
+
+    fnEntries.push({
+      name,
+      line,
+      endLine,
+      entityType: 'function',
+      componentType: null,
+      isExported: isExported(node),
+      complexity: calculateComplexity(arrowFunc),
+      body,
+      functionCalls: callNames,
+    });
+  });
+
+  // Pass 3 — React component detection
+  // Detect JSX-returning functions to set entity_type='component' and
+  // component_type, matching what functionScanner's deepSync produces.
+  // The convention miner's classifyExportKind() uses these columns to
+  // partition naming conventions.
+  const hasReactImport = [...importMap.values()].some(
+    (v) => v.modulePath === 'react',
+  );
+  if (
+    filePath.endsWith('.tsx') ||
+    filePath.endsWith('.jsx') ||
+    (filePath.endsWith('.js') && hasReactImport)
+  ) {
+    walkAST(root, (node) => {
+      if (!isReactComponent(node, sourceCode)) return;
+      const ct = detectComponentType(node, sourceCode);
+      if (!ct) return;
+      const cName = getComponentName(node, sourceCode);
+      if (!cName || cName === 'AnonymousComponent') return;
+
+      const existing = fnEntries.find((f) => f.name === cName);
+      if (existing) {
+        // Upgrade existing function_declaration or arrow-function entry
+        existing.entityType = 'component';
+        existing.componentType = ct;
+      } else {
+        // New entry — class component, function_expression, or memo/forwardRef
+        // wrapper not already captured by passes 1 or 2.
+        const { line } = getLineAndColumn(node);
+        const endLine = node.location.end.line;
+        const body = getFunctionBody(node, sourceCode);
+
+        fnEntries.push({
+          name: cName,
+          line,
+          endLine,
+          entityType: 'component',
+          componentType: ct,
+          isExported: isExported(node),
+          complexity: calculateComplexity(node),
+          body,
+          functionCalls: [],
+        });
+      }
+    });
+  }
+
+  return fnEntries;
+}
+
+/**
+ * Extract static/dynamic imports and exports for a single file, emitting
+ * classified `import_specifiers` rows (Spec 60.1) into `indexFacts`. Returns
+ * the import/export facts for the file's stage-2 fact map.
+ */
+function collectImportExportFacts(opts: {
+  ast: AST;
+  adapter: LanguageAdapter;
+  sourceCode: string;
+  filePath: string;
+  context: VisitorContext;
+  isTsJs: boolean;
+  indexFacts: IndexFactsEntry[];
+}): {
+  imports: Array<{
+    moduleSpecifier: string;
+    isStatic: boolean;
+    isDynamic: boolean;
+    isRequire: boolean;
+    line: number;
+  }>;
+  exports: any[];
+} {
+  const { ast, adapter, sourceCode, filePath, context, isTsJs, indexFacts } = opts;
+  const langAdapter = adapter;
+  const langAst = ast;
+
+  // Static imports via the adapter's canonical extractImports()
+  const staticImportInfos = langAdapter.extractImports(langAst);
+  const staticImports: Array<{
+    moduleSpecifier: string;
+    isStatic: boolean;
+    isDynamic: boolean;
+    isRequire: boolean;
+    line: number;
+  }> = staticImportInfos.map((imp) => ({
+    moduleSpecifier: imp.source,
+    isStatic: true,
+    isDynamic: false,
+    isRequire: false,
+    line: imp.location.start.line,
+  }));
+
+  // Spec 60.1 — classify each static import specifier and emit one row per
+  // occurrence to `import_specifiers`. The corpus file set is the stage-1
+  // discovery list, threaded here as `_infra.files` (merged into
+  // `context.config` by pipeline.ts). Existence is checked against that
+  // in-memory set, never `fs.existsSync`. Virtual-module list + tsconfig
+  // `paths` patterns are threaded via `_infra` and passed to the classifier.
+  if (isTsJs) {
+    // Spec 60.1 Correction 1 — corpus set is the unfiltered discovery list
+    // (`_infra.corpusFiles`), not the narrowed `_infra.files`. The latter is
+    // the audit's analysis list (already pruned by includePaths/excludePaths),
+    // which drops `.json`/other non-analyzed extensions and would mis-classify
+    // a real `./invariant-rules.schema.json` as `internal-broken`.
+    const corpusFiles = new Set(
+      ((context.config as { corpusFiles?: string[] }).corpusFiles) ??
+        ((context.config as { files?: string[] }).files) ??
+        [],
+    );
+    const virtualModules = (context.config as { importVirtualModules?: string[] }).importVirtualModules
+      ?? DEFAULT_VIRTUAL_MODULES;
+    const tsconfigAliases = (context.config as {
+      tsconfigAliases?: {
+        pathPatterns?: string[];
+        paths?: Record<string, string[]>;
+        baseUrl?: string;
+      };
+    }).tsconfigAliases;
+    for (const imp of staticImportInfos) {
+      const { classification, resolvedPath } = classifyImportSpecifier(
+        imp.source,
+        filePath,
+        corpusFiles,
+        {
+          virtualModules,
+          aliasPatterns: tsconfigAliases?.pathPatterns ?? [],
+          pathMappings: tsconfigAliases?.paths ?? {},
+          baseUrl: tsconfigAliases?.baseUrl,
+          projectRoot: context.projectRoot,
+        },
+      );
+      indexFacts.push({
+        table: 'import_specifiers',
+        data: {
+          file_path: filePath,
+          specifier: imp.source,
+          classification,
+          resolved_path: resolvedPath ?? null,
+          line: imp.location.start.line,
+        },
+        conflictKey: 'file_path, specifier, line',
+      });
+    }
+  }
+
+  // Dynamic import() and require() — first attempt with pure NodePattern
+  // Plan note: import keyword is an anonymous tree-sitter node, so
+  // hasChild cannot see it.  We use `custom` with raw node access.
+  const dynamicCallNodes = langAdapter.findNodes(langAst, {
+    type: 'call_expression',
+    custom: (node) => {
+      const fn = node.children?.[0];
+      return (fn?.type === 'import') ||
+             (fn?.type === 'identifier' && getNodeText(fn, sourceCode) === 'require');
+    },
+  });
+
+  const dynamicImports: Array<{
+    moduleSpecifier: string;
+    isStatic: boolean;
+    isDynamic: boolean;
+    isRequire: boolean;
+    line: number;
+  }> = [];
+
+  for (const node of dynamicCallNodes) {
+    const fn = node.children?.[0];
+    const isImport = fn?.type === 'import';
+    const isRequire = !isImport && (fn?.type === 'identifier' && getNodeText(fn, sourceCode) === 'require');
+
+    // Walk the AST children to find the string argument
+    const argsNode = node.children?.find((c) => c.type === 'arguments');
+    const stringNode = argsNode?.children?.find((c) => c.type === 'string');
+    if (stringNode) {
+      const text = getNodeText(stringNode, sourceCode);
+      if (text.length >= 2) {
+        dynamicImports.push({
+          moduleSpecifier: text.slice(1, -1), // strip quotes
+          isStatic: false,
+          isDynamic: isImport,
+          isRequire,
+          line: node.location.start.line,
+        });
+      }
+    }
+  }
+
+  // Exports via the adapter's canonical extractExports()
+  // Returns ExportInfo[] with isDefault — used by both invariants and conventions (B2)
+  const exportInfos = langAdapter.extractExports(langAst);
+
+  return {
+    imports: [...staticImports, ...dynamicImports],
+    exports: exportInfos,
+  };
+}
+
+/**
  * Create the function-index stage-2 visitor, which populates the `functions`
  * and `import_specifiers` index tables for the downstream reducers.
  *
@@ -506,154 +814,7 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
       // Build import map once per file for resolving call targets
       const importMap = buildImportMap(root, sourceCode);
 
-      // Collect function-like nodes in two passes:
-      //  1) function_declaration + method_definition nodes
-      //  2) arrow functions assigned to variables (variable_declarator children)
-
-      const fnEntries: FunctionIndexEntry[] = [];
-
-      // Pass 1 — named function declarations and methods
-      walkAST(root, (node) => {
-        if (node.type === 'function_declaration') {
-          const nameNode = node.children?.find((c) => c.type === 'identifier');
-          if (!nameNode) return;
-          const name = getNodeText(nameNode, sourceCode);
-          if (!name) return;
-
-          const { line } = getLineAndColumn(node);
-          const endLine = node.location.end.line;
-          const body = getFunctionBody(node, sourceCode);
-          const calls = extractFunctionCalls(node, sourceCode, importMap);
-          const callNames = [...new Set(calls.map((c) => c.callee))];
-
-          fnEntries.push({
-            name,
-            line,
-            endLine,
-            entityType: 'function',
-            componentType: null,
-            isExported: isExported(node),
-            complexity: calculateComplexity(node),
-            body,
-            functionCalls: callNames,
-          });
-        }
-
-        // Class methods
-        if (node.type === 'method_definition') {
-          const nameNode = node.children?.find((c) => c.type === 'identifier');
-          if (!nameNode) return;
-          const methodName = getNodeText(nameNode, sourceCode);
-          if (!methodName) return;
-
-          // Walk up to find class name
-          let parent = (node as any).parent;
-          let className = 'AnonymousClass';
-          while (parent) {
-            if (parent.type === 'class_declaration') {
-              const cn = parent.children?.find((c: any) => c.type === 'identifier');
-              if (cn) className = getNodeText(cn, sourceCode);
-              break;
-            }
-            parent = parent.parent;
-          }
-
-          const { line } = getLineAndColumn(node);
-          const endLine = node.location.end.line;
-          const body = getFunctionBody(node, sourceCode);
-          const calls = extractFunctionCalls(node, sourceCode, importMap);
-          const callNames = [...new Set(calls.map((c) => c.callee))];
-
-          fnEntries.push({
-            name: `${className}.${methodName}`,
-            line,
-            endLine,
-            entityType: 'method',
-            componentType: null,
-            isExported: isExported(node),
-            complexity: calculateComplexity(node),
-            body,
-            functionCalls: callNames,
-          });
-        }
-      });
-
-      // Pass 2 — arrow functions assigned to variables
-      walkAST(root, (node) => {
-        if (node.type !== 'variable_declarator') return;
-        const nameNode = node.children?.find((c) => c.type === 'identifier');
-        const arrowFunc = node.children?.find((c) => c.type === 'arrow_function');
-        if (!nameNode || !arrowFunc) return;
-        const name = getNodeText(nameNode, sourceCode);
-        if (!name) return;
-
-        // Don't duplicate if already covered as function_declaration
-        // (shouldn't happen — function_declaration is a different node type)
-        const { line } = getLineAndColumn(arrowFunc);
-        const endLine = arrowFunc.location.end.line;
-        const body = getFunctionBody(arrowFunc, sourceCode);
-        const calls = extractFunctionCalls(arrowFunc, sourceCode, importMap);
-        const callNames = [...new Set(calls.map((c) => c.callee))];
-
-        fnEntries.push({
-          name,
-          line,
-          endLine,
-          entityType: 'function',
-          componentType: null,
-          isExported: isExported(node),
-          complexity: calculateComplexity(arrowFunc),
-          body,
-          functionCalls: callNames,
-        });
-      });
-
-      // Pass 3 — React component detection
-      // Detect JSX-returning functions to set entity_type='component' and
-      // component_type, matching what functionScanner's deepSync produces.
-      // The convention miner's classifyExportKind() uses these columns to
-      // partition naming conventions.
-      const hasReactImport = [...importMap.values()].some(
-        (v) => v.modulePath === 'react',
-      );
-      if (
-        filePath.endsWith('.tsx') ||
-        filePath.endsWith('.jsx') ||
-        (filePath.endsWith('.js') && hasReactImport)
-      ) {
-        walkAST(root, (node) => {
-          if (!isReactComponent(node, sourceCode)) return;
-          const ct = detectComponentType(node, sourceCode);
-          if (!ct) return;
-          const cName = getComponentName(node, sourceCode);
-          if (!cName || cName === 'AnonymousComponent') return;
-
-          const existing = fnEntries.find((f) => f.name === cName);
-          if (existing) {
-            // Upgrade existing function_declaration or arrow-function entry
-            existing.entityType = 'component';
-            existing.componentType = ct;
-          } else {
-            // New entry — class component, function_expression, or memo/forwardRef
-            // wrapper not already captured by passes 1 or 2.
-            const { line } = getLineAndColumn(node);
-            const endLine = node.location.end.line;
-            const body = getFunctionBody(node, sourceCode);
-
-            fnEntries.push({
-              name: cName,
-              line,
-              endLine,
-              entityType: 'component',
-              componentType: ct,
-              isExported: isExported(node),
-              complexity: calculateComplexity(node),
-              body,
-              functionCalls: [],
-            });
-          }
-        });
-      }
+      const fnEntries = collectFunctionEntries(root, sourceCode, importMap, filePath);
 
       // Build IndexFactsEntry for each function
       for (const fn of fnEntries) {
@@ -693,132 +854,21 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
         });
       }
 
-      // ── Extract imports and exports from AST for downstream consumers ──
-      // B1: Replaces regex-based extractImports()/extractExportedSymbols() in
-      // ruleEngine.ts.  Also consumed by conventions (B2: detectExportForm).
-      const langAdapter = _adapter as LanguageAdapter;
-      const langAst = ast as AST;
-
-      // Static imports via the adapter's canonical extractImports()
-      const staticImportInfos = langAdapter.extractImports(langAst);
-      const staticImports: Array<{
-        moduleSpecifier: string;
-        isStatic: boolean;
-        isDynamic: boolean;
-        isRequire: boolean;
-        line: number;
-      }> = staticImportInfos.map((imp) => ({
-        moduleSpecifier: imp.source,
-        isStatic: true,
-        isDynamic: false,
-        isRequire: false,
-        line: imp.location.start.line,
-      }));
-
-      // Spec 60.1 — classify each static import specifier and emit one row per
-      // occurrence to `import_specifiers`. The corpus file set is the stage-1
-      // discovery list, threaded here as `_infra.files` (merged into
-      // `context.config` by pipeline.ts). Existence is checked against that
-      // in-memory set, never `fs.existsSync`. Virtual-module list + tsconfig
-      // `paths` patterns are threaded via `_infra` and passed to the classifier.
-      if (isTsJs) {
-        // Spec 60.1 Correction 1 — corpus set is the unfiltered discovery list
-        // (`_infra.corpusFiles`), not the narrowed `_infra.files`. The latter is
-        // the audit's analysis list (already pruned by includePaths/excludePaths),
-        // which drops `.json`/other non-analyzed extensions and would mis-classify
-        // a real `./invariant-rules.schema.json` as `internal-broken`.
-        const corpusFiles = new Set(
-          ((context.config as { corpusFiles?: string[] }).corpusFiles) ??
-            ((context.config as { files?: string[] }).files) ??
-            [],
-        );
-        const virtualModules = (context.config as { importVirtualModules?: string[] }).importVirtualModules
-          ?? DEFAULT_VIRTUAL_MODULES;
-        const tsconfigAliases = (context.config as {
-          tsconfigAliases?: {
-            pathPatterns?: string[];
-            paths?: Record<string, string[]>;
-            baseUrl?: string;
-          };
-        }).tsconfigAliases;
-        for (const imp of staticImportInfos) {
-          const { classification, resolvedPath } = classifyImportSpecifier(
-            imp.source,
-            filePath,
-            corpusFiles,
-            {
-              virtualModules,
-              aliasPatterns: tsconfigAliases?.pathPatterns ?? [],
-              pathMappings: tsconfigAliases?.paths ?? {},
-              baseUrl: tsconfigAliases?.baseUrl,
-              projectRoot: context.projectRoot,
-            },
-          );
-          indexFacts.push({
-            table: 'import_specifiers',
-            data: {
-              file_path: filePath,
-              specifier: imp.source,
-              classification,
-              resolved_path: resolvedPath ?? null,
-              line: imp.location.start.line,
-            },
-            conflictKey: 'file_path, specifier, line',
-          });
-        }
-      }
-
-      // Dynamic import() and require() — first attempt with pure NodePattern
-      // Plan note: import keyword is an anonymous tree-sitter node, so
-      // hasChild cannot see it.  We use `custom` with raw node access.
-      const dynamicCallNodes = langAdapter.findNodes(langAst, {
-        type: 'call_expression',
-        custom: (node) => {
-          const fn = node.children?.[0];
-          return (fn?.type === 'import') ||
-                 (fn?.type === 'identifier' && getNodeText(fn, sourceCode) === 'require');
-        },
+      const { imports: importFacts, exports: exportInfos } = collectImportExportFacts({
+        ast: ast as AST,
+        adapter: _adapter as LanguageAdapter,
+        sourceCode,
+        filePath,
+        context,
+        isTsJs,
+        indexFacts,
       });
-
-      const dynamicImports: Array<{
-        moduleSpecifier: string;
-        isStatic: boolean;
-        isDynamic: boolean;
-        isRequire: boolean;
-        line: number;
-      }> = [];
-
-      for (const node of dynamicCallNodes) {
-        const fn = node.children?.[0];
-        const isImport = fn?.type === 'import';
-        const isRequire = !isImport && (fn?.type === 'identifier' && getNodeText(fn, sourceCode) === 'require');
-
-        // Walk the AST children to find the string argument
-        const argsNode = node.children?.find((c) => c.type === 'arguments');
-        const stringNode = argsNode?.children?.find((c) => c.type === 'string');
-        if (stringNode) {
-          const text = getNodeText(stringNode, sourceCode);
-          if (text.length >= 2) {
-            dynamicImports.push({
-              moduleSpecifier: text.slice(1, -1), // strip quotes
-              isStatic: false,
-              isDynamic: isImport,
-              isRequire,
-              line: node.location.start.line,
-            });
-          }
-        }
-      }
-
-      // Exports via the adapter's canonical extractExports()
-      // Returns ExportInfo[] with isDefault — used by both invariants and conventions (B2)
-      const exportInfos = langAdapter.extractExports(langAst);
 
       return {
         violations: [],
         facts: {
           [filePath]: {
-            imports: [...staticImports, ...dynamicImports],
+            imports: importFacts,
             exports: exportInfos,
           },
         },
