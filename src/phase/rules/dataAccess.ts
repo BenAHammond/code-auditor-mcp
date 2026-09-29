@@ -37,6 +37,7 @@ import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 import {
   buildOrgFilterTierSet,
   tableRequiresOrgFilter,
+  hasOrganizationFilter,
   type OrgFilterConfig,
 } from '../../analyzers/orgFilterTiers.js';
 import { isTestOrSpecPath } from '../../languages/testConventions.js';
@@ -428,6 +429,18 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
     // by `buildOrgFilterTierSet`), matched against a raw-SQL INSERT column list.
     const tenantColumnSet = new Set(tierSet.tenantColumns);
 
+    // The predicate detector runs on the SAME vocabulary as the tier set above
+    // (`orgFilterColumns` from the thresholds) — one vocabulary, two consumers.
+    // The producer bakes `call.hasOrganizationFilter` with the DEFAULT config
+    // (no project config reaches a `process(file)` call), so trusting that field
+    // would read a different vocabulary than the tier set and re-introduce the
+    // §69 Fix-1 defect. Re-derive it here from `queryText` + the resolved
+    // thresholds so predicate detection and table discovery can never drift.
+    const predicateConfig = {
+      orgFilterColumns: asStringArray(ctx.thresholds.orgFilterColumns),
+      organizationPatterns: asStringArray(ctx.thresholds.organizationPatterns),
+    };
+
     for (const call of ctx.facts['data-access-calls']) {
       // Resolve ORM schema-object identifiers to their declared SQL names
       // (`.from(sampleOwnership)` → `sample_ownership`) before the tier lookup,
@@ -454,7 +467,7 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
         const setsTenant = columns === null
           || columns.some((c) => tenantColumnSet.has(c));
         if (setsTenant) continue;
-      } else if (call.hasOrganizationFilter) {
+      } else if (hasOrganizationFilter(call.queryText, predicateConfig)) {
         continue;
       } else if (hasUniqueColumnFilter(call.queryText, uniqueColumnsForTables(tables, catalog))) {
         // A predicate bound to a UNIQUE / PRIMARY-KEY column returns at most one

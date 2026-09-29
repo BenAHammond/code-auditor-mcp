@@ -6,6 +6,15 @@
         "projects",
         "environments"
       ],
+      "orgFilterColumns": [
+        "org_id",
+        "tenant_id",
+        "organization_id",
+        "workspace_id",
+        "team_id",
+        "project_id",
+        "environment_id"
+      ],
       "schemas": [
         {
           "name": "analytics",

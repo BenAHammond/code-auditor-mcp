@@ -242,4 +242,13 @@ describe('Spec 68 hasOrganizationFilter — projection vs. predicate', () => {
     expect(out.length).toBeGreaterThan(0);
     expect(out[0].hasOrganizationFilter).toBe(false);
   });
+
+  it('treats a dotted *value* `eq(orgCol, session.orgId)` under `.where` as a filter (§69 Fix 1)', () => {
+    const out = calls('/fixture/org-dotted-value.ts', [
+      'appDb.getDb().select().from(userOrganizations)',
+      '  .where(eq(userOrganizations.organizationId, session.organizationId));',
+    ].join('\n'));
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].hasOrganizationFilter).toBe(true);
+  });
 });

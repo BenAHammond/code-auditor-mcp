@@ -26,7 +26,12 @@ import {
 } from './UniversalSchemaAnalyzer.js';
 import { isSqlKeyword, extractAliasIdentifiers, findEnclosingFunctionIdentity, functionIdentityLabel } from './schema/codeAnalysis.js';
 import { isTestOrSpecPath } from '../../languages/testConventions.js';
-import { buildOrgFilterTierSet, tableRequiresOrgFilter } from '../orgFilterTiers.js';
+import {
+  buildOrgFilterTierSet,
+  tableRequiresOrgFilter,
+  DEFAULT_ORG_PREDICATE_PATTERNS,
+  hasOrganizationFilter,
+} from '../orgFilterTiers.js';
 
 /**
  * SQL keywords recognized as evidence that a string is a SQL query.
@@ -147,16 +152,7 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
       ormPatterns: ['from', 'where', 'join', 'orderBy', 'groupBy']
     }
   },
-  organizationPatterns: [
-    'organizationId',
-    'organization_id',
-    'orgId',
-    'org_id',
-    'tenantId',
-    'tenant_id',
-    'companyId',
-    'company_id'
-  ],
+  organizationPatterns: [...DEFAULT_ORG_PREDICATE_PATTERNS],
   // Spec 21 R6.2: three-tier org-filter detection
   orgFilterTables: [],  // Tier 1: empty — user must declare
   orgFilterColumns: ['org_id', 'tenant_id', 'organization_id', 'workspace_id'],  // Tier 2
@@ -1611,75 +1607,6 @@ export function extractTables(text: string, config: DataAccessAnalyzerConfig): s
   return Array.from(tables)
     .filter(t => !isSqlKeyword(t))
     .filter(t => !aliasIds.has(t.toLowerCase()));
-}
-
-function hasOrganizationFilter(text: string, config: DataAccessAnalyzerConfig): boolean {
-  const patterns = config.organizationPatterns ?? [];
-
-  // No patterns → hardcoded common fallback set.
-  const candidates = patterns.length
-    ? patterns
-    : ['organizationid', 'organization_id', 'orgid', 'org_id',
-       'tenantid', 'tenant_id', 'companyid', 'company_id'];
-
-  // An org-scoping column is a *filter* only when it is used as a predicate
-  // operand — the left-hand side of a comparison/IN/IS/LIKE (`org_id = ?`,
-  // `tenant_id IN (...)`), the key side of a filter object (`where({ org_id })`),
-  // or the column argument of a positional where (`where('org_id', x)`).
-  // A column that merely appears in the SELECT list (`SELECT org_id FROM …`) or
-  // an INSERT column list is NOT a filter. This replaces the old substring
-  // proxy that treated any occurrence of the column name — a SELECT column, a
-  // comment, a property name — as evidence of tenant isolation.
-  // The candidates are joined with `|`; wrap them in `(?:…)` so the word
-  // boundaries and the operator/key suffix below bind to EVERY alternative, not
-  // just the first (`\borganizationid`) and last (`company_id\b…`) of them. The
-  // un-grouped form let `\borganizationid` match a bare column name with no
-  // operator — which is exactly how a `.select({ organizationId: col })`
-  // projection was misread as a filter (Spec 68 Thing 2 `sample_ownership`).
-  const alt = `(?:${candidates.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`;
-
-  // SQL comparison operand (`org_id = ?`, `tenant_id IN (...)`).
-  const comparisonRe = new RegExp(
-    `\\b${alt}\\b\\s*(?:=|!=|<>|<=|>=|<|>|\\bIS\\b|\\bIN\\b|\\bLIKE\\b)`,
-    'i',
-  );
-  if (comparisonRe.test(text)) return true;
-
-  // ORM comparison-helper form: the org column as the FIRST argument of a
-  // predicate helper — `eq(org_id, v)`, `inArray(org_id, vs)`, `lt(org_id, v)`.
-  // The old bare-column match caught these by accident; the operator/object/
-  // positional regexes do not (they expect `org_id =` / `{ org_id: }` /
-  // `where('org_id')`). A helper's first arg is the column and its second arg
-  // is the value. Distinguish that from a JOIN-on-org — `innerJoin(x, eq(a.org_id,
-  // b.org_id))` — whose second arg is *another column* (`b.org_id`), not a value:
-  // a join scopes how rows match, not which rows come back, so it is not tenant
-  // isolation. The lookahead rejects a dotted second argument (Spec 68 Thing 2
-  // recall — `checkOrganizationAccess`/`filterSamplesByOrganization`).
-  const helperRe = new RegExp(
-    `\\b(?:eq|ne|notEq|gt|gte|lt|lte|inArray|notInArray|like|ilike|notIlike|between|notBetween)\\s*\\(\\s*(?:[\\w$]+\\.)*\\s*\\b${alt}\\b\\s*,\\s*(?!\\s*[\\w$]+\\s*\\.)`,
-    'i',
-  );
-  if (helperRe.test(text)) return true;
-
-  // Object-literal filter: the column as a value key inside a predicate/set
-  // object (`.where({ org_id: v })`, `.values({ org_id: v })`, Prisma
-  // `where: { org_id: v }`). The colon is a filter signal ONLY inside a
-  // scoping verb; a `.select({ org_id: col })` projection is a SELECT alias,
-  // not a predicate, so a bare `org_id:` must not match (Spec 68 Thing 2
-  // `sample_ownership`). This is strictly narrower than the old bare-`:`
-  // match: it can only stop firing on projections, never start on new text.
-  const objectFilterRe = new RegExp(
-    `\\b(?:where|andWhere|orWhere|whereEq|whereNot|having|on|set|values|data)\\s*(?:\\(|:)\\s*\\{[^{}]*\\b${alt}\\b\\s*:`,
-    'i',
-  );
-  if (objectFilterRe.test(text)) return true;
-
-  // Positional ORM where: `.where('org_id', x)` / `.andWhere("org_id", x)`.
-  const positionalRe = new RegExp(
-    `\\b(?:where|andWhere|orWhere|whereEq|whereNot|having|on)\\s*\\(\\s*['"\`]\\s*${alt}\\s*['"\`]`,
-    'i',
-  );
-  return positionalRe.test(text);
 }
 
 /**
