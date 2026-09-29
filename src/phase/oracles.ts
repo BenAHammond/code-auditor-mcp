@@ -37,8 +37,6 @@ import type {
 } from './types.js';
 import { isFunctionNodeType } from '../analyzers/universal/functionConcerns.js';
 import { isTestFile } from '../languages/testConventions.js';
-import { ORM_OBJECT_RE } from './schemaObjects.js';
-import { DDL_RE } from '../analyzers/universal/schema/migrations.js';
 
 /** A counted oracle: `count` returns the units one file should yield; `measured`
  *  reads the same unit back out of the emitted fragments. */
@@ -212,21 +210,41 @@ export const countGoSwitches = goNodeCount(['expression_switch_statement', 'type
  *  interface), exempting `*_test.go`. */
 export const countTypeDeclarations = goNodeCount(['type_spec']);
 
-/** schema-objects — count the ORM-builder bindings off the source text (the same
- *  regex the producer emits one fact per). Exact, not an upper bound. */
+/** schema-objects — count the ORM-builder *call sites* off the source text (a
+ *  different feature than the producer emits: the producer emits one fact per
+ *  `const <id> = <builder>('name', …)` *binding*, this counts every `<builder>(`
+ *  *invocation*). A builder call not bound to a `const` (e.g.
+ *  `export default pgTable(…)`, or a table returned from a helper) is a positive
+ *  residual by design — the oracle upper-bounds the emitted bindings rather than
+ *  re-running the producer's own `ORM_OBJECT_RE` (which would prove 1 = 1 and
+ *  measure nothing). */
+const ORM_BUILDER_CALL_RE = /\b(?:pgTable|mysqlTable|sqliteTable)\s*\(/g;
+
 export function countSchemaObjects(file: ParsedFile): number {
-  return [...file.source.matchAll(ORM_OBJECT_RE)].length;
+  return [...file.source.matchAll(ORM_BUILDER_CALL_RE)].length;
 }
 
-/** ddl-declarations — count the raw DDL ops (CREATE/DROP/ALTER-RENAME) off the
- *  source text; the producer's single fragment carries one entry per op, so the
- *  measured side reads `ops.length`. Exact. */
+/** ddl-declarations — count the DDL *statement headers* (CREATE/DROP/ALTER TABLE)
+ *  off the source text — a different, coarser feature than the producer emits.
+ *  The producer's single fragment carries one op per CREATE/DROP/ALTER-RENAME
+ *  TABLE statement, matched by its own `DDL_RE` (which also captures the names
+ *  and the `RENAME TO` clause); this counts the bare header independently, so a
+ *  change to `DDL_RE`'s name/rename machinery cannot silently propagate here.
+ *  Every op header carries exactly one header, so this is an upper bound; an
+ *  `ALTER TABLE … ADD COLUMN`/`… ADD CONSTRAINT` header (a column/constraint the
+ *  producer correctly records in `tableColumns`, not as an op) is a positive
+ *  residual by design. */
+const DDL_HEADER_RE = /\b(?:CREATE|DROP|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b/gi;
+
 export function countDdlOps(file: ParsedFile): number {
-  return [...file.source.matchAll(DDL_RE)].length;
+  return [...file.source.matchAll(DDL_HEADER_RE)].length;
 }
 
-/** style-declarations (css/scss) — count `declaration` nodes off the CSS AST;
- *  the producer emits one normalized declaration per node, so this is exact. */
+/** style-declarations (css/scss) — count `declaration` nodes off the CSS AST.
+ *  An upper bound, not exact: the producer projects only declarations inside a
+ *  `rule_set` (skipping `@keyframes`/`@font-face`/`@page` declarations) and may
+ *  expand a shorthand into several, so a declaration outside a rule_set is a
+ *  positive residual. */
 export function countCssDeclarations(file: ParsedFile): number {
   const ast = (file as AstFile).ast;
   return (file as AstFile).adapter.findNodes(ast, {

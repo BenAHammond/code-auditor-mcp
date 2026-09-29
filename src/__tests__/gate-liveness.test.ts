@@ -54,6 +54,7 @@ import {
   compareToBaseline,
 } from '../../scripts/verify-recall-value-drift-core.mjs';
 import { compareCompleteness } from '../../scripts/verify-extraction-completeness-core.mjs';
+import { compareOracleShortfalls } from '../../scripts/verify-oracle-shortfalls-core.mjs';
 
 const APP_ROOT = process.cwd();
 const DIST_CLI = join(APP_ROOT, 'dist', 'cli.js');
@@ -253,6 +254,68 @@ describe('verify:extraction-completeness — liveness', () => {
   it('reports an unexpected corpus measured beyond the baseline', () => {
     expect(compareCompleteness({ ...baseline, 'new-corpus': 5 }, baseline)).toContain(
       'unexpected corpus new-corpus measured (gap 5)',
+    );
+  });
+});
+
+describe('verify:oracle-shortfalls — liveness', () => {
+  // The aggregate shortfall gate (Spec 69 R1 criterion 4) re-measures the
+  // corpora each run; the corpus is absent in CI, so the gate SKIPs there. The
+  // failure branch lives in the pure comparison — a moved files/expected/actual
+  // counter, a missing (kind, corpus), or an unexpected one must produce drift
+  // lines (and so a non-zero exit), never a silent green.
+  const baselineKinds = {
+    'file-symbols': {
+      composition: 'methods fold into their class symbol',
+      corpora: {
+        'recall-protocol': { files: 99, expected: 1847, actual: 1338 },
+      },
+    },
+    'batch-functions': {
+      composition: 'functions with no .batch( call',
+      corpora: {
+        'recall-protocol': { files: 1431, expected: 15153, actual: 16 },
+      },
+    },
+  };
+
+  it('is green when every (kind, corpus) aggregate matches the baseline exactly', () => {
+    const measured = {
+      'file-symbols': { 'recall-protocol': { files: 99, expected: 1847, actual: 1338 } },
+      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
+    };
+    expect(compareOracleShortfalls(measured, baselineKinds)).toEqual([]);
+  });
+
+  it('reports a moved counter (expected units moved)', () => {
+    const measured = {
+      'file-symbols': { 'recall-protocol': { files: 99, expected: 1846, actual: 1338 } },
+      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
+    };
+    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
+      'file-symbols on recall-protocol expected 1846 != baseline 1847',
+    );
+  });
+
+  it('reports a (kind, corpus) the gate failed to measure', () => {
+    const measured = {
+      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
+    };
+    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
+      'file-symbols on recall-protocol not measured (baseline files 99, expected 1847, actual 1338)',
+    );
+  });
+
+  it('reports an unexpected (kind, corpus) measured beyond the baseline', () => {
+    const measured = {
+      'file-symbols': {
+        'recall-protocol': { files: 99, expected: 1847, actual: 1338 },
+        openstatus: { files: 65, expected: 830, actual: 437 },
+      },
+      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
+    };
+    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
+      'unexpected file-symbols on openstatus measured (files 65, expected 830, actual 437)',
     );
   });
 });
