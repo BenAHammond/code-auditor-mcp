@@ -19,18 +19,19 @@ This document records the audit of both.
 ## Part A — independence audit of the counted oracles
 
 Every counted oracle was audited for whether it shares a predicate with the
-producer it shadows. There are **17 distinct count functions** serving 51
-processor declarations; each is one of two mechanisms:
+producer it shadows. There are **24 count functions** serving 73 processor
+declarations; each is one of two mechanisms:
 
-- **Node-type counts** (15) — `countNodeTypes` / `findNodes` / `goNodeCount`
+- **Node-type counts** (21) — `countNodeTypes` / `findNodes` / `goNodeCount`
   count raw tree-sitter nodes of a declared type list. This is a *different
   mechanism* than the producer's semantic extraction: the producer walks the
   same AST but projects, folds, dedups, and filters. A raw node count can never
   be the producer's own predicate, and it carries a real residual (methods
   folded into a class symbol, bare callback arrows skipped, duplicate specifiers
   deduped). These are independent by construction.
-- **Text-regex counts** (2) — `countSchemaObjects` and `countDdlOps`. Their
-  producers (`extractSchemaObjects`, `extractSchemaCode`) are themselves
+- **Text-regex counts** (3) — `countSchemaObjects`, `countDdlOps`, and
+  `countDynamicSql`. Their producers (`extractSchemaObjects`,
+  `extractSchemaCode`, `collectDynamicSqlCandidates`) are themselves
   regex-based, so the oracle's regex must be a *different* feature than the
   producer's regex.
 
@@ -61,31 +62,62 @@ so it is an upper bound with a real residual — the comment now says so.
 
 ---
 
-## Part B — the `none` enumeration
+## Part B — the `none` enumeration and the upper-bound correction
 
-`noOracleProcessors()` enumerates **30** processor declarations that report no
-statable oracle, across **5 distinct reasons**. Each reason is quoted verbatim,
-then classified against the bar: a reason is *genuine* when no independent
-counter exists that would not either (a) re-run the producer's own predicate
-(`1 = 1`) or (b) count a raw superset whose residual would drown the break
-signal.
+`noOracleProcessors()` enumerates **8** processor declarations that report no
+statable oracle, across **3 distinct reasons**. This is the result of a
+re-examination that converted 22 of the original 30 `none` declarations to
+coarse upper-bound oracles; the 8 that remain are the genuine residue.
 
-| # | reason (verbatim) | processors | verdict |
+### The correction — "no exact counter" is not impossibility
+
+The original audit classified 30 declarations `none`, largely on the ground that
+"no exact counter exists." That was the wrong bar. `countCssDeclarations` is the
+precedent: it was corrected from "exact" to "upper bound" and kept, because an
+oracle that *over-counts* is still an oracle — the aggregate gate pins the
+residual (`expected − actual`), and a movement in `actual` is the regression
+signal. "Drowned signal" is only true when the residual genuinely swamps any real
+movement, and that is a *measurement*, not a judgement.
+
+Re-examining the 30 against the upper-bound bar converted **22**:
+
+| converted reason | processors | new oracle | residual (the over-count) |
 |---|---|---|---|
-| 16 | "the fragments are a classified subset with no raw node of the same kind; counting the raw superset would make the residual ~the whole file and drown the break signal, so the only count of the unit is the producer's own classifier" | `secret-candidates` (ts/tsx/js), `security-candidates` (ts/tsx/js), `data-access-calls` (ts/tsx/js/go), `loop-queries` (ts/tsx/js), `dynamic-sql` (ts/tsx/js) | genuine — the unit is defined by a classifier with no raw-node counterpart; a raw-superset count is a `1 = 1`-adjacent dud (residual ≈ whole file) |
-| 6 | "the emitted set is gated by a DB-context provenance walk (passesFileGate); a raw node count would record a false shortfall on every non-DB file, and the only count that respects the gate is the producer's own provenance analysis" | `function-bodies` (ts/tsx/js), `schema-usage` (ts/tsx/js) | genuine — the count depends on a provenance *gate*, not a node; the only counter that respects the gate is the producer's own walk |
-| 4 | "emits exactly one fragment per file (null-or-value); a count of 1 against 1 proves nothing and there is no countable unit inside the fragment" | `file-header` (ts/tsx/js), `json-document` (json) | genuine — a per-file null-or-value fragment has no countable unit; `1 vs 1` is the empty oracle |
-| 3 | "declarations derive from a union of mechanisms (CSS-in-JS objects, inline styles, Tailwind classes) with no single countable node that corresponds to the emitted declaration" | `style-declarations` (ts/tsx/js) | genuine — the emitted declaration is a union over three source mechanisms with no one node to count |
-| 1 | "declarations are extracted by regex over markup source with no AST; there is no countable input feature that corresponds to the emitted declaration" | `style-declarations` (markup) | genuine — markup has no AST at all; the extraction is regex-over-text with no countable node |
+| classified subset with no raw node of the same kind | `secret-candidates` (ts/tsx/js) | `countSecretCandidates` = `string`+`template_string` nodes | strings outside a credential position (the bulk of a file's strings) |
+| classified subset | `security-candidates` (ts/tsx/js) | `countSecurityCandidates` = `call_expression`+`template_string` | calls/templates that are not security-relevant |
+| classified subset | `data-access-calls` (ts/tsx/js/go) | `countDataAccessCalls` = `call_expression`+`template_string` | non-DB calls/templates |
+| classified subset | `loop-queries` (ts/tsx/js) | `countLoopQueries` = loop nodes | loops whose body issues no DB call |
+| classified subset | `dynamic-sql` (ts/tsx/js) | `countDynamicSql` = `query(`/`execute(` call sites | safe/parameterized query/execute calls |
+| DB-context gate | `function-bodies` (ts/tsx/js) | `countFunctionBodies` = function node types | functions in non-DB-context files (the gate is the producer's, not the count's) |
+| DB-context gate | `schema-usage` (ts/tsx/js) | `countSchemaUsage` = `call_expression`+`string`+`template_string` | strings/calls/templates naming no table reference |
 
-**No conversion.** All five reasons survive the bar: the `none` set is exactly
-the residue of processors whose unit is defined by a classifier, a provenance
-gate, a per-file null-or-value, or a union over source mechanisms — none of
-which has an independent counter that is not a `1 = 1` dud or a drowned signal.
-The silent-unprovable failure mode is closed not by an oracle but by the
-enumeration itself: the run names each `none` processor with its reason, so a
-future one added without a reason is a compile/type failure, and one added with
-a *bad* reason is visible in this list.
+Each is independent of its producer's predicate (a raw node-type or source-text
+count, never the producer's classifier) and each over-counts by design. The
+measured residuals are large but structural — e.g. `data-access-calls` counts
+95,724 call/template nodes against 1,848 resolved DB calls on recall-protocol —
+and are pinned in `bench/baselines/oracle-shortfalls.json` with a per-kind
+`composition` note. A producer regression (any movement in `actual`) still shows,
+because the residual is *pinned*, not part of the signal.
+
+### The 8 that remain `none` — and why
+
+The correction is not "everything converts." The 8 remaining are the cases where
+the bar is genuinely unmeetable, and each reason now states *which direction* the
+cheap count goes wrong:
+
+| # | reason | processors | verdict |
+|---|---|---|---|
+| 4 | "emits exactly one fragment per file (null-or-value); there is no partial-extraction failure mode to guard, so a count of 1 against 1 is the empty oracle" | `file-header` (ts/tsx/js), `json-document` (json) | genuine — a per-file null-or-value fragment has no countable unit whose movement would signal a partial extraction |
+| 3 | "declarations are the expansion of a union of source mechanisms (Tailwind utility classes, inline-style object pairs, CSS-in-JS templates); Tailwind-utility and shorthand expansion make the emitted count exceed any cheap count of source features, so every cheap count under-bounds and would never fire a shortfall" | `style-declarations` (ts/tsx/js) | genuine — the producer *expands* source features (Tailwind `expandUtility`, `expandShorthand`), so every cheap source count is an *under*-bound, not an upper bound: it could never report `actual < expected` and is therefore a dead oracle |
+| 1 | "declarations are extracted by regex over markup source with no AST and are the expansion of class/style/block mechanisms; Tailwind-utility and shorthand expansion make the emitted count exceed any cheap count of source features, so every cheap count under-bounds and would never fire a shortfall" | `style-declarations` (markup) | genuine — the same under-bound argument over regex-extracted markup with no AST |
+
+The key distinction: the converted 22 are cases where a cheap count is an
+*over*-count (an upper bound — a real shortfall still shows), while the remaining
+8 are cases where a cheap count is either an *under*-count (style expansion makes
+`actual` exceed any cheap source count, so the oracle can never fire) or an
+*empty* oracle (per-file null-or-value with no countable unit). An under-bound
+and an empty oracle are genuinely impossible, and the reasons now state which one
+each is.
 
 ---
 

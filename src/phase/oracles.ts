@@ -252,6 +252,76 @@ export function countCssDeclarations(file: ParsedFile): number {
   }).length;
 }
 
+// ── Coarse upper-bound oracles (Spec 69 R1 correction) ───────────────────────
+// These are the *over-counting* oracles the R1 correction demands for the
+// producers originally marked `none` on a "no exact counter exists" judgement.
+// The bar is not exactness but the upper bound: an oracle counts a dumber
+// superset of the same input, the residual (expected − actual) is pinned by the
+// aggregate gate, and a movement in `actual` is the regression signal — exactly
+// how `batch-functions` (counts every function node against the ~0–21 functions
+// that hold a `.batch(`) already works. A large residual is by design, not a
+// defect; the per-kind `composition` note records what it is made of.
+
+/** secret-candidates — count `string` + `template_string` nodes. Every candidate
+ *  (a declarator / assignment / pair / call that carries a string in a
+ *  credential position) holds ≥1 string literal, so the string-node count
+ *  upper-bounds the candidate count. Residual = string literals outside a
+ *  credential position (the majority of a file's strings). */
+export const countSecretCandidates = countNodeTypes(['string', 'template_string']);
+
+/** security-candidates — count `call_expression` + `template_string` nodes.
+ *  Every candidate is either a call (command-injection / dynamic-require) or a
+ *  sink-reaching template (unescaped-html), so this upper-bounds the candidate
+ *  count. Residual = the large majority of calls/templates that are not
+ *  security-relevant. */
+export const countSecurityCandidates = countNodeTypes(['call_expression', 'template_string']);
+
+/** data-access-calls — count `call_expression` + `template_string` nodes. Every
+ *  resolved DB call is a call (or a tagged-template call), so this upper-bounds
+ *  the resolved-call count. Residual = non-DB calls/templates (the bulk of a
+ *  file's call sites). */
+export const countDataAccessCalls = countNodeTypes(['call_expression', 'template_string']);
+
+/** loop-queries — count loop nodes. The producer emits one candidate per loop
+ *  whose body issues a DB call; this counts every loop. Residual = loops whose
+ *  body holds no DB call. */
+export const countLoopQueries = countNodeTypes([
+  'for_statement',
+  'for_in_statement',
+  'while_statement',
+  'do_statement',
+]);
+
+/** dynamic-sql — count `query(` / `execute(` call sites off the source text, a
+ *  different, coarser feature than the producer's `DANGEROUS_SQL_PATTERNS`
+ *  (which match only the dangerous `${…}` / `+` template/concat forms). Every
+ *  dangerous candidate is a `query(`/`execute(` call, so this upper-bounds the
+ *  candidate count. Residual = safe/parameterized query/execute calls. */
+const DYNAMIC_SQL_CALL_RE = /\b(?:query|execute)\s*\(/g;
+
+export function countDynamicSql(file: ParsedFile): number {
+  return [...file.source.matchAll(DYNAMIC_SQL_CALL_RE)].length;
+}
+
+/** function-bodies — count the function node types `extractFunctions` projects.
+ *  The producer emits one body per function in a DB-context file (gated by
+ *  `passesFileGate`); this counts every function, so a non-DB file records a
+ *  shortfall. Residual = functions in non-DB-context files (by design — the
+ *  gate is the producer's, the count is not). */
+export const countFunctionBodies = countNodeTypes([
+  'function_declaration',
+  'generator_function_declaration',
+  'function_expression',
+  'arrow_function',
+  'method_definition',
+]);
+
+/** schema-usage — count `call_expression` + `string` + `template_string` nodes.
+ *  Every table reference is carried in a string literal, a tagged template, or a
+ *  call, so this upper-bounds the reference count. Residual = strings/calls/
+ *  templates that name no table reference (the bulk of the file). */
+export const countSchemaUsage = countNodeTypes(['call_expression', 'string', 'template_string']);
+
 // ── Measured helpers (aggregate producers) ────────────────────────────────────
 // A producer that emits at most one fragment per file must compare the count of
 // the units *inside* that fragment, not the fragment array length (which is 0 or

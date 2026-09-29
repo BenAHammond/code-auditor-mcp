@@ -68,6 +68,13 @@ import {
   countSchemaObjects,
   countDdlOps,
   countCssDeclarations,
+  countSecretCandidates,
+  countSecurityCandidates,
+  countDataAccessCalls,
+  countLoopQueries,
+  countDynamicSql,
+  countFunctionBodies,
+  countSchemaUsage,
   measuredDdlOps,
   measuredStyleDeclarations,
   measuredJsxElements,
@@ -184,41 +191,33 @@ const channelOperationsProcess = (file: ParsedFile): FactFragment<'channel-opera
 const batchFunctionsProcess = (file: ParsedFile): FactFragment<'batch-functions'> => extractBatchFunctions(file as AstFile);
 
 // ── Spec 69 R1 — the `none` residues (every one enumerated in the run, criterion 3) ──
-// After the 72→42 conversion pass, only these shapes survive the bar "is there a
-// countable feature of the input that corresponds to what the processor emits?"
-// Every `none` oracle is enumerated, named, with its reason — never silently
-// unprovable. The split is 51 counted / 30 none.
-//   • GATED — the emitted set is a *whole-file* DB-context slice: the unit is
-//     "DB-context function bodies / table references", and "DB-context" is
-//     decided by `buildProvenanceContext` → `passesFileGate` (the producer's own
-//     provenance analysis). A raw node count ignores the gate and records a false
-//     shortfall on every non-DB file; the only count that respects the gate *is*
-//     that analysis, so no cheaper independent count exists.
-//   • CLASSIFICATION — the emitted unit is a semantically-filtered subset with no
-//     raw node of the same kind. The raw superset exists (every call expression,
-//     every string), but counting it makes the residual ~the whole file (a non-DB
-//     file with hundreds of calls vs one DB call), which drowns the break signal
-//     the oracle exists to surface. The only count of the unit is the classifier.
-//   • STYLE_SOURCE / STYLE_MARKUP — source/markup style declarations derive from
-//     a union of mechanisms (CSS-in-JS objects, inline styles, Tailwind classes)
-//     with no single countable node, or from a regex over markup with no AST.
-//   • SINGLE_OBJECT — the producer emits exactly one fragment per file (a header,
-//     a parsed document), null-or-value. A count of 1 against 1 proves nothing,
-//     and there is no countable unit inside the fragment.
-const GATED = noOracle(
-  "the emitted set is gated by a DB-context provenance walk (passesFileGate); a raw node count would record a false shortfall on every non-DB file, and the only count that respects the gate is the producer's own provenance analysis",
-);
-const CLASSIFICATION = noOracle(
-  "the fragments are a classified subset with no raw node of the same kind; counting the raw superset would make the residual ~the whole file and drown the break signal, so the only count of the unit is the producer's own classifier",
-);
+// The R1 correction re-examined every `none` against an *upper-bound* bar, not an
+// exact-count bar: an oracle that over-counts is still an oracle, because the
+// residual is pinned and a movement in it is the signal (the `batch-functions`
+// / `countCssDeclarations` precedent). That converted all 22 of the old
+// CLASSIFICATION/GATED `none`s to coarse counted oracles — "no exact counter"
+// and "the residual drowns the signal" were judgements, not measurements, and
+// the aggregate gate pins `actual` exactly so any producer regression shows
+// regardless of residual size. The split is now 73 counted / 8 none.
+//   • STYLE_SOURCE / STYLE_MARKUP — the declaration unit is the *expansion* of a
+//     union of source mechanisms (Tailwind utility classes, inline-style object
+//     pairs, CSS-in-JS templates). Tailwind-utility and shorthand expansion make
+//     the emitted declaration count exceed any cheap count of source syntactic
+//     features, so no source-feature count upper-bounds it (a class token expands
+//     to ≥1 declaration; `margin: 4px` to 4). Any cheap count would *under*-bound
+//     and never fire — a dead oracle, not a noisy one. This is a genuine `none`:
+//     not "no exact counter" but "no cheap *upper* bound exists".
+//   • SINGLE_OBJECT — the producer emits exactly one fragment per file
+//     (null-or-value), so there is no partial-extraction failure mode for an
+//     oracle to guard: a count of 1 against 1 is the empty oracle.
 const STYLE_SOURCE = noOracle(
-  'declarations derive from a union of mechanisms (CSS-in-JS objects, inline styles, Tailwind classes) with no single countable node that corresponds to the emitted declaration',
+  'declarations are the expansion of a union of source mechanisms (Tailwind utility classes, inline-style object pairs, CSS-in-JS templates); Tailwind-utility and shorthand expansion make the emitted count exceed any cheap count of source features, so every cheap count under-bounds and would never fire a shortfall',
 );
 const STYLE_MARKUP = noOracle(
-  'declarations are extracted by regex over markup source with no AST; there is no countable input feature that corresponds to the emitted declaration',
+  'declarations are extracted by regex over markup source with no AST and are the expansion of class/style/block mechanisms; Tailwind-utility and shorthand expansion make the emitted count exceed any cheap count of source features, so every cheap count under-bounds and would never fire a shortfall',
 );
 const SINGLE_OBJECT = noOracle(
-  'emits exactly one fragment per file (null-or-value); a count of 1 against 1 proves nothing and there is no countable unit inside the fragment',
+  'emits exactly one fragment per file (null-or-value); there is no partial-extraction failure mode to guard, so a count of 1 against 1 is the empty oracle',
 );
 
 export const PRODUCERS = {
@@ -233,9 +232,9 @@ export const PRODUCERS = {
     javascript: fileProducer('function-index', 'javascript', functionIndexProcess, countOracle(countFunctionIndex)),
   },
   'function-bodies': {
-    typescript: fileProducer('function-bodies', 'typescript', functionBodiesProcess, GATED),
-    tsx: fileProducer('function-bodies', 'tsx', functionBodiesProcess, GATED),
-    javascript: fileProducer('function-bodies', 'javascript', functionBodiesProcess, GATED),
+    typescript: fileProducer('function-bodies', 'typescript', functionBodiesProcess, countOracle(countFunctionBodies)),
+    tsx: fileProducer('function-bodies', 'tsx', functionBodiesProcess, countOracle(countFunctionBodies)),
+    javascript: fileProducer('function-bodies', 'javascript', functionBodiesProcess, countOracle(countFunctionBodies)),
   },
   'imports': {
     typescript: fileProducer('imports', 'typescript', importsProcess, countOracle(countImports)),
@@ -259,14 +258,14 @@ export const PRODUCERS = {
     javascript: fileProducer('string-literals', 'javascript', stringLiteralsProcess, countOracle(countStringLiterals)),
   },
   'secret-candidates': {
-    typescript: fileProducer('secret-candidates', 'typescript', secretCandidatesProcess, CLASSIFICATION),
-    tsx: fileProducer('secret-candidates', 'tsx', secretCandidatesProcess, CLASSIFICATION),
-    javascript: fileProducer('secret-candidates', 'javascript', secretCandidatesProcess, CLASSIFICATION),
+    typescript: fileProducer('secret-candidates', 'typescript', secretCandidatesProcess, countOracle(countSecretCandidates)),
+    tsx: fileProducer('secret-candidates', 'tsx', secretCandidatesProcess, countOracle(countSecretCandidates)),
+    javascript: fileProducer('secret-candidates', 'javascript', secretCandidatesProcess, countOracle(countSecretCandidates)),
   },
   'security-candidates': {
-    typescript: fileProducer('security-candidates', 'typescript', securityCandidatesProcess, CLASSIFICATION),
-    tsx: fileProducer('security-candidates', 'tsx', securityCandidatesProcess, CLASSIFICATION),
-    javascript: fileProducer('security-candidates', 'javascript', securityCandidatesProcess, CLASSIFICATION),
+    typescript: fileProducer('security-candidates', 'typescript', securityCandidatesProcess, countOracle(countSecurityCandidates)),
+    tsx: fileProducer('security-candidates', 'tsx', securityCandidatesProcess, countOracle(countSecurityCandidates)),
+    javascript: fileProducer('security-candidates', 'javascript', securityCandidatesProcess, countOracle(countSecurityCandidates)),
   },
   // `ddl-declarations` was `schema-code`: DDL declarations parsed from code.
   // `sql` is the text-only supplier — the whole file is DDL (a migration), so
@@ -278,9 +277,9 @@ export const PRODUCERS = {
     sql: fileProducer('ddl-declarations', 'sql', ddlProcess, countOracle(countDdlOps, measuredDdlOps)),
   },
   'schema-usage': {
-    typescript: fileProducer('schema-usage', 'typescript', schemaUsageProcess, GATED),
-    tsx: fileProducer('schema-usage', 'tsx', schemaUsageProcess, GATED),
-    javascript: fileProducer('schema-usage', 'javascript', schemaUsageProcess, GATED),
+    typescript: fileProducer('schema-usage', 'typescript', schemaUsageProcess, countOracle(countSchemaUsage)),
+    tsx: fileProducer('schema-usage', 'tsx', schemaUsageProcess, countOracle(countSchemaUsage)),
+    javascript: fileProducer('schema-usage', 'javascript', schemaUsageProcess, countOracle(countSchemaUsage)),
   },
   // `schema-objects` — ORM `const <id> = pgTable('name', …)` bindings, the
   // identifier → SQL-name half of the known-table catalog's alias map. Text-only
@@ -306,20 +305,20 @@ export const PRODUCERS = {
     go: fileProducer('cross-language-entities', 'go', crossLangProcess, countOracle(countCrossLanguageEntities)),
   },
   'data-access-calls': {
-    typescript: fileProducer('data-access-calls', 'typescript', dataAccessProcess, CLASSIFICATION),
-    tsx: fileProducer('data-access-calls', 'tsx', dataAccessProcess, CLASSIFICATION),
-    javascript: fileProducer('data-access-calls', 'javascript', dataAccessProcess, CLASSIFICATION),
-    go: fileProducer('data-access-calls', 'go', dataAccessProcess, CLASSIFICATION),
+    typescript: fileProducer('data-access-calls', 'typescript', dataAccessProcess, countOracle(countDataAccessCalls)),
+    tsx: fileProducer('data-access-calls', 'tsx', dataAccessProcess, countOracle(countDataAccessCalls)),
+    javascript: fileProducer('data-access-calls', 'javascript', dataAccessProcess, countOracle(countDataAccessCalls)),
+    go: fileProducer('data-access-calls', 'go', dataAccessProcess, countOracle(countDataAccessCalls)),
   },
   'loop-queries': {
-    typescript: fileProducer('loop-queries', 'typescript', loopQueriesProcess, CLASSIFICATION),
-    tsx: fileProducer('loop-queries', 'tsx', loopQueriesProcess, CLASSIFICATION),
-    javascript: fileProducer('loop-queries', 'javascript', loopQueriesProcess, CLASSIFICATION),
+    typescript: fileProducer('loop-queries', 'typescript', loopQueriesProcess, countOracle(countLoopQueries)),
+    tsx: fileProducer('loop-queries', 'tsx', loopQueriesProcess, countOracle(countLoopQueries)),
+    javascript: fileProducer('loop-queries', 'javascript', loopQueriesProcess, countOracle(countLoopQueries)),
   },
   'dynamic-sql': {
-    typescript: fileProducer('dynamic-sql', 'typescript', dynamicSqlProcess, CLASSIFICATION),
-    tsx: fileProducer('dynamic-sql', 'tsx', dynamicSqlProcess, CLASSIFICATION),
-    javascript: fileProducer('dynamic-sql', 'javascript', dynamicSqlProcess, CLASSIFICATION),
+    typescript: fileProducer('dynamic-sql', 'typescript', dynamicSqlProcess, countOracle(countDynamicSql)),
+    tsx: fileProducer('dynamic-sql', 'tsx', dynamicSqlProcess, countOracle(countDynamicSql)),
+    javascript: fileProducer('dynamic-sql', 'javascript', dynamicSqlProcess, countOracle(countDynamicSql)),
   },
   'react-component': {
     typescript: fileProducer('react-component', 'typescript', reactComponentProcess, countOracle(countJsxElements, measuredJsxElements)),

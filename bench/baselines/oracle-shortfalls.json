@@ -27,12 +27,30 @@
         "recall-protocol": { "files": 1113, "expected": 15535, "actual": 6809 }
       }
     },
+    "data-access-calls": {
+      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one resolved DB call per call/template the provenance scan recognizes as a database operation. Residual = the large majority of calls/templates that are not DB calls.",
+      "corpora": {
+        "hhra-org": { "files": 525, "expected": 16992, "actual": 334 },
+        "blitz": { "files": 528, "expected": 9423, "actual": 119 },
+        "openstatus": { "files": 1980, "expected": 75573, "actual": 2187 },
+        "recall-protocol": { "files": 1416, "expected": 95724, "actual": 1848 }
+      }
+    },
     "ddl-declarations": {
       "composition": "Oracle counts DDL statement headers (CREATE/DROP/ALTER TABLE) off source text; the producer emits one op per CREATE/DROP/ALTER-RENAME matched by its own DDL_RE. Residual = ALTER TABLE … ADD COLUMN/ADD CONSTRAINT headers, which the producer records in tableColumns rather than as an op.",
       "corpora": {
         "hhra-org": { "files": 10, "expected": 219, "actual": 91 },
         "openstatus": { "files": 46, "expected": 136, "actual": 17 },
         "recall-protocol": { "files": 88, "expected": 376, "actual": 59 }
+      }
+    },
+    "dynamic-sql": {
+      "composition": "Oracle counts `query(`/`execute(` call sites off source text; the producer emits one candidate only for the dangerous `${…}`/`+` forms that survive the parameterized-query and taint-safety filters. Residual = safe/parameterized query/execute calls.",
+      "corpora": {
+        "hhra-org": { "files": 36, "expected": 103, "actual": 0 },
+        "blitz": { "files": 1, "expected": 1, "actual": 0 },
+        "openstatus": { "files": 39, "expected": 87, "actual": 0 },
+        "recall-protocol": { "files": 13, "expected": 24, "actual": 0 }
       }
     },
     "export-form": {
@@ -62,6 +80,15 @@
         "recall-protocol": { "files": 99, "expected": 1847, "actual": 1338 }
       }
     },
+    "function-bodies": {
+      "composition": "Oracle counts the function node types `extractFunctions` projects; the producer emits one body per function in a DB-context file (gated by `passesFileGate`). Residual = functions in non-DB-context files (the gate is the producer's, not the count's).",
+      "corpora": {
+        "hhra-org": { "files": 406, "expected": 2538, "actual": 0 },
+        "blitz": { "files": 406, "expected": 2448, "actual": 16 },
+        "openstatus": { "files": 1368, "expected": 8063, "actual": 0 },
+        "recall-protocol": { "files": 881, "expected": 9000, "actual": 0 }
+      }
+    },
     "function-index": {
       "composition": "Oracle counts `function_declaration` + `arrow_function`; the producer emits an arrow only when bound to a variable declarator. Residual = bare callback arrows (legitimately skipped).",
       "corpora": {
@@ -78,6 +105,15 @@
         "openstatus": { "files": 60, "expected": 268, "actual": 207 }
       }
     },
+    "loop-queries": {
+      "composition": "Oracle counts loop nodes (for/for-in/while/do); the producer emits one candidate per loop whose body issues a DB call. Residual = loops with no DB call in the body.",
+      "corpora": {
+        "hhra-org": { "files": 56, "expected": 120, "actual": 5 },
+        "blitz": { "files": 31, "expected": 65, "actual": 0 },
+        "openstatus": { "files": 234, "expected": 508, "actual": 11 },
+        "recall-protocol": { "files": 641, "expected": 2665, "actual": 176 }
+      }
+    },
     "react-component": {
       "composition": "Oracle counts `jsx_element` + `jsx_self_closing_element` nodes; the producer sums each component's `jsxElementDetails` (one per JSX occurrence, nested included). Residual = JSX that sits outside a component.",
       "corpora": {
@@ -85,6 +121,33 @@
         "blitz": { "files": 28, "expected": 231, "actual": 159 },
         "openstatus": { "files": 91, "expected": 2678, "actual": 2362 },
         "recall-protocol": { "files": 37, "expected": 1607, "actual": 1539 }
+      }
+    },
+    "schema-usage": {
+      "composition": "Oracle counts `call_expression` + `string` + `template_string` nodes; the producer emits one fact per table reference parsed out of those containers. Residual = the large majority of strings/calls/templates that name no table reference.",
+      "corpora": {
+        "hhra-org": { "files": 599, "expected": 35810, "actual": 13 },
+        "blitz": { "files": 637, "expected": 17964, "actual": 0 },
+        "openstatus": { "files": 2242, "expected": 138856, "actual": 8 },
+        "recall-protocol": { "files": 1502, "expected": 164402, "actual": 1909 }
+      }
+    },
+    "secret-candidates": {
+      "composition": "Oracle counts `string` + `template_string` nodes; the producer emits one candidate per credential-position string (declarator/assignment/pair/call). Residual = strings outside a credential position.",
+      "corpora": {
+        "hhra-org": { "files": 597, "expected": 20051, "actual": 3481 },
+        "blitz": { "files": 627, "expected": 8992, "actual": 1582 },
+        "openstatus": { "files": 2219, "expected": 70424, "actual": 19849 },
+        "recall-protocol": { "files": 1488, "expected": 80213, "actual": 14903 }
+      }
+    },
+    "security-candidates": {
+      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one candidate per shell call / computed-require / sink-reaching template. Residual = the large majority of calls/templates that are not security-relevant.",
+      "corpora": {
+        "hhra-org": { "files": 525, "expected": 16992, "actual": 0 },
+        "blitz": { "files": 533, "expected": 9428, "actual": 14 },
+        "openstatus": { "files": 1902, "expected": 71726, "actual": 3 },
+        "recall-protocol": { "files": 1416, "expected": 95724, "actual": 24 }
       }
     },
     "style-declarations": {
