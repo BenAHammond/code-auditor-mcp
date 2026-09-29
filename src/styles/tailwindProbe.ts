@@ -838,7 +838,7 @@ export function flattenThemeSection(
 // ---------------------------------------------------------------------------
 
 /**
- * Add static Tailwind utility classes that exist regardless of theme.
+ * Static Tailwind utility classes that exist regardless of theme.
  *
  * These are the stable, well-defined utility class names from Tailwind's
  * core plugins (display, flexbox, grid, positioning, etc.). They don't
@@ -847,8 +847,7 @@ export function flattenThemeSection(
  * This is the minimum structure needed for v3 config-based generation.
  * v4 compile-probe bypasses this entirely.
  */
-function addStaticCoreUtilities(classes: Set<string>): void {
-  const core = [
+const STATIC_CORE_UTILITIES: readonly string[] = [
     // ── Display ──
     'block', 'inline-block', 'inline', 'flex', 'inline-flex', 'grid',
     'inline-grid', 'hidden', 'flow-root', 'contents', 'table', 'table-row',
@@ -1050,7 +1049,8 @@ function addStaticCoreUtilities(classes: Set<string>): void {
     'outline-none', 'outline', 'outline-dashed', 'outline-dotted', 'outline-double',
   ];
 
-  for (const cls of core) {
+function addStaticCoreUtilities(classes: Set<string>): void {
+  for (const cls of STATIC_CORE_UTILITIES) {
     classes.add(cls);
   }
 }
