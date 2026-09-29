@@ -786,6 +786,62 @@ const SCHEMA_DDL = `
 // ── Main class ──────────────────────────────────────────────────────────
 
 /**
+ * Apply the metadata facet of a search filter to a single function document.
+ * Returns true when the document satisfies every populated metadata facet
+ * (entity/component type, hook/prop substring, dependency/caller/callee/module
+ * substrings, unused-import presence). Extracted from `applyFilters` to keep
+ * that method's cyclomatic complexity under the method-complexity ceiling.
+ */
+function matchesMetadataFilter(
+  doc: FunctionDocument,
+  m: NonNullable<NonNullable<SearchOptions['filters']>['metadata']>
+): boolean {
+  if (!doc.metadata) return false;
+  if (m.entityType && doc.metadata.entityType !== m.entityType) return false;
+  if (m.componentType && doc.metadata.componentType !== m.componentType) return false;
+  if (m.hasHook) {
+    if (!doc.metadata.hooks) return false;
+    const found = (doc.metadata.hooks as any[]).some((h: any) =>
+      h.name?.toLowerCase().includes(m.hasHook!.toLowerCase()));
+    if (!found) return false;
+  }
+  if (m.hasProp) {
+    if (!doc.metadata.props) return false;
+    const found = (doc.metadata.props as any[]).some((p: any) =>
+      p.name?.toLowerCase().includes(m.hasProp!.toLowerCase()));
+    if (!found) return false;
+  }
+  if (m.usesDependency) {
+    const dep = m.usesDependency.toLowerCase();
+    const inFile = doc.dependencies.some(d => d.toLowerCase().includes(dep));
+    const inFunc = (doc.metadata.usedImports as string[] | undefined)?.some(i => i.toLowerCase().includes(dep)) ?? false;
+    if (!inFile && !inFunc) return false;
+  }
+  if (m.callsFunction) {
+    const target = m.callsFunction.toLowerCase();
+    const calls = doc.metadata.functionCalls as string[] | undefined;
+    if (!calls || !calls.some(c => c.toLowerCase().includes(target))) return false;
+  }
+  if (m.calledByFunction) {
+    const caller = m.calledByFunction.toLowerCase();
+    const calledBy = doc.metadata.calledBy as string[] | undefined;
+    if (!calledBy || !calledBy.some(c => c.toLowerCase().includes(caller))) return false;
+  }
+  if (m.dependsOnModule) {
+    const mod = m.dependsOnModule.toLowerCase();
+    const inFile2 = doc.filePath.toLowerCase().includes(mod);
+    const inDep = doc.dependencies.some(d => d.toLowerCase().includes(mod));
+    const inCall = (doc.metadata.functionCalls as string[] | undefined)?.some(c => c.toLowerCase().includes(mod)) ?? false;
+    if (!inFile2 && !inDep && !inCall) return false;
+  }
+  if (m.hasUnusedImports) {
+    const unused = doc.metadata.unusedImports as any[] | undefined;
+    if (!unused || unused.length === 0) return false;
+  }
+  return true;
+}
+
+/**
  * SQLite-backed code index storing functions, whitelist entries, audit
  * results, analyzer configs, code maps, schemas, project tasks, and coverage
  * data for a single project.
@@ -3104,52 +3160,7 @@ export class CodeIndexDB {
       );
     }
     if (filters.metadata) {
-      filtered = filtered.filter(doc => {
-        if (!doc.metadata) return false;
-        const m = filters.metadata!;
-        if (m.entityType && doc.metadata.entityType !== m.entityType) return false;
-        if (m.componentType && doc.metadata.componentType !== m.componentType) return false;
-        if (m.hasHook) {
-          if (!doc.metadata.hooks) return false;
-          const found = (doc.metadata.hooks as any[]).some((h: any) =>
-            h.name?.toLowerCase().includes(m.hasHook!.toLowerCase()));
-          if (!found) return false;
-        }
-        if (m.hasProp) {
-          if (!doc.metadata.props) return false;
-          const found = (doc.metadata.props as any[]).some((p: any) =>
-            p.name?.toLowerCase().includes(m.hasProp!.toLowerCase()));
-          if (!found) return false;
-        }
-        if (m.usesDependency) {
-          const dep = m.usesDependency.toLowerCase();
-          const inFile = doc.dependencies.some(d => d.toLowerCase().includes(dep));
-          const inFunc = (doc.metadata.usedImports as string[] | undefined)?.some(i => i.toLowerCase().includes(dep)) ?? false;
-          if (!inFile && !inFunc) return false;
-        }
-        if (m.callsFunction) {
-          const target = m.callsFunction.toLowerCase();
-          const calls = doc.metadata.functionCalls as string[] | undefined;
-          if (!calls || !calls.some(c => c.toLowerCase().includes(target))) return false;
-        }
-        if (m.calledByFunction) {
-          const caller = m.calledByFunction.toLowerCase();
-          const calledBy = doc.metadata.calledBy as string[] | undefined;
-          if (!calledBy || !calledBy.some(c => c.toLowerCase().includes(caller))) return false;
-        }
-        if (m.dependsOnModule) {
-          const mod = m.dependsOnModule.toLowerCase();
-          const inFile2 = doc.filePath.toLowerCase().includes(mod);
-          const inDep = doc.dependencies.some(d => d.toLowerCase().includes(mod));
-          const inCall = (doc.metadata.functionCalls as string[] | undefined)?.some(c => c.toLowerCase().includes(mod)) ?? false;
-          if (!inFile2 && !inDep && !inCall) return false;
-        }
-        if (m.hasUnusedImports) {
-          const unused = doc.metadata.unusedImports as any[] | undefined;
-          if (!unused || unused.length === 0) return false;
-        }
-        return true;
-      });
+      filtered = filtered.filter(doc => matchesMetadataFilter(doc, filters.metadata!));
     }
     return filtered;
   }
