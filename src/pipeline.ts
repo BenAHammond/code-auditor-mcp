@@ -278,7 +278,6 @@ export async function runStage2(
   visitorDurationMs: Map<string, number>;
   fileCount: number;
 }> {
-  const t0 = performance.now();
   const visitorResults = new Map<string, AnalyzerResult>();
   const allFacts = new Map<string, Record<string, unknown>>();
   const indexFacts: IndexFactsEntry[] = [];
@@ -448,7 +447,28 @@ export async function runStage2(
   }
 
   // Finalize results
-  const totalDuration = performance.now() - t0;
+  finalizeStage2Visitors(visitorResults, timingMap, errors, visitors);
+
+  return {
+    visitorResults,
+    allFacts,
+    indexFacts,
+    visitorDurationMs: timingMap,
+    fileCount: i,
+  };
+}
+
+/**
+ * Finalize stage-2 visitor results: attach per-visitor execution time, surface
+ * collected errors, and convert extension-declaring visitors that matched zero
+ * files to `notRun`.
+ */
+function finalizeStage2Visitors(
+  visitorResults: Map<string, AnalyzerResult>,
+  timingMap: Map<string, number>,
+  errors: Map<string, Array<{ file: string; error: string }>>,
+  visitors: Stage2Visitor[],
+): void {
   for (const [name, result] of visitorResults) {
     const visitorTime = timingMap.get(name) ?? 0;
     result.executionTime = visitorTime;
@@ -475,14 +495,6 @@ export async function runStage2(
       }
     }
   }
-
-  return {
-    visitorResults,
-    allFacts,
-    indexFacts,
-    visitorDurationMs: timingMap,
-    fileCount: i,
-  };
 }
 
 // ── Stage 3: Corpus reducers ───────────────────────────────────────────────
