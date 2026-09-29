@@ -722,91 +722,7 @@ program
       // blocks; there is no configurable gate.
       const { blocking, resolutionGaps } = computeGatingDecision(violations as any, BLOCKING_SEVERITIES);
 
-      // JSON output
-      if (options.format === 'sarif') {
-        const { generateSARIFReport, readVersionControlProvenance } = await import('./reporting/sarifReportGenerator.js');
-        const projectDir = resolve(options.path || process.cwd());
-        const sarifOutput = generateSARIFReport(result, { rootDir: projectDir, ...readVersionControlProvenance(projectDir) });
-        process.stdout.write(sarifOutput + '\n');
-      } else if (options.json) {
-        const projectDir = resolve(options.path || process.cwd());
-        const jsonViolations = violations.map((v: any) => {
-          // Compute relative path if file resolves inside the project
-          let filePath = v.file || '';
-          if (filePath.startsWith('/') || filePath.startsWith('\\\\')) {
-            const rel = relative(projectDir, filePath);
-            // Only use relative path if it doesn't escape the project
-            if (!rel.startsWith('..') && !isAbsolute(rel)) {
-              filePath = rel;
-            }
-          }
-          // Find column: prefer explicit column, then start.column, then default to 1
-          const col = v.column ?? v.start?.column ?? 1;
-          return {
-            analyzer: v.analyzer || '',
-            rule: v.rule,
-            severity: v.severity,
-            message: v.message,
-            file: filePath,
-            line: v.line ?? v.start?.line,
-            column: col,
-            endLine: v.end?.line,
-            endColumn: v.end?.column,
-            enclosingSymbol: v.symbol || v.enclosingFunction || '',
-            suggestion: v.suggestion || '',
-            details: v.details || '',
-            ...(v.new !== undefined && { new: v.new }),
-            ...(v.dismissed !== undefined && { dismissed: v.dismissed }),
-            fingerprint: fingerprint(buildFingerprintInput(v))
-          };
-        });
-        // Coverage diagnostics ride alongside violations so an agent sees "the
-        // analyzer couldn't resolve this" without a metadata flag — and without
-        // it ever gating (diagnostics never reach computeGatingDecision).
-        const jsonDiagnostics = (result.metadata?.diagnostics ?? []).map((d: any) => ({
-          analyzer: d.analyzerName ?? d.analyzer ?? '',
-          kind: d.kind,
-          message: d.message,
-          ...(d.file ? { file: d.file } : {}),
-          ...(typeof d.line === 'number' ? { line: d.line } : {}),
-          ...(d.details ? { details: d.details } : {}),
-        }));
-        const jsonOutput = { violations: jsonViolations, diagnostics: jsonDiagnostics };
-        process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
-      } else if (!options.quiet || violations.length > 0) {
-        // Console output — Spec 45 A2: agent-facing output emits counts (per
-        // analyzer/rule/severity, plus the before/after gate figure) alongside
-        // findings. The hook and the `changed` command are the agent's surface.
-        console.log(chalk.blue('🔍 Diff-Scoped Code Audit'));
-        console.log(chalk.gray('══════════════════════════════════════════════════'));
-        printFileAccounting(result, !!options.explainSkipped);
-
-        if (violations.length > 0) {
-          console.log('');
-          printCountSummary(violations);
-          console.log(chalk.bold(`gate before/after: ${violations.length} → ${blocking.length} blocking`));
-          if (dismissedCount > 0) {
-            console.log(chalk.dim(`  ${dismissedCount} dismissed — still counted above, excluded from the gate`));
-          }
-          console.log(chalk.gray('── Violations ────────────────────────────────────'));
-          for (const v of violations) {
-            const icon =
-              v.severity === 'critical' ? '🔴' :
-              v.severity === 'severe' ? '🟠' : '🟡';
-            const statusTag = (v as any).new === false
-              ? chalk.dim(' [known — still open]')
-              : '';
-            const dismissedTag = v.dismissed
-              ? chalk.dim(' [dismissed]')
-              : '';
-            console.log(
-              `${icon} ${chalk.bold(v.file)}${lineSuffix(v.line)} [${v.severity}] ${v.message}${statusTag}${dismissedTag}`
-            );
-          }
-        } else {
-          console.log(chalk.green('\n✓ No readings.'));
-        }
-      }
+      await emitChangedOutput(result, violations, blocking, dismissedCount, options);
 
       // Spec 38 R2/R3 — per-rule timing + gate cpu-time, opt-in by env var.
       // Emitted to stderr so it never corrupts --json stdout. Slowest rule first.
@@ -877,6 +793,104 @@ program
       process.exit(1);
     }
   });
+
+/**
+ * Emit the changed-audit output (SARIF, JSON, or console) for the hook surface.
+ * The SARIF branch dynamically imports its generator, so this is async.
+ */
+async function emitChangedOutput(
+  result: any,
+  violations: any[],
+  blocking: any[],
+  dismissedCount: number,
+  options: Record<string, any>,
+): Promise<void> {
+  // JSON output
+  if (options.format === 'sarif') {
+    const { generateSARIFReport, readVersionControlProvenance } = await import('./reporting/sarifReportGenerator.js');
+    const projectDir = resolve(options.path || process.cwd());
+    const sarifOutput = generateSARIFReport(result, { rootDir: projectDir, ...readVersionControlProvenance(projectDir) });
+    process.stdout.write(sarifOutput + '\n');
+  } else if (options.json) {
+    const projectDir = resolve(options.path || process.cwd());
+    const jsonViolations = violations.map((v: any) => {
+      // Compute relative path if file resolves inside the project
+      let filePath = v.file || '';
+      if (filePath.startsWith('/') || filePath.startsWith('\\\\')) {
+        const rel = relative(projectDir, filePath);
+        // Only use relative path if it doesn't escape the project
+        if (!rel.startsWith('..') && !isAbsolute(rel)) {
+          filePath = rel;
+        }
+      }
+      // Find column: prefer explicit column, then start.column, then default to 1
+      const col = v.column ?? v.start?.column ?? 1;
+      return {
+        analyzer: v.analyzer || '',
+        rule: v.rule,
+        severity: v.severity,
+        message: v.message,
+        file: filePath,
+        line: v.line ?? v.start?.line,
+        column: col,
+        endLine: v.end?.line,
+        endColumn: v.end?.column,
+        enclosingSymbol: v.symbol || v.enclosingFunction || '',
+        suggestion: v.suggestion || '',
+        details: v.details || '',
+        ...(v.new !== undefined && { new: v.new }),
+        ...(v.dismissed !== undefined && { dismissed: v.dismissed }),
+        fingerprint: fingerprint(buildFingerprintInput(v))
+      };
+    });
+    // Coverage diagnostics ride alongside violations so an agent sees "the
+    // analyzer couldn't resolve this" without a metadata flag — and without
+    // it ever gating (diagnostics never reach computeGatingDecision).
+    const jsonDiagnostics = (result.metadata?.diagnostics ?? []).map((d: any) => ({
+      analyzer: d.analyzerName ?? d.analyzer ?? '',
+      kind: d.kind,
+      message: d.message,
+      ...(d.file ? { file: d.file } : {}),
+      ...(typeof d.line === 'number' ? { line: d.line } : {}),
+      ...(d.details ? { details: d.details } : {}),
+    }));
+    const jsonOutput = { violations: jsonViolations, diagnostics: jsonDiagnostics };
+    process.stdout.write(JSON.stringify(jsonOutput, null, 2) + '\n');
+  } else if (!options.quiet || violations.length > 0) {
+    // Console output — Spec 45 A2: agent-facing output emits counts (per
+    // analyzer/rule/severity, plus the before/after gate figure) alongside
+    // findings. The hook and the `changed` command are the agent's surface.
+    console.log(chalk.blue('🔍 Diff-Scoped Code Audit'));
+    console.log(chalk.gray('══════════════════════════════════════════════════'));
+    printFileAccounting(result, !!options.explainSkipped);
+
+    if (violations.length > 0) {
+      console.log('');
+      printCountSummary(violations);
+      console.log(chalk.bold(`gate before/after: ${violations.length} → ${blocking.length} blocking`));
+      if (dismissedCount > 0) {
+        console.log(chalk.dim(`  ${dismissedCount} dismissed — still counted above, excluded from the gate`));
+      }
+      console.log(chalk.gray('── Violations ────────────────────────────────────'));
+      for (const v of violations) {
+        const icon =
+          v.severity === 'critical' ? '🔴' :
+          v.severity === 'severe' ? '🟠' : '🟡';
+        const statusTag = (v as any).new === false
+          ? chalk.dim(' [known — still open]')
+          : '';
+        const dismissedTag = v.dismissed
+          ? chalk.dim(' [dismissed]')
+          : '';
+        console.log(
+          `${icon} ${chalk.bold(v.file)}${lineSuffix(v.line)} [${v.severity}] ${v.message}${statusTag}${dismissedTag}`
+        );
+      }
+    } else {
+      console.log(chalk.green('\n✓ No readings.'));
+    }
+  }
+}
 
 // Spec 45 A2 — counts are emitted where useful (per analyzer, per rule, per
 // severity), on agent-facing surfaces as well as human ones. This reverts Spec
