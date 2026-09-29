@@ -2505,7 +2505,7 @@ function findEnclosingLoop(
     }
 
     // Check for iterator callbacks (.forEach, .map, .filter, etc.)
-    if (isIteratorCallback(parent, adapter, sourceCode)) {
+    if (isIteratorCallback(parent, current, adapter, sourceCode)) {
       foundLoops.push(parent);
     }
 
@@ -2526,8 +2526,22 @@ function findEnclosingLoop(
  * R4.1: Check if a node is a call_expression invoking an iterator method
  * (.forEach, .map, .filter, .reduce, .some, .every) — these create
  * implicit loops where a DB query inside the callback is an N+1 risk.
+ *
+ * `child` is the node one level below `node` on the walk-up path from the query.
+ * An iterator call only encloses the query when the query sits *inside the
+ * callback argument* (an arrow/function expression), not when the query is the
+ * *subject* the method is called on. `this.db.prepare(sql).all().map(r => …)`
+ * runs the query once and maps the rows in memory — a single query, not an N+1
+ * — yet without this check the `.map` call would read as an enclosing loop
+ * because the query is a descendant of the call expression. Only a query inside
+ * the callback body executes once per iteration.
  */
-function isIteratorCallback(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+function isIteratorCallback(
+  node: ASTNode,
+  child: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
   // Must be a call_expression
   if (adapter.getNodeType(node) !== 'call_expression') return false;
 
@@ -2550,7 +2564,17 @@ function isIteratorCallback(node: ASTNode, adapter: LanguageAdapter, sourceCode:
   // here returned '' for every node, so iterator callbacks were never matched.
   const propText = adapter.getNodeText(propertyNode, sourceCode);
 
-  return iteratorMethods.includes(propText);
+  if (!iteratorMethods.includes(propText)) return false;
+
+  // The direct child on the path from the query must be the call's `arguments`
+  // list (the callback), not the callee/subject the method is invoked on. The
+  // child is the immediate descendant of the call_expression that the query sits
+  // under: `arguments` when the query is inside the callback, the `member_expression`
+  // callee when the query is the *subject* (`db.prepare(sql).all().map(r => …)`
+  // runs once and maps rows in memory). Checking the child's node type directly —
+  // rather than the callback function's — is what survives the `arguments` node
+  // tree-sitter inserts between the call and its arrow/function argument.
+  return adapter.getNodeType(child) === 'arguments';
 }
 
 /**

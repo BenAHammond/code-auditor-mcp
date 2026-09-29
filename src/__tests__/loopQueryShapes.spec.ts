@@ -123,3 +123,34 @@ export async function uniquifyHandle(base: string): Promise<string> {
     expect((await loopQueryViolations(code, 'auth-uniqueness-probe')).length).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('loop-query — iterator-callback subject vs body (Spec 68 §13.1)', () => {
+  // §13.1 widened verify:self and exposed two false positives in this repo:
+  // `codeIndexDB.ts`'s `SqliteCollectionAdapter.find` wraps a single
+  // `db.prepare(…).all()` in `.map(r => this.unbindRow(r))` — the query runs once
+  // and its *rows* are mapped in memory. `findEnclosingLoop` treated the `.map`
+  // call as an enclosing loop because the query is a descendant of the call
+  // expression, so a one-query method read as an N+1. The fix narrows the
+  // iterator-callback loop to the case where the query sits *inside the callback
+  // argument*, not in the subject the method is invoked on.
+  it('does not fire when the query is the subject of .map (rows mapped in memory)', async () => {
+    const code = `import { db } from './db';
+export function loadAll() {
+  return db.prepare('SELECT * FROM items').all()
+    .map((r: any) => ({ id: r.id }));
+}
+`;
+    expect(await loopQueryViolations(code, 'map-subject')).toEqual([]);
+  });
+
+  it('still fires when the query is inside the .forEach callback (per-iteration)', async () => {
+    const code = `import { db } from './db';
+export function processRows(ids: string[]) {
+  ids.forEach((id) => {
+    db.prepare('SELECT * FROM items WHERE id = ?').bind(id).all();
+  });
+}
+`;
+    expect((await loopQueryViolations(code, 'foreach-body')).length).toBeGreaterThanOrEqual(1);
+  });
+});
