@@ -2,8 +2,9 @@
  * Spec 33 Item 15 — verify:self.
  *
  * The self-audit gate: run the analyzer against its own production source
- * (`src/analyzers/**` and `src/languages/**`) and assert zero *blocking*
- * violations (severity `critical`, `severe`, or `high`).
+ * (everything under `src/` — Spec 68 §13.1 widened the scope from
+ * `analyzers/`+`languages/` to the whole shipped product) and assert zero
+ * *blocking* violations (severity `critical`, `severe`, or `high`).
  *
  * This is the ratchet that makes the Spec 33 board's "self-audit to zero"
  * target a hard, machine-checked invariant instead of a claim in an evidence
@@ -20,8 +21,9 @@
  * (file, rule) pair — never by relabelling their severity, which would make the
  * tier silently optional. `off` is a config state, never an emitted finding.
  *
- * The scoped filter mirrors the board's production scope exactly: only files
- * under `analyzers/` or `languages/`, excluding tests, specs, and fixtures.
+ * The scoped filter (Spec 68 §13.1) covers the whole `src/` product, excluding
+ * the tool's own test corpus and fixture corpora by directory and by extension
+ * — never by rule (see `inScope` in verify-self-core.mjs).
  *
  * Usage (from app/):
  *   npm run build && npm run verify:self
@@ -49,6 +51,11 @@ if (!existsSync(CLI)) {
   console.error('verify:self: dist/cli.js not found — run `npm run build` first.');
   process.exit(1);
 }
+
+// The self-audit runs `--path src` from the app root, so every reported path is
+// `<APP_ROOT>/src/…`. Anchor the scope filter on that root (not the last `/src/`
+// segment) so a foreign `…/src/` elsewhere on disk is never treated as in-scope.
+const APP_ROOT = process.cwd();
 
 // --- Run the self-audit ------------------------------------------------------
 const outDir = mkdtempSync(join(tmpdir(), 'ca-verify-self-'));
@@ -78,7 +85,7 @@ for (const analyzerName of Object.keys(report.analyzerResults ?? {})) {
   const result = report.analyzerResults[analyzerName];
   const violations = result.violations ?? result.findings ?? [];
   for (const v of violations) {
-    if (!inScope(v.file ?? '')) continue;
+    if (!inScope(v.file ?? '', APP_ROOT)) continue;
     if (!isBlockingSeverity(v)) continue;
     // One field, one meaning: every violation carries a canonical `rule` (the Go
     // phase rules now emit it, matching the TS pipeline). A finding without a
@@ -88,7 +95,7 @@ for (const analyzerName of Object.keys(report.analyzerResults ?? {})) {
       throw new Error(`verify:self: violation missing canonical rule: ${JSON.stringify(v)}`);
     }
     const ruleName = v.rule;
-    const rel = scopedPath(v.file ?? '');
+    const rel = scopedPath(v.file ?? '', APP_ROOT);
     if (isScopedExempt(rel, ruleName)) {
       matchedExemptions.add(scopedExemptionKey(rel, ruleName));
       continue;
@@ -101,7 +108,7 @@ for (const analyzerName of Object.keys(report.analyzerResults ?? {})) {
 
 // --- Report ------------------------------------------------------------------
 console.log('');
-console.log('verify:self — scoped blocking violations (analyzers/ + languages/, severity ≥ high)');
+console.log('verify:self — scoped blocking violations (whole src/ product, severity ≥ high)');
 console.log(`  total: ${total}`);
 console.log('');
 console.log('  by analyzer:');

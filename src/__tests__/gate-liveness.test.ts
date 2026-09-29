@@ -77,14 +77,23 @@ describe('verify:self — blocking-severity predicate', () => {
 
 describe('verify:self — scope filter and exemptions', () => {
   it('includes production source and excludes data tables / tests / out-of-scope paths', () => {
-    expect(inScope('/app/src/analyzers/universal/UniversalSOLIDAnalyzer.ts')).toBe(true);
-    expect(inScope('/app/src/languages/LanguageRegistry.ts')).toBe(true);
+    expect(inScope('/app/src/analyzers/universal/UniversalSOLIDAnalyzer.ts', '/app')).toBe(true);
+    expect(inScope('/app/src/languages/LanguageRegistry.ts', '/app')).toBe(true);
+    // Spec 68 §13.1 — the whole src/ product is in scope, not just analyzers/ + languages/.
+    expect(inScope('/app/src/cli.ts', '/app')).toBe(true);
+    expect(inScope('/app/src/foo.ts', '/app')).toBe(true);
     // The single declarative data-table exclusion.
-    expect(inScope('/app/src/analyzers/ruleRegistry.ts')).toBe(false);
-    // Tests / fixtures / out-of-tree paths.
-    expect(inScope('/app/src/analyzers/foo.spec.ts')).toBe(false);
-    expect(inScope('/app/src/foo.ts')).toBe(false);
-    expect(inScope('/no/src/segment.ts')).toBe(false);
+    expect(inScope('/app/src/analyzers/ruleRegistry.ts', '/app')).toBe(false);
+    // Test corpus + fixture corpora — excluded by directory and by extension.
+    expect(inScope('/app/src/analyzers/foo.spec.ts', '/app')).toBe(false);
+    expect(inScope('/app/src/analyzers/foo.test.ts', '/app')).toBe(false);
+    expect(inScope('/app/src/foo.test-d.ts', '/app')).toBe(false);
+    expect(inScope('/app/src/__tests__/x.spec.ts', '/app')).toBe(false);
+    expect(inScope('/app/src/analyzers/__tests__/y.ts', '/app')).toBe(false);
+    expect(inScope('/app/src/fixtures/z.ts', '/app')).toBe(false);
+    // Out-of-tree paths (dev tooling, not the shipped src/ product).
+    expect(inScope('/app/scripts/x.mjs', '/app')).toBe(false);
+    expect(inScope('/no/src/segment.ts', '/app')).toBe(false);
   });
 
   it('exempts nothing — Spec 68 §13.1 empties the set, findings are fixed not exempted', () => {
@@ -108,9 +117,11 @@ describe('verify:self — scope filter and exemptions', () => {
   });
 
   it('strips the /src/ prefix to a repo-relative path', () => {
-    expect(scopedPath('/app/src/analyzers/a.ts')).toBe('analyzers/a.ts');
-    expect(scopedPath('/app/src/languages/go/x.go')).toBe('languages/go/x.go');
-    expect(scopedPath('/app/scripts/x.mjs')).toBeNull();
+    expect(scopedPath('/app/src/analyzers/a.ts', '/app')).toBe('analyzers/a.ts');
+    expect(scopedPath('/app/src/languages/go/x.go', '/app')).toBe('languages/go/x.go');
+    expect(scopedPath('/app/src/cli.ts', '/app')).toBe('cli.ts');
+    expect(scopedPath('/app/scripts/x.mjs', '/app')).toBeNull();
+    expect(scopedPath('/no/src/segment.ts', '/app')).toBeNull();
   });
 });
 
