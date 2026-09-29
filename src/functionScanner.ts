@@ -162,27 +162,7 @@ export function extractFunctionsFromSource(
 
   // Track re-exports - these imports are used even if not referenced in code
   const reExports = getReExports(root, content);
-  for (const reExport of reExports) {
-    // Find imports that match re-exported names
-    for (const imp of detailedImports) {
-      if (imp.importedName === reExport.name ||
-          (reExport.name === '*' && imp.modulePath === reExport.module)) {
-        // Mark this import as used for re-export
-        if (!fileUsageMap.has(imp.localName)) {
-          fileUsageMap.set(imp.localName, {
-            usageType: 'reexport',
-            usageCount: 1,
-            lineNumbers: []
-          });
-        } else {
-          const usage = fileUsageMap.get(imp.localName)!;
-          if (usage.usageType !== 'reexport') {
-            usage.usageType = 'reexport';
-          }
-        }
-      }
-    }
-  }
+  markReExports(fileUsageMap, reExports, detailedImports);
 
   // ── Shared extraction for the three function-like scans ────────────────
   // Function declarations, arrow functions, and class methods repeat the same
@@ -341,53 +321,137 @@ export function extractFunctionsFromSource(
   // Check if this is a React file and scan for components
   if (filePath.endsWith('.tsx') || filePath.endsWith('.jsx') ||
       (filePath.endsWith('.js') && dependencies.includes('react'))) {
+    scanReactComponents(functions, { root, content, filePath, dependencies, importNames, detailedImports, fileUsageMap, options });
+  }
 
-    // Walk all nodes for React components
-    walkAST(root, (node) => {
-      if (!isReactComponent(node, content)) return;
+  // Add file-level unused import analysis if configured
+  if (options?.unusedImportsConfig?.checkLevel === 'file' && functions.length > 0) {
+    scanFileLevelUnusedImports(functions, detailedImports, filePath, dependencies, options.unusedImportsConfig);
+  }
 
-      const componentType = detectComponentType(node, content);
-      if (!componentType) return;
+  return functions;
+}
 
-      const componentName = getComponentName(node, content);
-      const { line } = getLineAndColumn(node);
-      const endLine = node.location?.end?.line ?? line;
-
-      // Determine which node to use for prop extraction
-      // For arrow functions, use the parent variable declarator
-      let nodeForProps = node;
-      if (node.type === 'arrow_function' &&
-          node.parent && (node.parent.type === 'variable_declarator' ||
-            isVariableDecl(node.parent.type))) {
-        nodeForProps = node.parent;
+/**
+ * Mark imports that match re-exported names as used (reexport). Mutates the
+ * file-level usage map in place.
+ */
+function markReExports(
+  fileUsageMap: Map<string, any>,
+  reExports: any[],
+  detailedImports: any[],
+): void {
+  for (const reExport of reExports) {
+    // Find imports that match re-exported names
+    for (const imp of detailedImports) {
+      if (imp.importedName === reExport.name ||
+          (reExport.name === '*' && imp.modulePath === reExport.module)) {
+        // Mark this import as used for re-export
+        if (!fileUsageMap.has(imp.localName)) {
+          fileUsageMap.set(imp.localName, {
+            usageType: 'reexport',
+            usageCount: 1,
+            lineNumbers: []
+          });
+        } else {
+          const usage = fileUsageMap.get(imp.localName)!;
+          if (usage.usageType !== 'reexport') {
+            usage.usageType = 'reexport';
+          }
+        }
       }
+    }
+  }
+}
 
-      // Track which imports this component uses
-      const componentUsageMap = extractIdentifierUsage(node, content, importNames);
-      const usedImports = Array.from(componentUsageMap.keys());
+/**
+ * Scan a React file for components, folding each into the functions list
+ * (updating an existing function when the component was already indexed as a
+ * regular function, otherwise appending a new entry).
+ */
+function scanReactComponents(
+  functions: FunctionMetadata[],
+  ctx: {
+    root: ASTNode;
+    content: string;
+    filePath: string;
+    dependencies: string[];
+    importNames: Set<string>;
+    detailedImports: any[];
+    fileUsageMap: Map<string, any>;
+    options?: { unusedImportsConfig?: AuditOptions['unusedImportsConfig'] };
+  },
+): void {
+  const { root, content, filePath, dependencies, importNames, detailedImports, fileUsageMap, options } = ctx;
 
-      // Apply unused imports configuration
-      const cConfig = options?.unusedImportsConfig;
-      let unusedImports = detailedImports
-        .filter(imp => {
-          if ((imp.importType as any) === 'side-effect') return false;
-          if (componentUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
-          if (!cConfig?.includeTypeOnlyImports && imp.isTypeOnly) return false;
-          if (cConfig?.ignorePatterns?.some(pattern =>
-            imp.localName.match(new RegExp(pattern)))) return false;
-          return true;
-        })
-        .map(imp => imp.localName);
+  // Walk all nodes for React components
+  walkAST(root, (node) => {
+    if (!isReactComponent(node, content)) return;
 
-      // Check if we already indexed this as a regular function
-      const existingFunc = functions.find(f => f.name === componentName && f.lineNumber === line);
-      if (existingFunc) {
-        // Update the existing function with component metadata
-        existingFunc.purpose = `React ${componentType} component`;
+    const componentType = detectComponentType(node, content);
+    if (!componentType) return;
 
-        existingFunc.body = getComponentBody(node, content);
-        existingFunc.metadata = {
-          ...existingFunc.metadata,
+    const componentName = getComponentName(node, content);
+    const { line } = getLineAndColumn(node);
+    const endLine = node.location?.end?.line ?? line;
+
+    // Determine which node to use for prop extraction
+    // For arrow functions, use the parent variable declarator
+    let nodeForProps = node;
+    if (node.type === 'arrow_function' &&
+        node.parent && (node.parent.type === 'variable_declarator' ||
+          isVariableDecl(node.parent.type))) {
+      nodeForProps = node.parent;
+    }
+
+    // Track which imports this component uses
+    const componentUsageMap = extractIdentifierUsage(node, content, importNames);
+    const usedImports = Array.from(componentUsageMap.keys());
+
+    // Apply unused imports configuration
+    const cConfig = options?.unusedImportsConfig;
+    let unusedImports = detailedImports
+      .filter(imp => {
+        if ((imp.importType as any) === 'side-effect') return false;
+        if (componentUsageMap.has(imp.localName) || fileUsageMap.has(imp.localName)) return false;
+        if (!cConfig?.includeTypeOnlyImports && imp.isTypeOnly) return false;
+        if (cConfig?.ignorePatterns?.some(pattern =>
+          imp.localName.match(new RegExp(pattern)))) return false;
+        return true;
+      })
+      .map(imp => imp.localName);
+
+    // Check if we already indexed this as a regular function
+    const existingFunc = functions.find(f => f.name === componentName && f.lineNumber === line);
+    if (existingFunc) {
+      // Update the existing function with component metadata
+      existingFunc.purpose = `React ${componentType} component`;
+
+      existingFunc.body = getComponentBody(node, content);
+      existingFunc.metadata = {
+        ...existingFunc.metadata,
+        entityType: 'component',
+        componentType,
+        props: extractPropTypes(nodeForProps, content),
+        hooks: extractHooks(node, content),
+        jsxElements: extractJSXElements(node, content),
+        isExported: isComponentExported(node),
+        complexity: calculateComplexity(node),
+      };
+    } else {
+      // Add new component
+      functions.push({
+        name: componentName,
+        filePath,
+        lineNumber: line,
+        startLine: line,
+        endLine,
+        language: getLanguageFromPath(filePath),
+        dependencies,
+        purpose: `React ${componentType} component`,
+        context: `Located in ${path.basename(filePath)}`,
+        body: getComponentBody(node, content),
+        metadata: {
           entityType: 'component',
           componentType,
           props: extractPropTypes(nodeForProps, content),
@@ -395,84 +459,66 @@ export function extractFunctionsFromSource(
           jsxElements: extractJSXElements(node, content),
           isExported: isComponentExported(node),
           complexity: calculateComplexity(node),
-        };
-      } else {
-        // Add new component
-        functions.push({
-          name: componentName,
-          filePath,
-          lineNumber: line,
-          startLine: line,
-          endLine,
-          language: getLanguageFromPath(filePath),
-          dependencies,
-          purpose: `React ${componentType} component`,
-          context: `Located in ${path.basename(filePath)}`,
-          body: getComponentBody(node, content),
-          metadata: {
-            entityType: 'component',
-            componentType,
-            props: extractPropTypes(nodeForProps, content),
-            hooks: extractHooks(node, content),
-            jsxElements: extractJSXElements(node, content),
-            isExported: isComponentExported(node),
-            complexity: calculateComplexity(node),
-            usedImports,
-            unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
-            calledBy: [],
-            dependencies
-          }
-        });
-      }
-    });
-  }
-
-  // Add file-level unused import analysis if configured
-  if (options?.unusedImportsConfig?.checkLevel === 'file' && functions.length > 0) {
-    // Get all imports used across all functions in the file
-    const allUsedImports = new Set<string>();
-    for (const func of functions) {
-      if (func.metadata?.usedImports) {
-        for (const imp of func.metadata.usedImports) {
-          allUsedImports.add(imp);
-        }
-      }
-    }
-
-    // Calculate file-level unused imports
-    const flConfig = options.unusedImportsConfig;
-    const fileUnusedImports = detailedImports
-      .filter(imp => {
-        if (allUsedImports.has(imp.localName)) return false;
-        if (!flConfig?.includeTypeOnlyImports && imp.isTypeOnly) return false;
-        if (flConfig?.ignorePatterns?.some(pattern =>
-          imp.localName.match(new RegExp(pattern)))) return false;
-        return true;
-      })
-      .map(imp => imp.localName);
-
-    // Add a special file-level entry if there are unused imports
-    if (fileUnusedImports.length > 0) {
-      functions.push({
-        name: `[File-Level Analysis] ${path.basename(filePath)}`,
-        filePath,
-        lineNumber: 1,
-        language: getLanguageFromPath(filePath),
-        dependencies,
-        purpose: 'File-level unused imports analysis',
-        context: `File ${path.basename(filePath)} has unused imports at the file level`,
-        metadata: {
-          kind: 'file-analysis',
-          unusedImports: fileUnusedImports,
-          totalImports: detailedImports.length,
-          usedImportsCount: allUsedImports.size,
+          usedImports,
+          unusedImports: unusedImports.length > 0 ? unusedImports : undefined,
+          calledBy: [],
           dependencies
         }
       });
     }
+  });
+}
+
+/**
+ * Append a file-level unused-imports analysis entry when configured.
+ */
+function scanFileLevelUnusedImports(
+  functions: FunctionMetadata[],
+  detailedImports: any[],
+  filePath: string,
+  dependencies: string[],
+  flConfig: NonNullable<AuditOptions['unusedImportsConfig']>,
+): void {
+  // Get all imports used across all functions in the file
+  const allUsedImports = new Set<string>();
+  for (const func of functions) {
+    if (func.metadata?.usedImports) {
+      for (const imp of func.metadata.usedImports) {
+        allUsedImports.add(imp);
+      }
+    }
   }
 
-  return functions;
+  // Calculate file-level unused imports
+  const fileUnusedImports = detailedImports
+    .filter(imp => {
+      if (allUsedImports.has(imp.localName)) return false;
+      if (!flConfig?.includeTypeOnlyImports && imp.isTypeOnly) return false;
+      if (flConfig?.ignorePatterns?.some(pattern =>
+        imp.localName.match(new RegExp(pattern)))) return false;
+      return true;
+    })
+    .map(imp => imp.localName);
+
+  // Add a special file-level entry if there are unused imports
+  if (fileUnusedImports.length > 0) {
+    functions.push({
+      name: `[File-Level Analysis] ${path.basename(filePath)}`,
+      filePath,
+      lineNumber: 1,
+      language: getLanguageFromPath(filePath),
+      dependencies,
+      purpose: 'File-level unused imports analysis',
+      context: `File ${path.basename(filePath)} has unused imports at the file level`,
+      metadata: {
+        kind: 'file-analysis',
+        unusedImports: fileUnusedImports,
+        totalImports: detailedImports.length,
+        usedImportsCount: allUsedImports.size,
+        dependencies
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
