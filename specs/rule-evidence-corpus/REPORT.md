@@ -33,6 +33,13 @@ resolution (`one resolution fact + local binding`).
 | unfiltered-query | `tenant-scoping.ts:117` | quiet (generic scoping wrapper) | high | the *same* wrapper read is a filterless read of a tenant table, so the read half fires for the same R3 reason (surfaced by Fix 4) |
 | sql-injection-risk | `sql-injection-surface.ts:72` | `high` (escaped, hoisted) | `critical` | `.replace(/'/g, "''")` hoisted into `const safe = …`, so the interpolation `${safe}` no longer carries the escape — `isEscapedInterpolation` (which only looks at the interpolation node) misses it. Inline `.replace` (line 65) correctly reads `high`. |
 
+The three mechanisms are also pinned as minimal, single-purpose *motivating
+fixtures* at `src/__tests__/spec69-r3-motivating-fixtures.spec.ts` (Fix 6): a
+conditions array, a generic scoping wrapper, and a hoisted escape — each
+asserting the producer's current (unresolved) fact and the resulting false
+positive, with a `FLIP` marker on each assertion that becomes the acceptance
+signal when §69 R3 (#316) local binding resolution lands.
+
 ---
 
 ## Fixed this pass (Fix 1)
