@@ -1124,8 +1124,16 @@ function dbCallMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: s
  * DB methods that execute I/O immediately (as opposed to `.prepare()`/`.bind()`,
  * which only construct a statement object). Used to decide whether a
  * prepare/bind call is chained into an eager execution.
+ *
+ * `.get()` is the single-row read shared by better-sqlite3, `node:sqlite`, and
+ * `bun:sqlite` that D1 does not expose (D1's closest is `.first()`). It was
+ * absent, so `db.prepare(…).get(…)` in a loop was misread as statement
+ * construction and skipped — the exact false negative the corpus pins at
+ * `n-plus-one.ts:51`/`:62`. The wider driver-method gap (`.iterate()`, bun's
+ * `.values()`) is documented in specs/rule-evidence-corpus/REPORT.md; it is
+ * deliberately left out until it is measured, not silently dropped.
  */
-const EAGER_DB_METHODS = new Set(['run', 'all', 'first', 'raw', 'exec', 'batch', 'query']);
+const EAGER_DB_METHODS = new Set(['run', 'all', 'first', 'raw', 'exec', 'batch', 'query', 'get']);
 
 /**
  * True when `node` (a `.prepare()`/`.bind()` call) is chained into an eager
@@ -1165,8 +1173,8 @@ function hasEagerMethodInCallChain(node: ASTNode, adapter: LanguageAdapter, sour
 /**
  * True when a db-call node is statement construction only — a `.prepare()` /
  * `.bind()` that is not chained into an eager method (`.run()` / `.all()` /
- * `.first()` / `.raw()` / `.exec()` / `.batch()`). Such a call performs no I/O,
- * so it is not a query-in-loop on its own (Spec 52 R1).
+ * `.first()` / `.raw()` / `.exec()` / `.batch()` / `.get()`). Such a call
+ * performs no I/O, so it is not a query-in-loop on its own (Spec 52 R1).
  */
 function isStatementConstructionOnly(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
   const method = dbCallMethodName(node, adapter, sourceCode);
@@ -2161,7 +2169,7 @@ function collectLoopQueryCandidates(
     // fragment, not a query result (knex `sql.push(...this.aggregate(stmt))`).
     if (isSqlStringConstruction(node, adapter, sourceCode)) continue;
 
-    const loopInfo = findEnclosingLoop(node, adapter);
+    const loopInfo = findEnclosingLoop(node, adapter, sourceCode);
     if (!loopInfo) continue;
 
     // §13.1 (transaction-batched discriminator): a loop already wrapped in a
@@ -2474,7 +2482,8 @@ function isDbCallNode(
  */
 function findEnclosingLoop(
   node: ASTNode,
-  adapter: LanguageAdapter
+  adapter: LanguageAdapter,
+  sourceCode: string,
 ): { loopNode: ASTNode; depth: number } | null {
   let current: ASTNode | null = node;
   let depth = 0;
@@ -2490,7 +2499,7 @@ function findEnclosingLoop(
     }
 
     // Check for iterator callbacks (.forEach, .map, .filter, etc.)
-    if (isIteratorCallback(parent, adapter)) {
+    if (isIteratorCallback(parent, adapter, sourceCode)) {
       foundLoops.push(parent);
     }
 
@@ -2512,50 +2521,30 @@ function findEnclosingLoop(
  * (.forEach, .map, .filter, .reduce, .some, .every) — these create
  * implicit loops where a DB query inside the callback is an N+1 risk.
  */
-function isIteratorCallback(node: ASTNode, adapter: LanguageAdapter): boolean {
+function isIteratorCallback(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
   // Must be a call_expression
-  if (node.type !== 'call_expression') return false;
+  if (adapter.getNodeType(node) !== 'call_expression') return false;
 
   // Callee must be a member_expression whose property matches iterator method names
   const children = adapter.getChildren(node);
-  const callee = children.find(c => c.type === 'member_expression');
+  const callee = children.find(c => adapter.getNodeType(c) === 'member_expression');
   if (!callee) return false;
 
   const calleeChildren = adapter.getChildren(callee);
   const propertyNode = calleeChildren.find(c =>
-    c.type === 'property_identifier' || c.type === 'string'
+    adapter.getNodeType(c) === 'property_identifier' || adapter.getNodeType(c) === 'string'
   );
   if (!propertyNode) return false;
 
-  const methodName = adapter.getNodeType(propertyNode) === 'property_identifier'
-    ? (propertyNode as any).text ?? adapter.getNodeText(propertyNode, '')
-    : '';
-
-  // Normalize: the method name might come from the node type or need text extraction
   const iteratorMethods = ['forEach', 'map', 'filter', 'reduce', 'some', 'every', 'find', 'findIndex', 'flatMap'];
 
-  // Try multiple ways to get the method name
-  const propText = methodName || getPropertyName(propertyNode, adapter);
+  // The property text must come from the source slice (web-tree-sitter nodes
+  // carry no `.text`/`.name` payload; `getNodeText` with the real source is the
+  // established extraction — cf. `memberPropertyName`). Passing an empty string
+  // here returned '' for every node, so iterator callbacks were never matched.
+  const propText = adapter.getNodeText(propertyNode, sourceCode);
 
   return iteratorMethods.includes(propText);
-}
-
-/**
- * Extract the property name from a property_identifier node.
- */
-function getPropertyName(node: ASTNode, adapter: LanguageAdapter): string {
-  // Try named children
-  if ((node as any).name) return (node as any).name;
-  if ((node as any).text) return (node as any).text;
-
-  // Try to get it from children
-  const children = adapter.getChildren(node);
-  for (const child of children) {
-    if ((child as any).name) return (child as any).name;
-    if ((child as any).text) return (child as any).text;
-  }
-
-  return '';
 }
 
 /**

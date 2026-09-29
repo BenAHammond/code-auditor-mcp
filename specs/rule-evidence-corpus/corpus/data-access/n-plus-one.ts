@@ -17,8 +17,8 @@
  *
  * ── Expected verdicts (human, not the tool) ────────────────────────────────
  *   @fires loop-query 41 — for…of with a per-item `.prepare().all()`
- *   @fires loop-query 51 — forEach callback with a per-item `.prepare().get()` (tool misses it — `.get()` is not an eager method)
- *   @fires loop-query 62 — while loop with a per-item `.prepare().get()` (tool misses it — `.get()` is not an eager method)
+ *   @fires loop-query 51 — forEach callback with a per-item `.prepare().get()` (better-sqlite3 single-row read, outside D1's .all/.first/.run surface)
+ *   @fires loop-query 62 — while loop with a per-item `.prepare().get()` (better-sqlite3 single-row read, outside D1's .all/.first/.run surface)
  *   @fires loop-query 73 — nested loop (depth 2)
  *   @quiet loop-query 83 — statement construction only (prepare, no eager call)
  *   @quiet loop-query 93 — loop inside db.transaction is already batched

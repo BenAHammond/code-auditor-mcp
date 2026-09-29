@@ -335,7 +335,19 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
     expect(messages).toMatch(/nest|depth|2|inner/i);
   });
 
+  it('R4.1 — per-item .prepare().get() in a loop fires (§69 Fix 5)', async () => {
+    const file = join(FIXTURES, 'get-eager-loop.ts');
+    const result = await analyzer.analyze([file], { skipTestFiles: false });
+    expect(result.errors).toHaveLength(0);
 
+    const loopViolations = result.violations.filter(v => v.rule === 'loop-query');
+    expect(loopViolations.length).toBeGreaterThanOrEqual(1);
+
+    for (const v of loopViolations) {
+      expect(v.line).toBeGreaterThan(1);
+      expect(v.severity).toBe('severe');
+    }
+  });
 
 });
 
