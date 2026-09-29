@@ -88,30 +88,9 @@ export function validateRulesConfig(config: unknown): RuleValidationError[] {
 }
 
 /**
- * Validate a single rule for business-rule correctness.
+ * Validate the kind-specific fields for a rule. Mutates `errors` in place.
  */
-function validateRule(rule: InvariantRule): RuleValidationError[] {
-  const errors: RuleValidationError[] = [];
-
-  // Validate kind
-  const validKinds: RuleKind[] = ['import-ban', 'call-constraint', 'module-boundary', 'naming', 'ast-pattern', 'style-mechanism', 'no-raw-values'];
-  if (!validKinds.includes(rule.kind as RuleKind)) {
-    errors.push({
-      ruleId: rule.id,
-      message: `Invalid kind "${(rule as any).kind}". Must be one of: ${validKinds.join(', ')}`,
-    });
-    return errors; // can't validate kind-specific fields
-  }
-
-  // Validate severity
-  const validSeverities = ['critical', 'severe', 'high'];
-  if (!validSeverities.includes(rule.severity)) {
-    errors.push({
-      ruleId: rule.id,
-      message: `Invalid severity "${rule.severity}". Must be one of: ${validSeverities.join(', ')}`,
-    });
-  }
-
+function validateKindSpecific(rule: InvariantRule, errors: RuleValidationError[]): void {
   // Kind-specific validation
   switch (rule.kind) {
     case 'import-ban': {
@@ -287,18 +266,36 @@ function validateRule(rule: InvariantRule): RuleValidationError[] {
       break;
     }
   }
+}
 
+/**
+ * Validate a single rule for business-rule correctness.
+ */
+function validateRule(rule: InvariantRule): RuleValidationError[] {
+  const errors: RuleValidationError[] = [];
+
+  // Validate kind
+  const validKinds: RuleKind[] = ['import-ban', 'call-constraint', 'module-boundary', 'naming', 'ast-pattern', 'style-mechanism', 'no-raw-values'];
+  if (!validKinds.includes(rule.kind as RuleKind)) {
+    errors.push({
+      ruleId: rule.id,
+      message: `Invalid kind "${(rule as any).kind}". Must be one of: ${validKinds.join(', ')}`,
+    });
+    return errors; // can't validate kind-specific fields
+  }
+
+  // Validate severity
+  const validSeverities = ['critical', 'severe', 'high'];
+  if (!validSeverities.includes(rule.severity)) {
+    errors.push({
+      ruleId: rule.id,
+      message: `Invalid severity "${rule.severity}". Must be one of: ${validSeverities.join(', ')}`,
+    });
+  }
+
+  validateKindSpecific(rule, errors);
   // Check for unknown fields
-  const knownFields = new Set([
-    'id', 'kind', 'severity', 'message',
-    'module', 'except',           // import-ban
-    'callee', 'allowFrom', 'denyFrom', // call-constraint
-    'from', 'to',                 // module-boundary
-    'path', 'exports',            // naming
-    'pattern', 'language',         // ast-pattern
-    'allow',                       // style-mechanism
-    'properties', 'allowValues',   // no-raw-values
-  ]);
+
   const kindFields: Record<RuleKind, Set<string>> = {
     'import-ban': new Set(['id', 'kind', 'severity', 'message', 'module', 'except']),
     'call-constraint': new Set(['id', 'kind', 'severity', 'message', 'callee', 'allowFrom', 'denyFrom']),
