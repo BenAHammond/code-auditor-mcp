@@ -62,6 +62,7 @@ export interface FactShapes {
   'schema-usage': SchemaUsageFact[];
   'schema-objects': SchemaObject[];
   'style-declarations': StyleDeclarationsFile[];
+  'color-values': ColorValuesFact[];
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
   'loop-queries': LoopQueryFact[];
@@ -593,6 +594,26 @@ export type StylesDeclaration = {
   context: string | null;
   variantContext: string | null;
   tokenRef: string | null;
+};
+
+/**
+ * One color declaration's CIELAB conversion, pre-computed by the `color-values`
+ * corpus producer from `style-declarations` (Spec 69 R4). The
+ * `styles/value-drift` rule reads this fact instead of parsing raw color strings
+ * in its own body: `parseColorToRGB` + `rgbToLab` moved to the producer, so the
+ * rule's clustering and flagging decisions operate on pre-computed Lab triples.
+ */
+export type ColorValuesFact = {
+  property: string;
+  filePath: string;
+  line: number;
+  rawValue: string;
+  /** JSON.stringify(NormalizedValue) encoding, or null — mirrors StyleDeclRow. */
+  normalizedValue: string | null;
+  /** The sRGB triple ([0..255] per channel), for exact-value dedup. */
+  rgb: [number, number, number];
+  /** The CIELAB Lab triple (L, a, b), D65 reference white. */
+  lab: [number, number, number];
 };
 
 /** A design token (CSS custom property) defined in a stylesheet. */

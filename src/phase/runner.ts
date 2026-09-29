@@ -639,7 +639,11 @@ export async function analyzeStyles(
   facts: StyleDeclarationsFile[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  return analyzeWithRules(stylesRules, { 'style-declarations': facts }, ['css', 'scss', 'typescript', 'tsx', 'javascript'], thresholds);
+  // Spec 69 R4 — `styles/value-drift` reads the derived `color-values` fact, so
+  // the slice runner reduces it from `style-declarations` through the corpus
+  // producer (the same reduction `buildFacts` runs on the full phase path).
+  const colorValues = CORPUS_PRODUCERS['color-values'].process({ 'style-declarations': facts });
+  return analyzeWithRules(stylesRules, { 'style-declarations': facts, 'color-values': colorValues }, ['css', 'scss', 'typescript', 'tsx', 'javascript'], thresholds);
 }
 
 /**

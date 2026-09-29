@@ -47,6 +47,7 @@ import type {
   ClonePairHistoryFact,
   DefinedClassesFact,
   UnreadStyleSourceFact,
+  ColorValuesFact,
 } from './types.js';
 import {
   countOracle,
@@ -116,6 +117,7 @@ import { extractGoImports } from './goImports.js';
 import { extractErrorBindings, extractConcurrencyPrimitives, extractChannelOperations } from './goFunctionAnalysis.js';
 import { computeReachability } from './reachability.js';
 import { DEFAULT_VIRTUAL_MODULES } from '../graph/importClassification.js';
+import { parseColorToRGB, rgbToLab } from './colorMath.js';
 
 /**
  * Exhaustive over both axes: every file fact kind, then every supplying format.
@@ -498,6 +500,36 @@ export const CORPUS_PRODUCERS = {
       return buildSchemaValidations(facts['json-document']);
     },
   } satisfies CorpusProcessor<'schema-validations', readonly ['json-document']>,
+  // `color-values` reduces the `style-declarations` fact into the CIELAB-converted
+  // color set the `styles/value-drift` rule reads (Spec 69 R4). The conversion —
+  // raw string → sRGB → Lab — was the one computation R4 found still living in a
+  // rule body; it moves here so the rule's clustering and flagging read
+  // pre-computed Lab triples and never re-parse a color. `needs` forms the DAG
+  // edge style-declarations → color-values.
+  'color-values': {
+    id: 'color-values',
+    produces: 'color-values',
+    needs: ['style-declarations'],
+    process(facts): ColorValuesFact[] {
+      const out: ColorValuesFact[] = [];
+      for (const f of facts['style-declarations']) {
+        for (const d of f.declarations) {
+          const rgb = parseColorToRGB(d.rawValue);
+          if (!rgb) continue;
+          out.push({
+            property: d.property,
+            filePath: d.filePath,
+            line: d.line,
+            rawValue: d.rawValue,
+            normalizedValue: d.normalizedValue ? JSON.stringify(d.normalizedValue) : null,
+            rgb,
+            lab: rgbToLab(rgb),
+          });
+        }
+      }
+      return out;
+    },
+  } satisfies CorpusProcessor<'color-values', readonly ['style-declarations']>,
   // `reachability` reduces the `file-imports` fact into the reverse import
   // adjacency + package entry-point set (§8). It is the one corpus processor
   // that reads the `CorpusContext` — the discovery list, virtual-module list,
@@ -754,6 +786,7 @@ export const FACT_KINDS = {
   'schema-usage': true,
   'schema-objects': true,
   'style-declarations': true,
+  'color-values': true,
   'cross-language-entities': true,
   'data-access-calls': true,
   'loop-queries': true,

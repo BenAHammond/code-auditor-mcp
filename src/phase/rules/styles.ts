@@ -51,8 +51,10 @@ import type {
   StylesDeclaration,
   StylesClassUsage,
   DefinedClassesFact,
+  ColorValuesFact,
   ThresholdValues,
 } from '../types.js';
+import { labDistance } from '../colorMath.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 import { getTailwindExpander, type TailwindUtilityExpander } from '../../styles/tailwindUtilityExpander.js';
@@ -69,6 +71,14 @@ const META = RULE_REGISTRY;
 type StylesNeeds = {
   readonly formats: readonly ['css', 'scss', 'typescript', 'tsx', 'javascript'];
   readonly facts: readonly ['style-declarations'];
+};
+
+/** `value-drift` additionally reads the corpus-derived `color-values` fact
+ *  (Spec 69 R4) — the CIELAB conversion the producer computed — so it cannot
+ *  share `StylesNeeds`. Mirrors `undefinedClassRule`'s split below. */
+type ValueDriftNeeds = {
+  readonly formats: readonly ['css', 'scss', 'typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['style-declarations', 'color-values'];
 };
 
 // ── Config surface (re-declared from DEFAULT_STYLES_CONFIG) ─────────────────
@@ -207,93 +217,6 @@ const TRIVIAL_VALUES = new Set([
   '100%', '50%',
 ]);
 
-const COLOR_KEYWORDS = new Set([
-  'transparent', 'currentcolor', 'inherit', 'initial', 'unset', 'none',
-]);
-
-function rgbToLab([r, g, b]: [number, number, number]): [number, number, number] {
-  const linear = (c: number): number => {
-    const v = c / 255;
-    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
-  };
-  const lr = linear(r);
-  const lg = linear(g);
-  const lb = linear(b);
-
-  const x = lr * 0.4124564 + lg * 0.3575761 + lb * 0.1804375;
-  const y = lr * 0.2126729 + lg * 0.7151522 + lb * 0.0721750;
-  const z = lr * 0.0193339 + lg * 0.1191920 + lb * 0.9503041;
-
-  const XN = 0.95047;
-  const YN = 1.0;
-  const ZN = 1.08883;
-  const EPSILON = 0.008856;
-  const KAPPA = 903.3;
-  const f = (t: number): number =>
-    t > EPSILON ? Math.cbrt(t) : (KAPPA * t + 16) / 116;
-  const fx = f(x / XN);
-  const fy = f(y / YN);
-  const fz = f(z / ZN);
-
-  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
-}
-
-function parseColorToRGB(raw: string): [number, number, number] | null {
-  try {
-    let v = raw.toLowerCase().trim();
-
-    if (COLOR_KEYWORDS.has(v)) return null;
-
-    if (v.startsWith('#')) {
-      if (v.length === 4) {
-        v = '#' + v[1] + v[1] + v[2] + v[2] + v[3] + v[3];
-      }
-      if (v.length === 7) {
-        return [
-          parseInt(v.slice(1, 3), 16),
-          parseInt(v.slice(3, 5), 16),
-          parseInt(v.slice(5, 7), 16),
-        ];
-      }
-      if (v.length === 9) {
-        return [
-          parseInt(v.slice(1, 3), 16),
-          parseInt(v.slice(3, 5), 16),
-          parseInt(v.slice(5, 7), 16),
-        ];
-      }
-    }
-
-    const rgbMatch = v.match(/rgb\(\s*(\d+)\s*,?\s*(\d+)\s*,?\s*(\d+)\s*\)/);
-    if (rgbMatch) {
-      return [
-        parseInt(rgbMatch[1]),
-        parseInt(rgbMatch[2]),
-        parseInt(rgbMatch[3]),
-      ];
-    }
-
-    const named: Record<string, [number, number, number]> = {
-      'white': [255, 255, 255], 'black': [0, 0, 0],
-      'red': [255, 0, 0], 'blue': [0, 0, 255], 'green': [0, 128, 0],
-    };
-    if (named[v]) return named[v];
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function deltaE(a: [number, number, number], b: [number, number, number]): number {
-  const [la, aa, ba] = rgbToLab(a);
-  const [lb, ab, bb] = rgbToLab(b);
-  const dl = la - lb;
-  const da = aa - ab;
-  const db = ba - bb;
-  return Math.sqrt(dl * dl + da * da + db * db);
-}
-
 function isCategoricalByValues(decls: StyleDeclRow[]): boolean {
   for (const d of decls) {
     const v = d.raw_value.trim();
@@ -333,7 +256,11 @@ function nearestScaleValues(px: number, values: readonly number[]): [number, num
 interface ColorValue {
   value: string;
   rgb: [number, number, number];
-  decl: StyleDeclRow;
+  lab: [number, number, number];
+  filePath: string;
+  line: number;
+  property: string;
+  normalizedValue: string | null;
   count: number;
 }
 
@@ -354,7 +281,7 @@ function clusterDistinctColors(
   };
   for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
-      if (distance(values[i].rgb, values[j].rgb) < threshold) {
+      if (distance(values[i].lab, values[j].lab) < threshold) {
         const ri = find(i);
         const rj = find(j);
         if (ri !== rj) parent[ri] = rj;
@@ -384,14 +311,15 @@ function flagColorDriftMembers(
     )[0];
     for (const member of cluster) {
       if (member.value === canonical.value) continue;
-      const d = distance(member.rgb, canonical.rgb);
+      const d = distance(member.lab, canonical.lab);
+      const symbolValue = member.normalizedValue ?? member.value;
       out.push(report(
-        member.decl.file_path,
-        member.decl.line,
+        member.filePath,
+        member.line,
         `Color drift in "${property}": "${member.value}" is near-identical to "${canonical.value}" ` +
         `(used ${canonical.count} time${canonical.count === 1 ? '' : 's'}, ΔE = ${d.toFixed(2)}). ` +
         `Consider using "${canonical.value}".`,
-        { severity: 'high', rule: 'styles/value-drift', symbol: declValueKey(member.decl) },
+        { severity: 'high', rule: 'styles/value-drift', symbol: symbolValue ? `${member.property}: ${symbolValue}` : member.property },
       ));
     }
   }
@@ -400,41 +328,55 @@ function flagColorDriftMembers(
 
 function detectColorDrift(
   property: string,
-  decls: StyleDeclRow[],
+  colorDecls: ColorValuesFact[],
   cfg: StylesConfig,
   report: StylesViolationReporter,
 ): Finding[] {
   const byRgb = new Map<string, ColorValue>();
-  for (const d of decls) {
-    const rgb = parseColorToRGB(d.raw_value);
-    if (!rgb) continue;
-    const key = rgb.join(',');
+  for (const cv of colorDecls) {
+    const key = cv.rgb.join(',');
     const existing = byRgb.get(key);
     if (existing) {
       existing.count += 1;
     } else {
-      byRgb.set(key, { value: d.raw_value, rgb, decl: d, count: 1 });
+      byRgb.set(key, {
+        value: cv.rawValue,
+        rgb: cv.rgb,
+        lab: cv.lab,
+        filePath: cv.filePath,
+        line: cv.line,
+        property: cv.property,
+        normalizedValue: cv.normalizedValue,
+        count: 1,
+      });
     }
   }
   const values = [...byRgb.values()];
-  const clusters = clusterDistinctColors(values, cfg.colorDeltaE, deltaE);
+  const clusters = clusterDistinctColors(values, cfg.colorDeltaE, labDistance);
   const drift = clusters.filter((c) => c.length >= 2);
   if (drift.length === 0) return [];
-  return flagColorDriftMembers(drift, property, report, deltaE);
+  return flagColorDriftMembers(drift, property, report, labDistance);
 }
 
 function detectValueDrift(
   byProperty: Map<string, StyleDeclRow[]>,
+  colorValues: ColorValuesFact[],
   cfg: StylesConfig,
   report: StylesViolationReporter,
 ): Finding[] {
   const out: Finding[] = [];
   const exclusions = new Set(cfg.categoricalPropertyExclusions ?? []);
+  const byPropertyColors = new Map<string, ColorValuesFact[]>();
+  for (const cv of colorValues) {
+    const list = byPropertyColors.get(cv.property) ?? [];
+    list.push(cv);
+    byPropertyColors.set(cv.property, list);
+  }
   for (const [property, decls] of byProperty) {
     if (exclusions.has(property)) continue;
     if (isCategoricalByValues(decls)) continue;
     if (isColorProperty(property)) {
-      out.push(...detectColorDrift(property, decls, cfg, report));
+      out.push(...detectColorDrift(property, byPropertyColors.get(property) ?? [], cfg, report));
     }
   }
   return out;
@@ -876,10 +818,10 @@ function groupDeclarationsByProperty(declarations: StyleDeclRow[]): Map<string, 
 
 // ── The eight rules ─────────────────────────────────────────────────────────
 
-const valueDrift: RuleDefinition<StylesNeeds> = {
+const valueDrift: RuleDefinition<ValueDriftNeeds> = {
   id: 'styles/value-drift',
   analyzer: 'styles',
-  needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations'] },
+  needs: { formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'], facts: ['style-declarations', 'color-values'] },
   severity: 'high',
   message: META['styles/value-drift'].message,
   docs: META['styles/value-drift'].docs,
@@ -888,7 +830,7 @@ const valueDrift: RuleDefinition<StylesNeeds> = {
   analyze(ctx): Finding[] {
     const cfg = resolveStylesConfig(ctx.thresholds);
     const declarations = flattenDeclarations(ctx.facts['style-declarations']);
-    return detectValueDrift(groupDeclarationsByProperty(declarations), cfg, makeFinding);
+    return detectValueDrift(groupDeclarationsByProperty(declarations), ctx.facts['color-values'], cfg, makeFinding);
   },
 };
 
@@ -1213,8 +1155,10 @@ export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
 /** The eight pure-data styles rules this slice migrates, in registry order.
  *  `undefined-class` is exported separately (`undefinedClassRule`) — its
  *  `needs` adds the corpus `defined-classes` fact, so it cannot share this
- *  `StylesNeeds` array's tuple type. */
-export const stylesRules: readonly RuleDefinition<StylesNeeds>[] = [
+ *  `StylesNeeds` array's tuple type. `value-drift` (Spec 69 R4) likewise reads
+ *  the derived `color-values` fact, so the array's element type is the union of
+ *  the two `Needs` aliases rather than a single one. */
+export const stylesRules: readonly RuleDefinition<StylesNeeds | ValueDriftNeeds>[] = [
   valueDrift,
   offScale,
   tokenBypass,
