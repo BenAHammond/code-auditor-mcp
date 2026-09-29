@@ -1053,40 +1053,48 @@ export class CodeIndexDB {
     ).get() as { value: string } | undefined;
 
     const currentVersion = row ? parseInt(row.value, 10) : 0;
+    this.migrateCoreTables(currentVersion);
+    this.migrateConventionsExportKind(currentVersion);
+    this.migrateRunLifecycle(currentVersion);
+    this.migrateStyleCatalog(currentVersion);
+    this.migrateSchemaUsageAndSignature(currentVersion);
+  }
 
-    // Run a schema script only when the stored version precedes the target.
-    const migrate = (targetVersion: number, sql: string): void => {
-      if (currentVersion < targetVersion) this.db.exec(sql);
-    };
+  /** Run a schema script only when the stored version precedes the target. */
+  private migrateFrom(currentVersion: number, targetVersion: number, sql: string): void {
+    if (currentVersion < targetVersion) this.db.exec(sql);
+  }
 
-    // Add missing columns to findings_ledger_runs, batching the ALTERs into one
-    // exec (loop-query / N+1). Reused by the two run-lifecycle migrations.
-    const addRunColumns = (targetVersion: number, newRunCols: Array<[string, string]>): void => {
-      if (currentVersion >= targetVersion) return;
-      const runCols = this.db
-        .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
-        .all() as Array<{ name: string }>;
-      const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
-      const missingCols = newRunCols.filter(([name]) => !hasRunCol(name));
-      if (missingCols.length > 0) {
-        this.db.exec(
-          missingCols
-            .map(([name, decl]) => `ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`)
-            .join(';\n'),
-        );
-      }
-    };
+  /** Add missing columns to findings_ledger_runs, batching the ALTERs into one
+   *  exec (loop-query / N+1). Reused by the two run-lifecycle migrations. */
+  private addRunColumns(currentVersion: number, targetVersion: number, newRunCols: Array<[string, string]>): void {
+    if (currentVersion >= targetVersion) return;
+    const runCols = this.db
+      .prepare(PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS)
+      .all() as Array<{ name: string }>;
+    const hasRunCol = (name: string) => runCols.some((c) => c.name === name);
+    const missingCols = newRunCols.filter(([name]) => !hasRunCol(name));
+    if (missingCols.length > 0) {
+      this.db.exec(
+        missingCols
+          .map(([name, decl]) => `ALTER TABLE findings_ledger_runs ADD COLUMN ${name} ${decl}`)
+          .join(';\n'),
+      );
+    }
+  }
 
+  /** Migrations 2 → 7 — the pure-DDL table/index additions. */
+  private migrateCoreTables(currentVersion: number): void {
     // Migration 1 → 2: Unique index on (name, file_path, line_number)
     // Previously the unique index was on (name, file_path) only, which caused
     // same-named functions at different lines in the same file to collide.
-    migrate(2, `
+    this.migrateFrom(currentVersion,2, `
         DROP INDEX IF EXISTS idx_functions_name_file;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_functions_name_file_line ON functions(name, file_path, line_number);
       `);
 
     // Migration 2 → 3: Style intelligence tables (Spec 10)
-    migrate(3, `
+    this.migrateFrom(currentVersion,3, `
         CREATE TABLE IF NOT EXISTS style_declarations (
           id              INTEGER PRIMARY KEY AUTOINCREMENT,
           property        TEXT NOT NULL,
@@ -1138,7 +1146,7 @@ export class CodeIndexDB {
       `);
 
     // Migration 3 → 4: Convention mining tables (Spec 12)
-    migrate(4, `
+    this.migrateFrom(currentVersion,4, `
         CREATE TABLE IF NOT EXISTS conventions (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           domain TEXT NOT NULL,
@@ -1164,7 +1172,7 @@ export class CodeIndexDB {
       `);
 
     // Migration 4 → 5: Hotspots & temporal analysis (Spec 13)
-    migrate(5, `
+    this.migrateFrom(currentVersion,5, `
         CREATE TABLE IF NOT EXISTS file_churn (
           file_path            TEXT PRIMARY KEY,
           commit_count         INTEGER NOT NULL DEFAULT 0,
@@ -1227,7 +1235,7 @@ export class CodeIndexDB {
       `);
 
     // Migration 5 → 6: Graph cache for call/import graph construction (Spec 14)
-    migrate(6, `
+    this.migrateFrom(currentVersion,6, `
         CREATE TABLE IF NOT EXISTS graph_cache (
           graph_type   TEXT NOT NULL,
           node_key     TEXT NOT NULL,
@@ -1240,7 +1248,7 @@ export class CodeIndexDB {
       `);
 
     // Migration 6 → 7: Coverage data for cross-domain analysis (Spec 15)
-    migrate(7, `
+    this.migrateFrom(currentVersion,7, `
         CREATE TABLE IF NOT EXISTS coverage_data (
           id            INTEGER PRIMARY KEY AUTOINCREMENT,
           function_name TEXT NOT NULL,
@@ -1256,7 +1264,10 @@ export class CodeIndexDB {
         CREATE INDEX IF NOT EXISTS idx_cov_covered ON coverage_data(covered);
         CREATE INDEX IF NOT EXISTS idx_cov_function ON coverage_data(function_name);
       `);
+  }
 
+  /** Migration 7 → 8: export_kind on conventions (Spec 22 R5.1). */
+  private migrateConventionsExportKind(currentVersion: number): void {
     // Migration 7 → 8: export_kind on conventions (Spec 22 R5.1)
     if (currentVersion < 8) {
       const cols = this.db
@@ -1266,13 +1277,18 @@ export class CodeIndexDB {
         this.db.exec(`ALTER TABLE conventions ADD COLUMN export_kind TEXT`);
       }
     }
+  }
 
+  /** Migration 8 → 9 / 9 → 10 / 10 → 11 — detached-run lifecycle + queryable
+   *  coverage (Spec 41), PID-based lease liveness (Spec 41 Amendment B), and
+   *  unread stylesheet sources (Spec 45 R5). */
+  private migrateRunLifecycle(currentVersion: number): void {
     // Migration 8 → 9: Detached-run lifecycle + queryable coverage (Spec 41).
     // `findings_ledger_runs` gains the job-lifecycle columns (status, timing,
     // provenance, lease heartbeat, progress, stderr log); the one genuinely new
     // table is `findings_ledger_coverage` (per-rule state + reason rows that
     // `writeAuditToLedger` previously dropped).
-    addRunColumns(9, [
+    this.addRunColumns(currentVersion,9, [
       ['status', "TEXT NOT NULL DEFAULT 'completed'"],
       ['project_root', 'TEXT'],
       ['started_at', 'TEXT'],
@@ -1285,7 +1301,7 @@ export class CodeIndexDB {
       ['files_count', 'INTEGER'],
       ['file_manifest_json', 'TEXT'],
     ]);
-    migrate(9, `
+    this.migrateFrom(currentVersion,9, `
         CREATE TABLE IF NOT EXISTS findings_ledger_coverage (
           run_id    TEXT NOT NULL REFERENCES findings_ledger_runs(run_id) ON DELETE CASCADE,
           analyzer  TEXT NOT NULL,
@@ -1306,7 +1322,7 @@ export class CodeIndexDB {
     // then skips any `running` row whose PID is still the same live process, and
     // only reclaims when the process is genuinely gone (or on a foreign host,
     // where the PID means nothing and the heartbeat stays the fallback).
-    addRunColumns(10, [
+    this.addRunColumns(currentVersion,10, [
       ['runner_pid', 'INTEGER'],
       ['runner_pid_started_at', 'TEXT'],
       ['runner_host', 'TEXT'],
@@ -1316,7 +1332,7 @@ export class CodeIndexDB {
     // Records stylesheets whose dialect the style indexer cannot read, so
     // styles/undefined-class findings can carry them as incomplete-definition
     // context instead of asserting a class is undefined against the whole project.
-    migrate(11, `
+    this.migrateFrom(currentVersion,11, `
         CREATE TABLE IF NOT EXISTS style_unread_sources (
           id         INTEGER PRIMARY KEY AUTOINCREMENT,
           file_path  TEXT NOT NULL UNIQUE,
@@ -1324,7 +1340,10 @@ export class CodeIndexDB {
           created_at TEXT DEFAULT (datetime('now'))
         );
       `);
+  }
 
+  /** Migration 11 → 12: defined-class catalog (Spec 45 — styles/undefined-class). */
+  private migrateStyleCatalog(currentVersion: number): void {
     // Migration 11 → 12: defined-class catalog (Spec 45 — styles/undefined-class).
     // A dedicated (class_name, file_path) table so the undefined-class detector
     // can resolve a class name with an indexed `class_name IN (...)` lookup
@@ -1359,7 +1378,11 @@ export class CodeIndexDB {
       });
       backfill();
     }
+  }
 
+  /** Migrations 12 → 18 — import_specifiers, schema_usage identity/origin,
+   *  tool_git_sha, the signature-column removal (Spec 63 R6), and phase_facts. */
+  private migrateSchemaUsageAndSignature(currentVersion: number): void {
     // Migration 12 → 13: import_specifiers (Spec 60 — import classification at
     // emission). One row per static import specifier occurrence, classified
     // package / unresolved-alias / internal-resolved / internal-broken /
@@ -1367,7 +1390,7 @@ export class CodeIndexDB {
     // `classification` is free TEXT, no constraint, so no further migration).
     // Nothing consumes it yet (Spec 61 persists edges; Spec 62 derives coverage).
     // Flat — resolved_path inline, no lookup table, no join.
-    migrate(13, `
+    this.migrateFrom(currentVersion,13, `
       CREATE TABLE IF NOT EXISTS import_specifiers (
         file_path       TEXT NOT NULL,
         specifier       TEXT NOT NULL,
@@ -1426,7 +1449,7 @@ export class CodeIndexDB {
     // records the *code-auditor* commit so a count change is attributable to a
     // tool commit, not just a version. NULL when running from a published
     // install (no .git) — best-effort, and tool_version stays always-present.
-    addRunColumns(15, [['tool_git_sha', 'TEXT']]);
+    this.addRunColumns(currentVersion,15, [['tool_git_sha', 'TEXT']]);
 
     // Migration 15 → 16: schema_usage gains an `origin` column. Rows produced by
     // the knex-style fluent-builder read extractor carry `origin = 'query-builder'`;
@@ -1518,7 +1541,7 @@ export class CodeIndexDB {
     // here in batched transactions, and corpus processors + rules read them back
     // read-only under WAL (§6.2/§6.3). One row per (fact_kind, file_path); corpus
     // facts (e.g. `table-catalog`, `reachability`) carry a NULL file_path.
-    migrate(18, `
+    this.migrateFrom(currentVersion,18, `
       CREATE TABLE IF NOT EXISTS phase_facts (
         id          INTEGER PRIMARY KEY AUTOINCREMENT,
         fact_kind   TEXT NOT NULL,
