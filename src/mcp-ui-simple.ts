@@ -189,8 +189,20 @@ app.get('/dashboard/:sessionKey', (req, res) => {
   const { auditResult } = sessionData;
   const violations = ToolHandlers.getAllViolations(auditResult).slice(0, 50);
   
-  // Enhanced dashboard HTML
-  const dashboardHtml = `
+  const dashboardHtml = renderDashboardHtml(sessionData.path, auditResult, violations);
+
+  res.send(dashboardHtml);
+});
+
+/**
+ * Render the interactive audit dashboard HTML for a stored audit session.
+ */
+function renderDashboardHtml(
+  path: string,
+  auditResult: any,
+  violations: any[],
+): string {
+  return `
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -281,7 +293,7 @@ app.get('/dashboard/:sessionKey', (req, res) => {
         <div class="container">
             <div class="header">
                 <h1>🔍 Code Audit Dashboard</h1>
-                <p>Interactive analysis results for ${escapeHtml(sessionData.path)} • ${auditResult.summary?.filesAnalyzed || 0} files analyzed</p>
+                <p>Interactive analysis results for ${escapeHtml(path)} • ${auditResult.summary?.filesAnalyzed || 0} files analyzed</p>
             </div>
             
             <div class="stats-grid">
@@ -382,9 +394,7 @@ app.get('/dashboard/:sessionKey', (req, res) => {
     </body>
     </html>
   `;
-  
-  res.send(dashboardHtml);
-});
+}
 
 /**
  * Code map viewer route
