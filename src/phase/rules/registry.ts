@@ -28,7 +28,7 @@ import { dryRules } from './dry.js';
 import { securityRules } from './security.js';
 import { secretsRules } from './secrets.js';
 import { securityDefectRules } from './securityDefects.js';
-import { functionBodyRules } from './functionBodies.js';
+import { querySiteRules } from './querySites.js';
 import { reactRules } from './react.js';
 import { fileDocumentationRules } from './fileDocumentation.js';
 import { unreferencedModuleRule } from './unreferencedModule.js';
@@ -93,7 +93,7 @@ export const MIGRATED_RULES = [
   ...securityRules,
   ...secretsRules,
   ...securityDefectRules,
-  ...functionBodyRules,
+  ...querySiteRules,
   ...reactRules,
   ...fileDocumentationRules,
   unreferencedModuleRule,

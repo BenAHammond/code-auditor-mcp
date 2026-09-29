@@ -43,7 +43,7 @@ export interface FactShapes {
   ast: never;
   'file-symbols': FileSymbols[];
   'function-index': FunctionIndexFact[];
-  'function-bodies': FunctionBodyFact[];
+  'query-sites': QuerySiteFact[];
   'imports': ImportFact[];
   'export-form': ExportFormFact[];
   'import-form': ImportFormFact[];
@@ -258,23 +258,29 @@ export type FunctionIndexFact = {
 };
 
 /**
- * One function/method/arrow body, the serializable projection of the adapter's
- * `extractFunctions` (`FunctionInfo[]`) resolved back to its node for the full
- * source text. `too-many-queries` counts query call sites over `text`, so the
- * producer carries the *full* node text (`getNodeText`) rather than the
- * `statement_block` alone — an expression-bodied arrow has no block and would
- * otherwise read `null` while the legacy walk still counts its queries. The
- * `column` is the 1-based start column `function-index` drops, and the node set
- * is `extractFunctions`' full set (generator/function-expression/arrow), which
- * is wider than `function-index`'s visitor — a deliberate split: the DB index
- * and this per-file fact answer different questions.
+ * One DB-query site, the serializable projection of the located query-site scan
+ * (`extractQuerySiteOffsets` over the raw source). Each site is attributed to its
+ * innermost enclosing function — `functionLine`/`functionColumn` are the
+ * enclosing function's 1-based start coordinate, `null` when the site is
+ * top-level (outside any function). `method` is the query mechanism label
+ * (`run`/`query`/`all`/`exec`/`SELECT`/…). A function's query count is then the
+ * number of sites whose enclosing function is that function — a relation that
+ * cannot double-count a nested closure by construction (Spec 69 R2).
  */
-export type FunctionBodyFact = {
+export type QuerySiteFact = {
   file: string;
-  name: string;
+  /** Query site's 1-based start line. */
   line: number;
+  /** Query site's 1-based start column. */
   column: number;
-  text: string;
+  /** Query mechanism label (`run`, `query`, `all`, `exec`, `SELECT`, …). */
+  method: string;
+  /** Enclosing function's 1-based start line, or null when top-level. */
+  functionLine: number | null;
+  /** Enclosing function's 1-based start column, or null when top-level. */
+  functionColumn: number | null;
+  /** Enclosing function's declaration name, or null when anonymous/top-level. */
+  functionName: string | null;
 };
 
 /**
@@ -1382,7 +1388,7 @@ export type FactFragment<K extends FactKind> = FactShapes[K];
 export interface SupplyingFormats {
   'file-symbols': 'typescript' | 'tsx' | 'javascript';
   'function-index': 'typescript' | 'tsx' | 'javascript';
-  'function-bodies': 'typescript' | 'tsx' | 'javascript';
+  'query-sites': 'typescript' | 'tsx' | 'javascript';
   'imports': 'typescript' | 'tsx' | 'javascript' | 'go';
   'export-form': 'typescript' | 'tsx' | 'javascript';
   'import-form': 'typescript' | 'tsx' | 'javascript';

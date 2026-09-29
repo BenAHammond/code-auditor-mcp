@@ -73,7 +73,7 @@ import {
   countDataAccessCalls,
   countLoopQueries,
   countDynamicSql,
-  countFunctionBodies,
+  countQuerySites,
   countSchemaUsage,
   measuredDdlOps,
   measuredStyleDeclarations,
@@ -82,7 +82,7 @@ import {
 } from './oracles.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
-import { extractFunctionBodies } from './functionBodies.js';
+import { extractQuerySites } from './querySites.js';
 import { extractReactComponents } from './reactComponents.js';
 import { extractFileHeader } from './fileHeader.js';
 import { extractCodeBlocks } from './codeBlocks.js';
@@ -157,7 +157,7 @@ function fileProducer<K extends FileFactKind, F extends SupplyingFormats[K]>(
 // AST consumer.
 const fileSymbolsProcess = (file: ParsedFile): FactFragment<'file-symbols'> => extractFileSymbols(file as AstFile);
 const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> => extractFunctionIndex(file as AstFile);
-const functionBodiesProcess = (file: ParsedFile): FactFragment<'function-bodies'> => extractFunctionBodies(file as AstFile);
+const querySitesProcess = (file: ParsedFile): FactFragment<'query-sites'> => extractQuerySites(file as AstFile);
 const importsProcess = (file: ParsedFile): FactFragment<'imports'> => extractImports(file as AstFile);
 const exportFormProcess = (file: ParsedFile): FactFragment<'export-form'> => extractExportForm(file as AstFile);
 const importFormProcess = (file: ParsedFile): FactFragment<'import-form'> => extractImportForm(file);
@@ -231,10 +231,10 @@ export const PRODUCERS = {
     tsx: fileProducer('function-index', 'tsx', functionIndexProcess, countOracle(countFunctionIndex)),
     javascript: fileProducer('function-index', 'javascript', functionIndexProcess, countOracle(countFunctionIndex)),
   },
-  'function-bodies': {
-    typescript: fileProducer('function-bodies', 'typescript', functionBodiesProcess, countOracle(countFunctionBodies)),
-    tsx: fileProducer('function-bodies', 'tsx', functionBodiesProcess, countOracle(countFunctionBodies)),
-    javascript: fileProducer('function-bodies', 'javascript', functionBodiesProcess, countOracle(countFunctionBodies)),
+  'query-sites': {
+    typescript: fileProducer('query-sites', 'typescript', querySitesProcess, countOracle(countQuerySites)),
+    tsx: fileProducer('query-sites', 'tsx', querySitesProcess, countOracle(countQuerySites)),
+    javascript: fileProducer('query-sites', 'javascript', querySitesProcess, countOracle(countQuerySites)),
   },
   'imports': {
     typescript: fileProducer('imports', 'typescript', importsProcess, countOracle(countImports)),
@@ -743,7 +743,7 @@ export function noOracleProcessors(): readonly { processor: string; reason: stri
 export const FACT_KINDS = {
   'file-symbols': true,
   'function-index': true,
-  'function-bodies': true,
+  'query-sites': true,
   'imports': true,
   'export-form': true,
   'import-form': true,

@@ -35,7 +35,7 @@ import { dryRules } from './rules/dry.js';
 import { securityRules } from './rules/security.js';
 import { secretsRules } from './rules/secrets.js';
 import { securityDefectRules } from './rules/securityDefects.js';
-import { functionBodyRules } from './rules/functionBodies.js';
+import { querySiteRules } from './rules/querySites.js';
 import { reactRules } from './rules/react.js';
 import { fileDocumentationRules } from './rules/fileDocumentation.js';
 import { schemaJsonRules } from './rules/schemaJson.js';
@@ -64,7 +64,7 @@ import type {
   StringLiteralFact,
   SecretCandidate,
   SecurityCandidate,
-  FunctionBodyFact,
+  QuerySiteFact,
   ReactComponentScan,
   FileHeaderFact,
   CodeBlockFact,
@@ -1009,26 +1009,25 @@ export async function runSecurityDefectsSlice(files: readonly InputFile[], thres
   return analyzeSecurityDefects(candidates, thresholds);
 }
 
-// ── function-bodies slice (function-bodies → too-many-queries) ───────────────
+// ── query-sites slice (query-sites → too-many-queries) ───────────────────────
 
 /**
- * Parse → Process for the `function-bodies` fact. Returns the assembled corpus
- * fact (every function body from every file, ASTs already freed). The node set
- * is `adapter.extractFunctions`' full set — wider than `function-index` — so the
- * `too-many-queries` rule sees the same universe the legacy schema-code visitor
- * walked.
+ * Parse → Process for the `query-sites` fact. Returns the assembled corpus fact
+ * (every located DB-query site from every file, each attributed to its innermost
+ * enclosing function, ASTs already freed). The rule groups sites by enclosing
+ * function, so a nested closure's sites are never double-counted.
  *
  * @param files - The input files to parse and process.
- * @returns The assembled `function-bodies` corpus fact.
+ * @returns The assembled `query-sites` corpus fact.
  */
-export async function buildFunctionBodies(files: readonly InputFile[]): Promise<FunctionBodyFact[]> {
-  const facts: FunctionBodyFact[] = [];
+export async function buildQuerySites(files: readonly InputFile[]): Promise<QuerySiteFact[]> {
+  const facts: QuerySiteFact[] = [];
   for (const input of files) {
     const parsed = await parseOne(input);
     if (!parsed) continue;
     try {
-      const producer = fileProducerFor('function-bodies', parsed.format);
-      if (producer) facts.push(...producer.process(parsed) as FunctionBodyFact[]);
+      const producer = fileProducerFor('query-sites', parsed.format);
+      if (producer) facts.push(...producer.process(parsed) as QuerySiteFact[]);
     } finally {
       parsed.ast?.dispose?.();
     }
@@ -1037,23 +1036,23 @@ export async function buildFunctionBodies(files: readonly InputFile[]): Promise<
 }
 
 /**
- * Analyze the assembled `function-bodies` fact with the too-many-queries rule.
+ * Analyze the assembled `query-sites` fact with the too-many-queries rule.
  *
- * @param facts - The assembled `function-bodies` fact to analyze.
+ * @param facts - The assembled `query-sites` fact to analyze.
  * @param thresholds - The too-many-queries rule thresholds (defaults to `{}`).
  * @returns The too-many-queries rule's findings over the fact.
  */
-export async function analyzeFunctionBodies(
-  facts: FunctionBodyFact[],
+export async function analyzeQuerySites(
+  facts: QuerySiteFact[],
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  return analyzeWithRules(functionBodyRules, { 'function-bodies': facts }, ['typescript', 'tsx', 'javascript'], thresholds);
+  return analyzeWithRules(querySiteRules, { 'query-sites': facts }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
-/** The function-bodies slice: parse → function-bodies → too-many-queries → findings. */
-export async function runFunctionBodiesSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const facts = await buildFunctionBodies(files);
-  return analyzeFunctionBodies(facts, thresholds);
+/** The query-sites slice: parse → query-sites → too-many-queries → findings. */
+export async function runQuerySitesSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+  const facts = await buildQuerySites(files);
+  return analyzeQuerySites(facts, thresholds);
 }
 
 // ── react-component slice (react-component → 7 react rules) ──────────────────

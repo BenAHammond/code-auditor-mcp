@@ -88,7 +88,7 @@ Re-examining the 30 against the upper-bound bar converted **22**:
 | classified subset | `data-access-calls` (ts/tsx/js/go) | `countDataAccessCalls` = `call_expression`+`template_string` | non-DB calls/templates |
 | classified subset | `loop-queries` (ts/tsx/js) | `countLoopQueries` = loop nodes | loops whose body issues no DB call |
 | classified subset | `dynamic-sql` (ts/tsx/js) | `countDynamicSql` = `query(`/`execute(` call sites | safe/parameterized query/execute calls |
-| DB-context gate | `function-bodies` (ts/tsx/js) | `countFunctionBodies` = function node types | functions in non-DB-context files (the gate is the producer's, not the count's) |
+| DB-context gate | `query-sites` (ts/tsx/js) — renamed from `function-bodies` in R2 | `countQuerySites` = member calls + SQL keywords | member calls that are not query mechanisms, SQL keywords inside a query-call body, and every site in a non-DB-context file (the gate is the producer's, not the count's) |
 | DB-context gate | `schema-usage` (ts/tsx/js) | `countSchemaUsage` = `call_expression`+`string`+`template_string` | strings/calls/templates naming no table reference |
 
 Each is independent of its producer's predicate (a raw node-type or source-text

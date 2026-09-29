@@ -1,24 +1,20 @@
 /**
- * Spec 68 §3.2 — parity: the migrated `too-many-queries` rule reproduces the old
- * schema-code visitor's `checkQueryPatterns` findings exactly.
+ * Spec 68 §3.2 / Spec 69 R2 — parity + the located-fact fix for `too-many-queries`.
  *
- * The rule re-homes the *classification* half (the `validateQueryPatterns` gate,
- * the test-file skip, the `maxQueriesPerFunction` ceiling, and the finding
- * construction) over the `function-bodies` fact, whose producer already resolved
- * the *projection* half the legacy walk did inline — `adapter.extractFunctions`
- * → `findNodeByLocation` → full `getNodeText`. The producer never decides "is
- * this a finding"; it projects the function universe.
+ * The rule re-homes the *classification* half (the `maxQueriesPerFunction`
+ * ceiling, the test-file skip, and the finding construction) over the
+ * `query-sites` fact, whose producer already resolved the *projection* half the
+ * legacy walk did inline: locate every DB-query site from the raw source and
+ * attribute each to its innermost enclosing function. The producer never decides
+ * "is this a finding"; it locates sites.
  *
- * The producer's node set is deliberately `extractFunctions`' full set
- * (declaration, generator, expression, arrow, method) — wider than
- * `function-index` — so the rule sees the same universe the legacy walk saw,
- * including expression-bodied arrows whose query calls live in the expression
- * body, not a `statement_block`.
- *
- * This test runs BOTH paths (the old `checkQueryPatterns` still live) and
- * asserts the identity multisets — (file, line, column, severity) — are equal
- * and non-empty. It is the pin that lets §15 delete the old function without
- * losing the golden reference.
+ * For a fixture with no nesting, the migrated rule reproduces the old
+ * `checkQueryPatterns` findings exactly — the first block below pins that
+ * (file, line, column, severity) identity. For a fixture with a closure inside a
+ * counted function, the two intentionally diverge: the legacy walk counts the
+ * closure's sites in the parent too (the parent's text encloses them), while the
+ * located-fact rule counts each site once against its innermost function — the
+ * Spec 69 R2 fix — demonstrated in the second block.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -27,7 +23,7 @@ import { parseFile } from '../languages/adapterBridge.js';
 import type { LanguageAdapter } from '../languages/types.js';
 import { checkQueryPatterns } from '../analyzers/universal/schema/codeAnalysis.js';
 import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
-import { runFunctionBodiesSlice } from '../phase/runner.js';
+import { runQuerySitesSlice, buildQuerySites } from '../phase/runner.js';
 
 let adapter: LanguageAdapter;
 
@@ -52,7 +48,7 @@ async function parity(source: string, path = 'parity.ts') {
     .map((v) => key({ file: v.file, line: v.line, column: v.column, severity: v.severity }))
     .sort();
 
-  const fresh = await runFunctionBodiesSlice([{ path, content: source }]);
+  const fresh = await runQuerySitesSlice([{ path, content: source }]);
   const nu = fresh
     .map((f) => key(f))
     .sort();
@@ -155,12 +151,53 @@ describe('Spec 68 too-many-queries parity (new analyze(ctx) === old checkQueryPa
     const old = oldViolations
       .map((v) => key({ file: v.file, line: v.line, column: v.column, severity: v.severity }))
       .sort();
-    const fresh = await runFunctionBodiesSlice(
+    const fresh = await runQuerySitesSlice(
       [{ path: 'parity.ts', content: SIX_QUERIES }],
       { maxQueriesPerFunction: 10 },
     );
     const nu = fresh.map((f) => key(f)).sort();
     expect(nu).toEqual(old);
     expect(nu).toEqual([]);
+  });
+});
+
+describe('Spec 69 R2 — nested-closure double-count is gone', () => {
+  // `outer` issues 2 of its own queries; `inner` issues 6. The legacy walk counts
+  // all 8 in `outer` (its text encloses `inner`'s) and 6 in `inner`. The located
+  // fact attributes each site once to its innermost function.
+  const NESTED = `function outer() {
+  db.query("SELECT 1");
+  db.query("SELECT 2");
+  const inner = () => {
+    db.query("SELECT a");
+    db.query("SELECT b");
+    db.query("SELECT c");
+    db.query("SELECT d");
+    db.query("SELECT e");
+    db.query("SELECT f");
+  };
+}`;
+
+  it('attributes each site to its innermost enclosing function', async () => {
+    const facts = await buildQuerySites([{ path: 'parity.ts', content: NESTED }]);
+    const outer = facts.filter((f) => f.functionName === 'outer');
+    const inner = facts.filter((f) => f.functionName === 'inner');
+    expect(outer).toHaveLength(2);
+    expect(inner).toHaveLength(6);
+  });
+
+  it('reports the outer function true count (2), not the shared 8', async () => {
+    const fresh = await runQuerySitesSlice([{ path: 'parity.ts', content: NESTED }]);
+    // Only `inner` (6 > 5) fires; `outer` (2 ≤ 5) does not — it no longer inherits
+    // the closure's six sites.
+    expect(fresh.map((f) => f.symbol).sort()).toEqual(['inner']);
+    expect(fresh[0].line).toBe(4); // the arrow's start line
+  });
+
+  it('the legacy walk double-counts the same fixture (the defect this removes)', async () => {
+    const ast = parseFile('parity.ts', NESTED);
+    const old = checkQueryPatterns(ast!, adapter, NESTED, DEFAULT_SCHEMA_CONFIG);
+    // `outer` (8 > 5) and `inner` (6 > 5) both fire under the legacy walk.
+    expect(old.map((v) => v.symbol).sort()).toEqual(['inner', 'outer']);
   });
 });

@@ -37,6 +37,7 @@ import type {
 } from './types.js';
 import { isFunctionNodeType } from '../analyzers/universal/functionConcerns.js';
 import { isTestFile } from '../languages/testConventions.js';
+import { countSqlKeywordOccurrences } from '../analyzers/universal/schema/codeAnalysis.js';
 
 /** A counted oracle: `count` returns the units one file should yield; `measured`
  *  reads the same unit back out of the emitted fragments. */
@@ -303,18 +304,19 @@ export function countDynamicSql(file: ParsedFile): number {
   return [...file.source.matchAll(DYNAMIC_SQL_CALL_RE)].length;
 }
 
-/** function-bodies — count the function node types `extractFunctions` projects.
- *  The producer emits one body per function in a DB-context file (gated by
- *  `passesFileGate`); this counts every function, so a non-DB file records a
- *  shortfall. Residual = functions in non-DB-context files (by design — the
- *  gate is the producer's, the count is not). */
-export const countFunctionBodies = countNodeTypes([
-  'function_declaration',
-  'generator_function_declaration',
-  'function_expression',
-  'arrow_function',
-  'method_definition',
-]);
+/** query-sites — count every member-call site (`.name(`) plus every SQL keyword
+ *  occurrence in the raw source: two coarse, independent supersets of the
+ *  producer's three-component located scan (eager DB-method calls, `.exec`-with-
+ *  SQL, and standalone SQL keywords in call-body-stripped text). Every query site
+ *  is a member call or a SQL keyword, so this upper-bounds the site count.
+ *  Residual = non-DB member calls + SQL keywords inside recognized call bodies
+ *  (which the producer strips) + the DB-context gate the producer applies. */
+const ALL_MEMBER_CALLS_RE = /\.\w+\s*\(/g;
+
+export function countQuerySites(file: ParsedFile): number {
+  const calls = (file.source.match(ALL_MEMBER_CALLS_RE) || []).length;
+  return calls + countSqlKeywordOccurrences(file.source);
+}
 
 /** schema-usage — count `call_expression` + `string` + `template_string` nodes.
  *  Every table reference is carried in a string literal, a tagged template, or a

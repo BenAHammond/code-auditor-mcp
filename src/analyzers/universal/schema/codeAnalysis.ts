@@ -1427,21 +1427,83 @@ export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean 
  * `INSERT … ON DUPLICATE KEY UPDATE`) — that clause is part of the one INSERT
  * statement, not a second query (Spec 52 R2).
  */
-const SQL_QUERY_PATTERNS: RegExp[] = [
-  /SELECT\s+/gi,
-  /INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?\s+INTO|REPLACE\s+INTO/gi,
-  /(?<!DO\s)(?<!KEY\s)UPDATE\s+/gi,
-  /DELETE\s+FROM/gi,
+const SQL_QUERY_PATTERNS: ReadonlyArray<{ keyword: string; pattern: RegExp }> = [
+  { keyword: 'SELECT', pattern: /SELECT\s+/gi },
+  { keyword: 'INSERT', pattern: /INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?\s+INTO|REPLACE\s+INTO/gi },
+  { keyword: 'UPDATE', pattern: /(?<!DO\s)(?<!KEY\s)UPDATE\s+/gi },
+  { keyword: 'DELETE', pattern: /DELETE\s+FROM/gi },
 ];
 
 /** Number of SQL-statement keyword occurrences a text slice contains. */
-function countSqlKeywordOccurrences(text: string): number {
+export function countSqlKeywordOccurrences(text: string): number {
   let count = 0;
-  for (const pattern of SQL_QUERY_PATTERNS) {
+  for (const { pattern } of SQL_QUERY_PATTERNS) {
     const matches = text.match(pattern);
     if (matches) count += matches.length;
   }
   return count;
+}
+
+/** Located SQL-keyword occurrences — the offset form of
+ *  {@link countSqlKeywordOccurrences}, returning each keyword's start offset and
+ *  its label. The caller passes call-body-stripped text (same length as the
+ *  original, so offsets map 1:1 onto it). */
+function findSqlKeywordOffsets(text: string): QuerySiteOffset[] {
+  const sites: QuerySiteOffset[] = [];
+  for (const { keyword, pattern } of SQL_QUERY_PATTERNS) {
+    pattern.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(text)) !== null) {
+      sites.push({ offset: m.index, method: keyword });
+    }
+  }
+  return sites;
+}
+
+/** A located query site: the character offset of the site's method name plus a
+ *  mechanism label. The producer converts the offset to a line/column. */
+export interface QuerySiteOffset {
+  offset: number;
+  method: string;
+}
+
+/**
+ * Locate every DB-query site in a source slice — the located counterpart of
+ * {@link countQueries}. The three components match `countQueries` exactly (the
+ * eager execution-method call sites, the `.exec`-with-SQL sites, and the
+ * standalone SQL-keyword sites over the call-body-stripped text), so the two can
+ * never drift: `countQueries` is `extractQuerySiteOffsets(...).length`. Each
+ * site's `offset` points at the method name (for a call) or keyword start (for a
+ * standalone keyword), and `method` is the label the fact carries.
+ *
+ * @param text The source slice to scan.
+ * @returns One located site per query the slice issues.
+ */
+export function extractQuerySiteOffsets(text: string): QuerySiteOffset[] {
+  const sites: QuerySiteOffset[] = [];
+
+  // Eager execution-method call sites.
+  const callRe = /\.(query|execute|run|first|raw|batch)\b[^()\n]*\(|(?<!Promise)\.(all)\b[^()\n]*\(/g;
+  let m: RegExpExecArray | null;
+  while ((m = callRe.exec(text)) !== null) {
+    sites.push({ offset: m.index + 1, method: m[1] ?? m[2] });
+  }
+
+  // `.exec(...)` sites whose balanced body carries a SQL keyword.
+  const execRe = /\.exec\b[^()\n]*\(/g;
+  while ((m = execRe.exec(text)) !== null) {
+    const openParen = m.index + m[0].length;
+    const i = scanBalancedParens(text, openParen);
+    if (countSqlKeywordOccurrences(text.slice(openParen, i - 1)) > 0) {
+      sites.push({ offset: m.index + 1, method: 'exec' });
+    }
+    execRe.lastIndex = i;
+  }
+
+  // Standalone SQL keywords outside recognized call bodies.
+  sites.push(...findSqlKeywordOffsets(stripQueryCallBodies(text)));
+
+  return sites;
 }
 
 /**
@@ -1471,14 +1533,7 @@ function countSqlKeywordOccurrences(text: string): number {
  * @returns The number of DB queries the function issues.
  */
 export function countQueries(text: string): number {
-  const callCount = (text.match(/\.(?:query|execute|run|first|raw|batch)\b[^()\n]*\(|(?<!Promise)\.all\b[^()\n]*\(/g) || []).length;
-
-  const execCount = countExecCallsWithSql(text);
-
-  const bodyless = stripQueryCallBodies(text);
-  const sqlCount = countSqlKeywordOccurrences(bodyless);
-
-  return callCount + execCount + sqlCount;
+  return extractQuerySiteOffsets(text).length;
 }
 
 /**
