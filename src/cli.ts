@@ -3984,6 +3984,135 @@ async function generateConfigurations(options: any): Promise<void> {
   console.log(chalk.gray('  3. Use ') + chalk.cyan('code-audit changed') + chalk.gray(' in your agent hook (gating rules block on new readings)'));
 }
 
+async function promptKindSpecificFields(kind: string, rule: Record<string, unknown>): Promise<void> {
+  switch (kind) {
+    case 'import-ban': {
+      const { module } = await inquirer.prompt({
+        module: {
+          type: 'input',
+          message: 'Banned module specifier (e.g. "lodash" or "@old-lib/*"):',
+          validate: (input: string) => input.trim() ? true : 'Module specifier is required',
+        },
+      } as any);
+      rule.module = module;
+      const { addExcept } = await inquirer.prompt({
+        addExcept: {
+          type: 'confirm',
+          message: 'Add exception paths (files allowed to import it)?',
+          default: false,
+        },
+      } as any);
+      if (addExcept) {
+        const { except } = await inquirer.prompt({
+          except: {
+            type: 'input',
+            message: 'Exception globs (comma-separated, e.g. "src/migration/**"):',
+          },
+        } as any);
+        const exceptList = except.split(',').map((s: string) => s.trim()).filter(Boolean);
+        if (exceptList.length > 0) rule.except = exceptList;
+      }
+      break;
+    }
+    case 'call-constraint': {
+      const { callee } = await inquirer.prompt({
+        callee: {
+          type: 'input',
+          message: 'Callee (function name, optionally path-qualified as "path/glob#name"):',
+          validate: (input: string) => input.trim() ? true : 'Callee is required',
+        },
+      } as any);
+      rule.callee = callee;
+      const { mode } = await inquirer.prompt({
+        mode: {
+          type: 'list',
+          message: 'Restriction mode:',
+          choices: [
+            { name: 'Allow only specific callers (allowFrom)', value: 'allow' },
+            { name: 'Deny specific callers (denyFrom)', value: 'deny' },
+          ],
+        },
+      } as any);
+      const { paths } = await inquirer.prompt({
+        paths: {
+          type: 'input',
+          message: `Path globs (comma-separated) for ${mode === 'allow' ? 'allowFrom' : 'denyFrom'}:`,
+          validate: (input: string) => input.trim() ? true : 'At least one path glob is required',
+        },
+      } as any);
+      const pathList = paths.split(',').map((s: string) => s.trim()).filter(Boolean);
+      if (mode === 'allow') {
+        rule.allowFrom = pathList;
+      } else {
+        rule.denyFrom = pathList;
+      }
+      break;
+    }
+    case 'module-boundary': {
+      const { from, to } = await inquirer.prompt({
+        from: {
+          type: 'input',
+          message: 'From (path glob for files that must not import):',
+          validate: (input: string) => input.trim() ? true : '"from" path glob is required',
+        },
+        to: {
+          type: 'input',
+          message: 'To (path glob for files that must not be imported):',
+          validate: (input: string) => input.trim() ? true : '"to" path glob is required',
+        },
+      } as any);
+      rule.from = from;
+      rule.to = to;
+      break;
+    }
+    case 'naming': {
+      const { path, exports: exportPattern } = await inquirer.prompt({
+        path: {
+          type: 'input',
+          message: 'Path (glob for files this rule applies to):',
+          validate: (input: string) => input.trim() ? true : 'Path glob is required',
+        },
+        exports: {
+          type: 'input',
+          message: 'Exports regex (exported symbols must match, e.g. "^use[A-Z]"):',
+          validate: (input: string) => input.trim() ? true : 'Exports regex is required',
+        },
+      } as any);
+      rule.path = path;
+      rule.exports = exportPattern;
+      break;
+    }
+    case 'ast-pattern': {
+      const { pattern } = await inquirer.prompt({
+        pattern: {
+          type: 'input',
+          message: 'AST pattern (ast-grep syntax, e.g. "new Function($$$)"):',
+          validate: (input: string) => input.trim() ? true : 'Pattern is required',
+        },
+      } as any);
+      rule.pattern = pattern;
+      const { addLanguage } = await inquirer.prompt({
+        addLanguage: {
+          type: 'confirm',
+          message: 'Restrict to a specific language? (default: typescript)',
+          default: false,
+        },
+      } as any);
+      if (addLanguage) {
+        const { language } = await inquirer.prompt({
+          language: {
+            type: 'list',
+            message: 'Language:',
+            choices: ['typescript', 'javascript', 'go'],
+          },
+        } as any);
+        rule.language = language;
+      }
+      break;
+    }
+  }
+}
+
 /**
  * Interactive rule builder — walks the user through adding rules one at a time.
  */
@@ -4046,133 +4175,7 @@ async function buildRulesInteractively(): Promise<Record<string, unknown>> {
     };
 
     // Kind-specific fields
-    switch (kind) {
-      case 'import-ban': {
-        const { module } = await inquirer.prompt({
-          module: {
-            type: 'input',
-            message: 'Banned module specifier (e.g. "lodash" or "@old-lib/*"):',
-            validate: (input: string) => input.trim() ? true : 'Module specifier is required',
-          },
-        } as any);
-        rule.module = module;
-        const { addExcept } = await inquirer.prompt({
-          addExcept: {
-            type: 'confirm',
-            message: 'Add exception paths (files allowed to import it)?',
-            default: false,
-          },
-        } as any);
-        if (addExcept) {
-          const { except } = await inquirer.prompt({
-            except: {
-              type: 'input',
-              message: 'Exception globs (comma-separated, e.g. "src/migration/**"):',
-            },
-          } as any);
-          const exceptList = except.split(',').map((s: string) => s.trim()).filter(Boolean);
-          if (exceptList.length > 0) rule.except = exceptList;
-        }
-        break;
-      }
-      case 'call-constraint': {
-        const { callee } = await inquirer.prompt({
-          callee: {
-            type: 'input',
-            message: 'Callee (function name, optionally path-qualified as "path/glob#name"):',
-            validate: (input: string) => input.trim() ? true : 'Callee is required',
-          },
-        } as any);
-        rule.callee = callee;
-        const { mode } = await inquirer.prompt({
-          mode: {
-            type: 'list',
-            message: 'Restriction mode:',
-            choices: [
-              { name: 'Allow only specific callers (allowFrom)', value: 'allow' },
-              { name: 'Deny specific callers (denyFrom)', value: 'deny' },
-            ],
-          },
-        } as any);
-        const { paths } = await inquirer.prompt({
-          paths: {
-            type: 'input',
-            message: `Path globs (comma-separated) for ${mode === 'allow' ? 'allowFrom' : 'denyFrom'}:`,
-            validate: (input: string) => input.trim() ? true : 'At least one path glob is required',
-          },
-        } as any);
-        const pathList = paths.split(',').map((s: string) => s.trim()).filter(Boolean);
-        if (mode === 'allow') {
-          rule.allowFrom = pathList;
-        } else {
-          rule.denyFrom = pathList;
-        }
-        break;
-      }
-      case 'module-boundary': {
-        const { from, to } = await inquirer.prompt({
-          from: {
-            type: 'input',
-            message: 'From (path glob for files that must not import):',
-            validate: (input: string) => input.trim() ? true : '"from" path glob is required',
-          },
-          to: {
-            type: 'input',
-            message: 'To (path glob for files that must not be imported):',
-            validate: (input: string) => input.trim() ? true : '"to" path glob is required',
-          },
-        } as any);
-        rule.from = from;
-        rule.to = to;
-        break;
-      }
-      case 'naming': {
-        const { path, exports: exportPattern } = await inquirer.prompt({
-          path: {
-            type: 'input',
-            message: 'Path (glob for files this rule applies to):',
-            validate: (input: string) => input.trim() ? true : 'Path glob is required',
-          },
-          exports: {
-            type: 'input',
-            message: 'Exports regex (exported symbols must match, e.g. "^use[A-Z]"):',
-            validate: (input: string) => input.trim() ? true : 'Exports regex is required',
-          },
-        } as any);
-        rule.path = path;
-        rule.exports = exportPattern;
-        break;
-      }
-      case 'ast-pattern': {
-        const { pattern } = await inquirer.prompt({
-          pattern: {
-            type: 'input',
-            message: 'AST pattern (ast-grep syntax, e.g. "new Function($$$)"):',
-            validate: (input: string) => input.trim() ? true : 'Pattern is required',
-          },
-        } as any);
-        rule.pattern = pattern;
-        const { addLanguage } = await inquirer.prompt({
-          addLanguage: {
-            type: 'confirm',
-            message: 'Restrict to a specific language? (default: typescript)',
-            default: false,
-          },
-        } as any);
-        if (addLanguage) {
-          const { language } = await inquirer.prompt({
-            language: {
-              type: 'list',
-              message: 'Language:',
-              choices: ['typescript', 'javascript', 'go'],
-            },
-          } as any);
-          rule.language = language;
-        }
-        break;
-      }
-    }
-
+    await promptKindSpecificFields(kind, rule);
     rules.push(rule);
     console.log(chalk.green(`  ✓ Added rule "${rule.id}" [${rule.kind}]`));
 
