@@ -1,0 +1,26 @@
+{
+  "analyzerConfigs": {
+    "data-access": {
+      "orgFilterTables": [
+        "team_members",
+        "projects",
+        "environments"
+      ],
+      "schemas": [
+        {
+          "name": "analytics",
+          "tables": [
+            {
+              "name": "audit_events",
+              "columns": [
+                { "name": "id", "type": "integer" },
+                { "name": "tenant_id", "type": "integer" },
+                { "name": "payload", "type": "text" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
