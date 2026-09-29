@@ -34,6 +34,30 @@ import {
   storedSortOrder
 } from './projectTaskHelpers.js';
 
+/** True when a task is done. Extracted from the repository's static method to
+ *  keep the class under the class-size ceiling. */
+function isTaskDone(status: ProjectTaskStatus): boolean {
+  return status === 'done';
+}
+
+/** True when a task is done or cancelled. */
+function isTaskClosed(status: ProjectTaskStatus): boolean {
+  return status === 'done' || status === 'cancelled';
+}
+
+/** Sort task rows by stored sort order, then most-recently-updated. */
+function sortTaskRows(rows: ProjectTaskDocument[]): ProjectTaskDocument[] {
+  rows.sort((a, b) => {
+    const ao = storedSortOrder(a);
+    const bo = storedSortOrder(b);
+    if (ao !== bo) {
+      return ao - bo;
+    }
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+  return rows;
+}
+
 /**
  * Persists project tasks and owns task CRUD and validation logic.
  */
@@ -48,14 +72,6 @@ export class ProjectTaskRepository {
     private readonly getTasksCollection: () => Collection<ProjectTaskDocument>,
     private readonly persist: () => void
   ) {}
-
-  private static isDone(status: ProjectTaskStatus): boolean {
-    return status === 'done';
-  }
-
-  private static isClosed(status: ProjectTaskStatus): boolean {
-    return status === 'done' || status === 'cancelled';
-  }
 
   private getTaskById(taskId: string): ProjectTaskDocument | null {
     return this.getTasksCollection().findOne({ taskId });
@@ -89,25 +105,13 @@ export class ProjectTaskRepository {
     return descendants;
   }
 
-  private sortRows(rows: ProjectTaskDocument[]): ProjectTaskDocument[] {
-    rows.sort((a, b) => {
-      const ao = storedSortOrder(a);
-      const bo = storedSortOrder(b);
-      if (ao !== bo) {
-        return ao - bo;
-      }
-      return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-    });
-    return rows;
-  }
-
   private getOpenDependencyTaskIds(task: ProjectTaskDocument): string[] {
     return normalizeStringList(task.blockedBy).filter((depId) => {
       const dep = this.getTaskById(depId);
       if (!dep || dep.projectPath !== task.projectPath) {
         return false;
       }
-      return !ProjectTaskRepository.isClosed(dep.status);
+      return !isTaskClosed(dep.status);
     });
   }
 
@@ -214,7 +218,7 @@ export class ProjectTaskRepository {
 
   private assertDoneAllowed(taskId: string): void {
     const unfinished = this.getDescendants(taskId).filter(
-      (child) => !ProjectTaskRepository.isDone(child.status)
+      (child) => !isTaskDone(child.status)
     );
     if (unfinished.length > 0) {
       const ids = unfinished.slice(0, 5).map((t) => t.taskId);
@@ -318,7 +322,7 @@ export class ProjectTaskRepository {
     }
     return this.getTasksCollection()
       .find({ fingerprint })
-      .filter((doc) => !ProjectTaskRepository.isClosed(doc.status));
+      .filter((doc) => !isTaskClosed(doc.status));
   }
 
   /**
@@ -374,7 +378,7 @@ export class ProjectTaskRepository {
     if (options?.overdueOnly) {
       const now = Date.now();
       rows = rows.filter((r) => {
-        if (!r.dueAt || ProjectTaskRepository.isClosed(r.status)) {
+        if (!r.dueAt || isTaskClosed(r.status)) {
           return false;
         }
         const ts = new Date(r.dueAt).getTime();
@@ -383,7 +387,7 @@ export class ProjectTaskRepository {
     }
     if (options?.actionableOnly) {
       rows = rows.filter((r) => {
-        if (ProjectTaskRepository.isClosed(r.status)) {
+        if (isTaskClosed(r.status)) {
           return false;
         }
         if (r.status === 'blocked') {
@@ -392,7 +396,7 @@ export class ProjectTaskRepository {
         return this.getOpenDependencyTaskIds(r).length === 0;
       });
     }
-    this.sortRows(rows);
+    sortTaskRows(rows);
     const cap = Math.min(Math.max(options?.limit ?? 500, 1), 1000);
     return rows.slice(0, cap).map((r) => serializeProjectTask(r));
   }
@@ -443,7 +447,7 @@ export class ProjectTaskRepository {
       for (const child of byParent.get(taskId) ?? []) {
         const childStats = computeDescendantStats(child.taskId);
         descendantCount += 1 + childStats.descendantCount;
-        if (!ProjectTaskRepository.isDone(child.status)) {
+        if (!isTaskDone(child.status)) {
           openDescendantCount += 1;
         }
         openDescendantCount += childStats.openDescendantCount;
@@ -515,7 +519,7 @@ export class ProjectTaskRepository {
     }
     const blockedByOpenSubtaskIds = this
       .getDescendants(taskId)
-      .filter((child) => !ProjectTaskRepository.isDone(child.status))
+      .filter((child) => !isTaskDone(child.status))
       .map((child) => child.taskId);
     const blockedByOpenDependencyTaskIds = this.getOpenDependencyTaskIds(doc);
 
