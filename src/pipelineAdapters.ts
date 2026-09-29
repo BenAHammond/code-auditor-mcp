@@ -3195,6 +3195,351 @@ export function createSchemaJsonVisitor(): Stage2Visitor {
 }
 
 /**
+ * Flatten `allFacts` (keyed by visitor name, each value `{ [filePath]: facts }`)
+ * into per-file `[filePath, fact]` pairs.
+ */
+function* iteratePerFileFacts(
+  allFacts: Readonly<Record<string, unknown>>
+): Generator<[string, Record<string, unknown>]> {
+  for (const [, visitorFacts] of Object.entries(allFacts)) {
+    if (typeof visitorFacts === 'object' && visitorFacts !== null) {
+      for (const [filePath, fact] of Object.entries(visitorFacts as Record<string, unknown>)) {
+        if (typeof fact === 'object' && fact !== null) {
+          yield [filePath, fact as Record<string, unknown>];
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Build the known-tables catalog (and derived column sets) from the schema-sql,
+ * schema-code, and schema-prisma facts. Also replays SQL migrations to compute
+ * drop provenance for stale-table-reference detection.
+ */
+function buildSchemaCatalog(allFacts: Readonly<Record<string, unknown>>): {
+  knownTables: Set<string>;
+  tableProvenances: Map<string, any[]>;
+  dropProvenance: Map<string, { migrationFile: string; createdInSameMigration: string[] }>;
+  ddlColumns: Set<string>;
+  tableColumns: Record<string, string[]>;
+} {
+  const knownTables = new Set<string>();
+  const tableProvenances = new Map<string, any[]>(); // table name → origins
+
+  // 1a. SQL DDL replay — collect all DDL facts, sort by numeric prefix, replay
+  const sqlFiles: Array<{ filePath: string; ops: MigrationOp[] }> = [];
+  for (const [filePath, fact] of iteratePerFileFacts(allFacts)) {
+    if ('ddlOps' in fact) {
+      sqlFiles.push({ filePath, ops: fact.ddlOps as MigrationOp[] });
+    }
+  }
+  // Sort by numeric prefix in basename: "009_something" < "0010_rename"
+  // Falls back to localeCompare for non-numeric-prefixed names.
+  const numericPrefix = (p: string): number => {
+    const base = p.split('/').pop() ?? p;
+    const m = base.match(/^(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  };
+  sqlFiles.sort((a, b) => {
+    const na = numericPrefix(a.filePath);
+    const nb = numericPrefix(b.filePath);
+    if (na !== nb) return na - nb;
+    return a.filePath.localeCompare(b.filePath);
+  });
+  // Drop provenance — the last migration that removed a table, and the tables
+  // that same migration introduced. Lets unknown-table detection distinguish
+  // "never existed" from "existed and was dropped": the latter is a stale code
+  // reference, not a typo. `dropProvenance` ends up holding exactly the tables
+  // dropped and not subsequently recreated (CREATE clears the entry).
+  const dropProvenance = new Map<string, { migrationFile: string; createdInSameMigration: string[] }>();
+  for (const sqlFile of sqlFiles) {
+    const before = new Set(knownTables);
+    applyMigrationOps(sqlFile.ops, knownTables);
+    // Record provenance for newly created tables
+    for (const table of knownTables) {
+      if (!before.has(table)) {
+        const sources = tableProvenances.get(table) ?? [];
+        sources.push({ table, tier: 'sql-migration', sourceFile: sqlFile.filePath, description: 'SQL migration' });
+        tableProvenances.set(table, sources);
+      }
+    }
+    // Genuinely-new tables introduced by this migration (excludes rename/rebuild
+    // churn like `ALTER … RENAME TO x_old` + re-CREATE of the same name).
+    const createdHere: string[] = [];
+    const createdTables = new Set<string>();
+    const droppedTables = new Set<string>();
+    for (const op of sqlFile.ops) {
+      const t = stripIdentifier(op.table);
+      if (op.op === 'CREATE') {
+        createdTables.add(t);
+        if (!before.has(t)) createdHere.push(t);
+      } else if (op.op === 'DROP') {
+        droppedTables.add(t);
+      }
+    }
+    for (const op of sqlFile.ops) {
+      const t = stripIdentifier(op.table);
+      if (op.op === 'DROP') {
+        dropProvenance.set(t, { migrationFile: sqlFile.filePath, createdInSameMigration: createdHere });
+      } else if (op.op === 'CREATE') {
+        dropProvenance.delete(t);
+      }
+    }
+    // A table created and dropped within this same file is a self-contained
+    // fixture — a scratch table a test or script creates, uses, then tears
+    // down. Its DROP is teardown, not a migration, so it must neither surface
+    // as a stale-table-reference nor leave the name unknown: keep it known and
+    // clear the drop provenance this file recorded for it. (A genuine dropped
+    // table stays stale because its DROP lives in a migration that never also
+    // CREATEs it — e.g. recall's `generation_queue`, dropped in 0198.)
+    for (const t of createdTables) {
+      if (droppedTables.has(t)) {
+        knownTables.add(t);
+        if (dropProvenance.get(t)?.migrationFile === sqlFile.filePath) {
+          dropProvenance.delete(t);
+        }
+      }
+    }
+  }
+
+  // 1b. ORM tables from code files — with provenance from the table-source registry
+  for (const [filePath, fact] of iteratePerFileFacts(allFacts)) {
+    const ormTables: string[] = (fact as any).ormTables ?? [];
+    for (const t of ormTables) knownTables.add(t);
+
+    const provenances: any[] = (fact as any).tableProvenance ?? [];
+    for (const p of provenances) {
+      const sources = tableProvenances.get(p.table) ?? [];
+      sources.push(p.source);
+      tableProvenances.set(p.table, sources);
+    }
+  }
+
+  // 1c. Prisma models
+  for (const [filePath, fact] of iteratePerFileFacts(allFacts)) {
+    const prismaModels: string[] = (fact as any).prismaModels ?? [];
+    for (const m of prismaModels) {
+      knownTables.add(m);
+      const sources = tableProvenances.get(m) ?? [];
+      sources.push({ table: m, tier: 'prisma-model', sourceFile: filePath, description: 'Prisma model' });
+      tableProvenances.set(m, sources);
+    }
+  }
+
+  // 1d. Aggregate DDL-declared columns (Spec 39 — derived applicability).
+  //      The schema-sql and schema-code visitors emit per-file `ddlColumns`;
+  //      the reducer folds them into a single case-insensitive, deduplicated
+  //      set so downstream applicability predicates can ask "does ANY table
+  //      carry a tenant-scoping column?" without per-table column lists.
+  //
+  //      Spec 62 Amendment B — additionally fold the per-table
+  //      `ddlTableColumns` into a corpus-wide `tableColumns` (Record<table,
+  //      string[]>) so the Stage-4 missing-org-filter reducer can answer the
+  //      per-query question "does THIS table carry a tenant column?" that the
+  //      flat set cannot.
+  const ddlColumns = new Set<string>();
+  const tableColumnsMap = new Map<string, Set<string>>();
+  for (const [filePath, fact] of iteratePerFileFacts(allFacts)) {
+    const cols: string[] = (fact as any).ddlColumns ?? [];
+    for (const c of cols) ddlColumns.add(String(c).toLowerCase());
+
+    const perTable: Record<string, string[]> = (fact as any).ddlTableColumns ?? {};
+    for (const [table, tableCols] of Object.entries(perTable)) {
+      let set = tableColumnsMap.get(table);
+      if (!set) {
+        set = new Set<string>();
+        tableColumnsMap.set(table, set);
+      }
+      for (const c of tableCols) set.add(String(c).toLowerCase());
+    }
+  }
+  const tableColumns: Record<string, string[]> = {};
+  for (const [table, set] of tableColumnsMap) tableColumns[table] = [...set];
+
+  return { knownTables, tableProvenances, dropProvenance, ddlColumns, tableColumns };
+}
+
+/**
+ * Merge external config tables into the catalog and detect table references
+ * that resolve to no known table. Emits `unknown-table` and
+ * `stale-table-reference` violations.
+ */
+function detectUnknownTables(opts: {
+  knownTables: Set<string>;
+  tableProvenances: Map<string, any[]>;
+  dropProvenance: Map<string, { migrationFile: string; createdInSameMigration: string[] }>;
+  allFacts: Readonly<Record<string, unknown>>;
+  schemaConfig: Record<string, unknown>;
+}): Violation[] {
+  const { knownTables, tableProvenances, dropProvenance, allFacts, schemaConfig } = opts;
+  const violations: Violation[] = [];
+
+  // ── 2. Unknown-table detection ────────────────────────────────────────
+  //
+  // Fail-open guardrail: we can only accuse when the table catalog is
+  // built from authoritative sources.  Empty catalog → cannot accuse.
+  //
+  // Authoritative sources (independent of query sites, not circular):
+  //   • SQL migration files via schema-sql     (step 1a)
+  //   • ORM model definitions via schema-code  (step 1b)
+  //   • Prisma schemas via schema-prisma       (step 1c)
+  //
+  // External config tables (schemas from CodeIndexDB, wrangler.toml
+  // pre-discovered tables) are added as a bonus but are not required.
+  //
+  // NOT authoritative: tables inferred from query-text alone.  Those
+  // never enter the catalog (table refs are for checking, not building).
+
+  // Merge external tables from config (bonus, not required).
+  const externalKnownTables: string[] = (schemaConfig.knownTables as string[]) ?? [];
+  for (const t of externalKnownTables) {
+    knownTables.add(t);
+    const sources = tableProvenances.get(t) ?? [];
+    sources.push({ table: t, tier: 'external-config', description: 'External configuration' });
+    tableProvenances.set(t, sources);
+  }
+
+  // Also read the documented schemas config (structured {name, tables} objects).
+  // The standalone UniversalSchemaAnalyzer.analyze() path reads schemas; the
+  // pipeline reducer must read it too, otherwise configuring only schemas
+  // silently triggers fail-open (knownTables.size === 0).
+  const externalSchemas: Array<{
+    name: string; tables: Array<{ name: string; columns: Array<{ name: string; type: string }> }>;
+  }> = (schemaConfig.schemas as any) ?? [];
+  for (const schema of externalSchemas) {
+    for (const table of schema.tables) {
+      knownTables.add(table.name);
+      const sources = tableProvenances.get(table.name) ?? [];
+      sources.push({ table: table.name, tier: 'external-config', description: `Schema: ${schema.name}` });
+      tableProvenances.set(table.name, sources);
+    }
+  }
+
+  if (knownTables.size > 0) {
+    // Collect all table references across all files
+    const allTableRefs: Array<{ file: string; table: string; type: string; line: number; column: number; context: string }> = [];
+    for (const [filePath, fact] of iteratePerFileFacts(allFacts)) {
+      const refs: any[] = (fact as any).tableRefs ?? [];
+      for (const ref of refs) {
+        allTableRefs.push({ file: filePath, ...ref });
+      }
+    }
+
+    // 10:1 fail-open ratio guard
+    const unknownRefs = allTableRefs.filter(ref => !knownTables.has(ref.table));
+    if (unknownRefs.length / Math.max(knownTables.size, 1) <= 10) {
+      for (const ref of unknownRefs) {
+        // The table existed and was dropped in a migration — a stale code
+        // reference, not a typo. Name the dropping migration and the tables
+        // that migration introduced (evidence, not proof of a successor).
+        const drop = dropProvenance.get(ref.table);
+        if (drop) {
+          const migrationName = drop.migrationFile.split('/').pop() ?? drop.migrationFile;
+          const created = drop.createdInSameMigration;
+          const msg = created.length > 0
+            ? `${ref.table} was dropped in ${migrationName}; that migration creates ${joinEnglish(created)}.`
+            : `${ref.table} was dropped in ${migrationName} and was not recreated.`;
+          violations.push({
+            file: ref.file,
+            line: ref.line,
+            column: ref.column,
+            severity: 'critical' as const,
+            message: msg,
+            rule: 'stale-table-reference',
+            analyzer: 'schema',
+            symbol: ref.table,
+            resolution: {
+              action: 'update-stale-reference',
+              // The tables `created` are evidence the migration replaced the
+              // dropped table, not proof of a drop-in successor — schemas can
+              // be split or changed incompatibly, in which case the file must
+              // be removed rather than updated. The summary names them as
+              // context and leaves update-vs-remove to the reviewer.
+              summary: created.length > 0
+                ? `The table '${ref.table}' was dropped in ${migrationName}. That migration introduces ${joinEnglish(created)} — review this reference and update or remove it.`
+                : `The table '${ref.table}' was dropped in ${migrationName} and was not recreated — update or remove this reference.`,
+              symbols: created.length > 0 ? created : [ref.table],
+              files: [ref.file],
+              lines: [ref.line],
+            },
+          } as Violation);
+          continue;
+        }
+        const suggestions = getNearestTableSuggestions(ref.table, knownTables, 2);
+        const msg = suggestions.length > 0
+          ? `Reference to unknown table '${ref.table}' (${ref.type}). Did you mean: ${suggestions.join(', ')}?`
+          : `Reference to unknown table '${ref.table}' (${ref.type})`;
+        const suggestionNames = suggestions.map((s) => s.replace(/^'|'$/g, ''));
+        violations.push({
+          file: ref.file,
+          line: ref.line,
+          column: ref.column,
+          severity: 'critical' as const,
+          message: msg,
+          rule: 'unknown-table',
+          analyzer: 'schema',
+          symbol: ref.table,
+          resolution: {
+            action: suggestionNames.length > 0 ? 'use-known-table' : 'register-or-fix-table',
+            summary: suggestionNames.length > 0
+              ? `Rename the table reference '${ref.table}' to the nearest known table: ${suggestions.join(', ')}.`
+              : `The table '${ref.table}' is not in the known catalog — register it, or fix the reference to a known table.`,
+            symbols: suggestionNames.length > 0 ? suggestionNames : [ref.table],
+            files: [ref.file],
+            lines: [ref.line],
+          },
+        } as Violation);
+      }
+    }
+  }
+
+  return violations;
+}
+
+/**
+ * Validate JSON schemas found in the corpus. Best-effort: failures are non-fatal.
+ */
+function validateJsonSchemas(opts: {
+  schemaConfig: Record<string, unknown>;
+  allFacts: Readonly<Record<string, unknown>>;
+  context: ReducerContext;
+  analyzeJsonSchemas: any;
+}): Violation[] {
+  const { schemaConfig, allFacts, context, analyzeJsonSchemas } = opts;
+  const violations: Violation[] = [];
+
+  if (schemaConfig.validateJsonSchemas !== false) {
+    try {
+      // Collect JSON file paths from the lightweight visitor markers, then
+      // parse each on demand so parsed objects never survive past this loop.
+      const jsonFiles: string[] = [];
+      for (const [filePath, fact] of iteratePerFileFacts(allFacts)) {
+        if ('isJson' in (fact as any)) {
+          jsonFiles.push(filePath);
+        }
+      }
+      const readJson = (filePath: string): object | null => {
+        const raw = context.readSource?.(filePath);
+        if (raw === undefined) return null;
+        try {
+          const parsed = JSON.parse(raw);
+          return parsed !== null && typeof parsed === 'object' ? (parsed as object) : null;
+        } catch {
+          return null;
+        }
+      };
+      const jsonResult = analyzeJsonSchemas(jsonFiles, readJson, schemaConfig);
+      violations.push(...(jsonResult?.violations ?? []));
+    } catch (e: any) {
+      // JSON schema validation is best-effort (non-fatal)
+    }
+  }
+
+  return violations;
+}
+
+/**
  * Schema Stage 3 reducer — cross-file unknown-table detection and JSON schema validation.
  *
  * Consumes facts from schema-sql, schema-code, schema-prisma, and schema-json visitors.
@@ -3221,302 +3566,23 @@ export function createSchemaReducer(): Stage3Reducer {
       const violations: Violation[] = [];
       const schemaConfig = (context.config ?? {}) as Record<string, unknown>;
 
-      // allFacts is keyed by visitor name, each value is { [filePath]: { ...per-file facts } }
-      // Flatten to per-file iteration helpers.
-      const perFile = function* (): Generator<[string, Record<string, unknown>]> {
-        for (const [, visitorFacts] of Object.entries(allFacts)) {
-          if (typeof visitorFacts === 'object' && visitorFacts !== null) {
-            for (const [filePath, fact] of Object.entries(visitorFacts as Record<string, unknown>)) {
-              if (typeof fact === 'object' && fact !== null) {
-                yield [filePath, fact as Record<string, unknown>];
-              }
-            }
-          }
-        }
-      };
+      const { knownTables, tableProvenances, dropProvenance, ddlColumns, tableColumns } =
+        buildSchemaCatalog(allFacts);
 
-      // ── 1. Build known-tables catalog ──────────────────────────────────────
+      violations.push(...detectUnknownTables({
+        knownTables,
+        tableProvenances,
+        dropProvenance,
+        allFacts,
+        schemaConfig,
+      }));
 
-      const knownTables = new Set<string>();
-      const tableProvenances = new Map<string, any[]>(); // table name → origins
-
-      // 1a. SQL DDL replay — collect all DDL facts, sort by numeric prefix, replay
-      const sqlFiles: Array<{ filePath: string; ops: MigrationOp[] }> = [];
-      for (const [filePath, fact] of perFile()) {
-        if ('ddlOps' in fact) {
-          sqlFiles.push({ filePath, ops: fact.ddlOps as MigrationOp[] });
-        }
-      }
-      // Sort by numeric prefix in basename: "009_something" < "0010_rename"
-      // Falls back to localeCompare for non-numeric-prefixed names.
-      const numericPrefix = (p: string): number => {
-        const base = p.split('/').pop() ?? p;
-        const m = base.match(/^(\d+)/);
-        return m ? parseInt(m[1], 10) : 0;
-      };
-      sqlFiles.sort((a, b) => {
-        const na = numericPrefix(a.filePath);
-        const nb = numericPrefix(b.filePath);
-        if (na !== nb) return na - nb;
-        return a.filePath.localeCompare(b.filePath);
-      });
-      // Drop provenance — the last migration that removed a table, and the tables
-      // that same migration introduced. Lets unknown-table detection distinguish
-      // "never existed" from "existed and was dropped": the latter is a stale code
-      // reference, not a typo. `dropProvenance` ends up holding exactly the tables
-      // dropped and not subsequently recreated (CREATE clears the entry).
-      const dropProvenance = new Map<string, { migrationFile: string; createdInSameMigration: string[] }>();
-      for (const sqlFile of sqlFiles) {
-        const before = new Set(knownTables);
-        applyMigrationOps(sqlFile.ops, knownTables);
-        // Record provenance for newly created tables
-        for (const table of knownTables) {
-          if (!before.has(table)) {
-            const sources = tableProvenances.get(table) ?? [];
-            sources.push({ table, tier: 'sql-migration', sourceFile: sqlFile.filePath, description: 'SQL migration' });
-            tableProvenances.set(table, sources);
-          }
-        }
-        // Genuinely-new tables introduced by this migration (excludes rename/rebuild
-        // churn like `ALTER … RENAME TO x_old` + re-CREATE of the same name).
-        const createdHere: string[] = [];
-        const createdTables = new Set<string>();
-        const droppedTables = new Set<string>();
-        for (const op of sqlFile.ops) {
-          const t = stripIdentifier(op.table);
-          if (op.op === 'CREATE') {
-            createdTables.add(t);
-            if (!before.has(t)) createdHere.push(t);
-          } else if (op.op === 'DROP') {
-            droppedTables.add(t);
-          }
-        }
-        for (const op of sqlFile.ops) {
-          const t = stripIdentifier(op.table);
-          if (op.op === 'DROP') {
-            dropProvenance.set(t, { migrationFile: sqlFile.filePath, createdInSameMigration: createdHere });
-          } else if (op.op === 'CREATE') {
-            dropProvenance.delete(t);
-          }
-        }
-        // A table created and dropped within this same file is a self-contained
-        // fixture — a scratch table a test or script creates, uses, then tears
-        // down. Its DROP is teardown, not a migration, so it must neither surface
-        // as a stale-table-reference nor leave the name unknown: keep it known and
-        // clear the drop provenance this file recorded for it. (A genuine dropped
-        // table stays stale because its DROP lives in a migration that never also
-        // CREATEs it — e.g. recall's `generation_queue`, dropped in 0198.)
-        for (const t of createdTables) {
-          if (droppedTables.has(t)) {
-            knownTables.add(t);
-            if (dropProvenance.get(t)?.migrationFile === sqlFile.filePath) {
-              dropProvenance.delete(t);
-            }
-          }
-        }
-      }
-
-      // 1b. ORM tables from code files — with provenance from the table-source registry
-      for (const [filePath, fact] of perFile()) {
-        const ormTables: string[] = (fact as any).ormTables ?? [];
-        for (const t of ormTables) knownTables.add(t);
-
-        const provenances: any[] = (fact as any).tableProvenance ?? [];
-        for (const p of provenances) {
-          const sources = tableProvenances.get(p.table) ?? [];
-          sources.push(p.source);
-          tableProvenances.set(p.table, sources);
-        }
-      }
-
-      // 1c. Prisma models
-      for (const [filePath, fact] of perFile()) {
-        const prismaModels: string[] = (fact as any).prismaModels ?? [];
-        for (const m of prismaModels) {
-          knownTables.add(m);
-          const sources = tableProvenances.get(m) ?? [];
-          sources.push({ table: m, tier: 'prisma-model', sourceFile: filePath, description: 'Prisma model' });
-          tableProvenances.set(m, sources);
-        }
-      }
-
-      // 1d. Aggregate DDL-declared columns (Spec 39 — derived applicability).
-      //      The schema-sql and schema-code visitors emit per-file `ddlColumns`;
-      //      the reducer folds them into a single case-insensitive, deduplicated
-      //      set so downstream applicability predicates can ask "does ANY table
-      //      carry a tenant-scoping column?" without per-table column lists.
-      //
-      //      Spec 62 Amendment B — additionally fold the per-table
-      //      `ddlTableColumns` into a corpus-wide `tableColumns` (Record<table,
-      //      string[]>) so the Stage-4 missing-org-filter reducer can answer the
-      //      per-query question "does THIS table carry a tenant column?" that the
-      //      flat set cannot.
-      const ddlColumns = new Set<string>();
-      const tableColumnsMap = new Map<string, Set<string>>();
-      for (const [filePath, fact] of perFile()) {
-        const cols: string[] = (fact as any).ddlColumns ?? [];
-        for (const c of cols) ddlColumns.add(String(c).toLowerCase());
-
-        const perTable: Record<string, string[]> = (fact as any).ddlTableColumns ?? {};
-        for (const [table, tableCols] of Object.entries(perTable)) {
-          let set = tableColumnsMap.get(table);
-          if (!set) {
-            set = new Set<string>();
-            tableColumnsMap.set(table, set);
-          }
-          for (const c of tableCols) set.add(String(c).toLowerCase());
-        }
-      }
-      const tableColumns: Record<string, string[]> = {};
-      for (const [table, set] of tableColumnsMap) tableColumns[table] = [...set];
-
-      // ── 2. Unknown-table detection ────────────────────────────────────────
-      //
-      // Fail-open guardrail: we can only accuse when the table catalog is
-      // built from authoritative sources.  Empty catalog → cannot accuse.
-      //
-      // Authoritative sources (independent of query sites, not circular):
-      //   • SQL migration files via schema-sql     (step 1a)
-      //   • ORM model definitions via schema-code  (step 1b)
-      //   • Prisma schemas via schema-prisma       (step 1c)
-      //
-      // External config tables (schemas from CodeIndexDB, wrangler.toml
-      // pre-discovered tables) are added as a bonus but are not required.
-      //
-      // NOT authoritative: tables inferred from query-text alone.  Those
-      // never enter the catalog (table refs are for checking, not building).
-
-      // Merge external tables from config (bonus, not required).
-      const externalKnownTables: string[] = (schemaConfig.knownTables as string[]) ?? [];
-      for (const t of externalKnownTables) {
-        knownTables.add(t);
-        const sources = tableProvenances.get(t) ?? [];
-        sources.push({ table: t, tier: 'external-config', description: 'External configuration' });
-        tableProvenances.set(t, sources);
-      }
-
-      // Also read the documented schemas config (structured {name, tables} objects).
-      // The standalone UniversalSchemaAnalyzer.analyze() path reads schemas; the
-      // pipeline reducer must read it too, otherwise configuring only schemas
-      // silently triggers fail-open (knownTables.size === 0).
-      const externalSchemas: Array<{
-        name: string; tables: Array<{ name: string; columns: Array<{ name: string; type: string }> }>;
-      }> = (schemaConfig.schemas as any) ?? [];
-      for (const schema of externalSchemas) {
-        for (const table of schema.tables) {
-          knownTables.add(table.name);
-          const sources = tableProvenances.get(table.name) ?? [];
-          sources.push({ table: table.name, tier: 'external-config', description: `Schema: ${schema.name}` });
-          tableProvenances.set(table.name, sources);
-        }
-      }
-
-      if (knownTables.size > 0) {
-        // Collect all table references across all files
-        const allTableRefs: Array<{ file: string; table: string; type: string; line: number; column: number; context: string }> = [];
-        for (const [filePath, fact] of perFile()) {
-          const refs: any[] = (fact as any).tableRefs ?? [];
-          for (const ref of refs) {
-            allTableRefs.push({ file: filePath, ...ref });
-          }
-        }
-
-        // 10:1 fail-open ratio guard
-        const unknownRefs = allTableRefs.filter(ref => !knownTables.has(ref.table));
-        if (unknownRefs.length / Math.max(knownTables.size, 1) <= 10) {
-          for (const ref of unknownRefs) {
-            // The table existed and was dropped in a migration — a stale code
-            // reference, not a typo. Name the dropping migration and the tables
-            // that migration introduced (evidence, not proof of a successor).
-            const drop = dropProvenance.get(ref.table);
-            if (drop) {
-              const migrationName = drop.migrationFile.split('/').pop() ?? drop.migrationFile;
-              const created = drop.createdInSameMigration;
-              const msg = created.length > 0
-                ? `${ref.table} was dropped in ${migrationName}; that migration creates ${joinEnglish(created)}.`
-                : `${ref.table} was dropped in ${migrationName} and was not recreated.`;
-              violations.push({
-                file: ref.file,
-                line: ref.line,
-                column: ref.column,
-                severity: 'critical' as const,
-                message: msg,
-                rule: 'stale-table-reference',
-                analyzer: 'schema',
-                symbol: ref.table,
-                resolution: {
-                  action: 'update-stale-reference',
-                  // The tables `created` are evidence the migration replaced the
-                  // dropped table, not proof of a drop-in successor — schemas can
-                  // be split or changed incompatibly, in which case the file must
-                  // be removed rather than updated. The summary names them as
-                  // context and leaves update-vs-remove to the reviewer.
-                  summary: created.length > 0
-                    ? `The table '${ref.table}' was dropped in ${migrationName}. That migration introduces ${joinEnglish(created)} — review this reference and update or remove it.`
-                    : `The table '${ref.table}' was dropped in ${migrationName} and was not recreated — update or remove this reference.`,
-                  symbols: created.length > 0 ? created : [ref.table],
-                  files: [ref.file],
-                  lines: [ref.line],
-                },
-              } as Violation);
-              continue;
-            }
-            const suggestions = getNearestTableSuggestions(ref.table, knownTables, 2);
-            const msg = suggestions.length > 0
-              ? `Reference to unknown table '${ref.table}' (${ref.type}). Did you mean: ${suggestions.join(', ')}?`
-              : `Reference to unknown table '${ref.table}' (${ref.type})`;
-            const suggestionNames = suggestions.map((s) => s.replace(/^'|'$/g, ''));
-            violations.push({
-              file: ref.file,
-              line: ref.line,
-              column: ref.column,
-              severity: 'critical' as const,
-              message: msg,
-              rule: 'unknown-table',
-              analyzer: 'schema',
-              symbol: ref.table,
-              resolution: {
-                action: suggestionNames.length > 0 ? 'use-known-table' : 'register-or-fix-table',
-                summary: suggestionNames.length > 0
-                  ? `Rename the table reference '${ref.table}' to the nearest known table: ${suggestions.join(', ')}.`
-                  : `The table '${ref.table}' is not in the known catalog — register it, or fix the reference to a known table.`,
-                symbols: suggestionNames.length > 0 ? suggestionNames : [ref.table],
-                files: [ref.file],
-                lines: [ref.line],
-              },
-            } as Violation);
-          }
-        }
-      }
-
-      // ── 3. JSON schema validation ──────────────────────────────────────────
-
-      if (schemaConfig.validateJsonSchemas !== false) {
-        try {
-          // Collect JSON file paths from the lightweight visitor markers, then
-          // parse each on demand so parsed objects never survive past this loop.
-          const jsonFiles: string[] = [];
-          for (const [filePath, fact] of perFile()) {
-            if ('isJson' in (fact as any)) {
-              jsonFiles.push(filePath);
-            }
-          }
-          const readJson = (filePath: string): object | null => {
-            const raw = context.readSource?.(filePath);
-            if (raw === undefined) return null;
-            try {
-              const parsed = JSON.parse(raw);
-              return parsed !== null && typeof parsed === 'object' ? (parsed as object) : null;
-            } catch {
-              return null;
-            }
-          };
-          const jsonResult = analyzeJsonSchemas(jsonFiles, readJson, schemaConfig);
-          violations.push(...(jsonResult?.violations ?? []));
-        } catch (e: any) {
-          // JSON schema validation is best-effort (non-fatal)
-        }
-      }
+      violations.push(...validateJsonSchemas({
+        schemaConfig,
+        allFacts,
+        context,
+        analyzeJsonSchemas,
+      }));
 
       // ── 4. Build table catalog for metadata ───────────────────────────────
 
@@ -3528,7 +3594,7 @@ export function createSchemaReducer(): Stage3Reducer {
       return {
         violations,
         facts: { tableCatalog: catalogEntries, ddlColumns: [...ddlColumns].sort(), tableColumns },
-        factsConsumed: [...perFile()].length,
+        factsConsumed: [...iteratePerFileFacts(allFacts)].length,
       };
     },
     defaultConfig: {},
