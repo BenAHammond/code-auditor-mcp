@@ -892,23 +892,204 @@ tables above use the fresh-index measure script (`CODE_AUDITOR_DATA_DIR=/tmp`) �
 the only trustworthy number. The content-hash skip needs a code-version component,
 or full runs must refresh styles unconditionally. Tracked as a follow-up task.
 
+Re-pinned 2026-09-30 (Spec 68 §10/§15 + Spec 69). The tables above were last
+measured at 4.1.1, before Spec 68 and Spec 69 landed. This re-pin folds in the
+whole Spec 68 + Spec 69 window, and the total move is dominated by a **config
+model change**, not a finding-count regression. Every delta is attributed to one
+of four named causes; the reconciliation below is exact per corpus.
+
+**Cause 1 — Spec 68 §10 config un-gating (`47a257c`, dominant).** "Config tunes,
+never selects" deleted the on/off selector and made all 11 config-gated rules
+unconditional. Five of them were `off-by-default` and therefore fired *zero* on
+every corpus at the 4.1.1 pin; they now fire everywhere, which is most of the
+jump:
+
+| rule now unconditional | recall | hhra | knex | primer | blitz | endless |
+| --- | --- | --- | --- | --- | --- | --- |
+| documentation::parameter-documentation | 1,014 | 256 | 1 | 0 | 4 | 118 |
+| documentation::return-documentation | 545 | 159 | 0 | 0 | 3 | 51 |
+| dry::duplicate-string-literal | 374 | 237 | 517 | 1 | 55 | 30 |
+| dry::duplicate-import | 58 | 15 | 1 | 2 | 44 | 26 |
+| dry::dry/structural-similarity | 90 | 46 | 18 | 0 | 10 | 1 |
+| **sum** | **2,081** | **713** | **537** | **3** | **116** | **226** |
+
+**Cause 2 — Spec 68 §15 deletion sweep + #303.** `solid::solid/dependency-inversion`
+and `dependency-graph::hub-nodes` are removed from the rule registry (no longer
+declared). Their 4.1.1 counts leave the tables: dependency-inversion recall 3,
+hhra 8, knex 12, blitz 11; hub-nodes recall 1, hhra 1, knex 1, blitz 1.
+
+**Cause 3 — Spec 69 name-list deletion + four fixes (#377/#381/#376/#390).** The
+`DB_RECEIVER_NAMES` name-list is deleted and replaced with declaration-resolution
+(`handle`/`not-handle`/`unproven` disposition). The data-access / schema /
+cross-domain movements this produces — `loop-query`, `too-many-queries`,
+`unknown-table`, `stale-table-reference`, `read-never-written`,
+`written-never-read`, `sql-injection-risk`, `table-naming-convention`,
+`reserved-word`, `multi-table-write` — are attributed finding-by-finding in
+`spec69-f2-rerun.md` and are not re-derived here.
+
+**Cause 4 — Spec 69 R5.** `data-access::missing-org-filter` 9 → 68 on hhra-org
+(the +59), fully attributed in `spec69-r5-hhra-redisposition.md`.
+
+Two small named follow-ups also move one rule each:
+
+- `data-access::unfiltered-query` recall-protocol 6 → 0 — Spec 68 disposition (a)
+  (`09ccb63`, bare `DELETE` exempted) plus Spec 69 Fix 4 (`5fef1b0`, read half
+  consumes Tier 3) retargeted the rule so its six remaining recall findings no
+  longer match. The rule stays registered; it fires 0 on all six corpora.
+- `schema-code::dynamic-sql-construction` hhra-org is re-homed to the `schema`
+  analyzer (net zero on hhra; the rule moved, not the finding).
+
+Per-corpus reconciliation (old total → new total, exact):
+
+| corpus | 4.1.1 | new | Δ | Cause 1 | Cause 2 | other causes |
+| --- | --- | --- | --- | --- | --- | --- |
+| recall-protocol | 3,048 | 5,114 | +2,066 | +2,081 | −4 | −11 |
+| hhra-org | 418 | 1,274 | +856 | +713 | −9 | +152 |
+| knex | 100 | 613 | +513 | +537 | −13 | −11 |
+| primer-css | 16 | 19 | +3 | +3 | 0 | 0 |
+| blitz | 934 | 1,041 | +107 | +116 | −12 | +3 |
+| endless-guessing | 25 | 256 | +231 | +226 | 0 | +5 |
+
+The "other causes" column is the net of Causes 3+4 and the two follow-ups; its
+per-rule composition is the Spec 69 diff already on record. No rule moved that is
+not named by one of these causes.
+
+**Re-pinned 2026-09-30 — Spec 69 R3 form-3 `this.<field>` resolution.** R3 teaches
+the receiver-resolution instrument to resolve `this.env.DB` (through the class's
+`extends Agent<Env>` → `Env` type-parameter heritage) and `this.ctx.storage.sql`
+(through the Durable Object storage contract) to `handle`, instead of leaving
+them `unproven` (→ cannot-fire). On recall-protocol this unblocks the
+parameter-propagation path in the Durable Object sync/schema workers
+(`src/agents/hero-data-agent.ts` calls `ensureHeroDataSchema(this.ctx.storage.sql)`
+and `syncHeroDataFromD1(this.env.DB, this.ctx.storage.sql, …)`), so the three
+rules that consume those resolved query sites now fire where they were previously
+silent. +10, all genuine, sampled file-by-file:
+
+- `data-access::loop-query` 211 → **216** (+5) — `src/agents/hero-data-sync.ts`
+  lines 50/73/95/126/162: `sql.exec("DELETE …")` inside a loop where `sql` is the
+  `this.ctx.storage.sql` parameter. Real N+1 in the sync worker.
+- `cross-domain::cross-domain/written-never-read` 14 → **18** (+4) —
+  `src/agents/hero-data-schema.ts` lines 24/31/40/61: `CREATE TABLE IF NOT EXISTS`
+  for `powers` / `items` / `strategy_knowledge` / `popular_builds` — written, never
+  SELECTed in the schema bootstrap.
+- `cross-domain::cross-domain/multi-table-write` 8 → **9** (+1) —
+  `src/agents/hero-data-sync.ts:124` writes 6 distinct tables in one function.
+
+No other corpus moved: hhra-org 1,274, knex 613, primer-css 19, blitz 1,041 and
+endless-guessing 256 all reproduce byte-identical to the prior pin. The five
+"other causes" corpora keep their reconciliation cells unchanged (only the
+recall-protocol `other causes` cell shifts −21 → −11 to absorb this +10).
+
+### Documentation carve-out (§13/§14 — reported first and separately)
+
+`parameter-documentation` and `return-documentation` fire unconditionally in
+5.0.0 (the `documentation.requireParamDocs` / `requireReturnDocs` config gates
+came off — §14). They are the **known consumer-facing volume**, not defects a
+consumer dispositions, so §13.1 reports them separately rather than as part of
+the advisory finding count. The per-corpus totals above *include* them; the real
+split is:
+
+| corpus | parameter-documentation | return-documentation | documentation subtotal | advisory (total − documentation) |
+| --- | --- | --- | --- | --- |
+| recall-protocol | 1,014 | 545 | 1,559 | 3,550 |
+| hhra-org | 256 | 159 | 415 | 854 |
+| knex | 1 | 0 | 1 | 605 |
+| primer-css | 0 | 0 | 0 | 18 |
+| blitz | 4 | 3 | 7 | 1,033 |
+| endless-guessing | 118 | 51 | 169 | 89 |
+
+No other documentation rule moved (§13.2): `function-documentation` /
+`method-documentation` / `class-documentation` are byte-identical to their 4.x
+pins on every corpus, and those three remain inside the advisory count (they were
+never config-gated off).
+
+### Rule × corpus matrix (§13)
+
+The complete advisory rule × corpus matrix — every non-documentation rule as a
+row, all six corpora as columns. `·` means the rule did not fire on that corpus.
+The two documentation rules are in their own table (above), never inside a
+corpus total. 54 advisory rules fire on at least one corpus; the two carve-out
+rules are reported separately.
+
+| analyzer::rule | recall-protocol | hhra-org | knex | primer-css | blitz | endless-guessing |
+| --- | --- | --- | --- | --- | --- | --- |
+| conventions::conventions/error-handling | 51 | · | · | · | · | · |
+| conventions::conventions/export-shape | 1 | · | · | · | 1 | · |
+| conventions::conventions/import-form | 5 | · | · | · | · | · |
+| conventions::conventions/naming | 10 | 6 | · | · | 2 | · |
+| conventions::conventions/usage-pair | 60 | 5 | · | · | · | · |
+| cross-domain::cross-domain/multi-table-write | 9 | · | · | · | · | · |
+| cross-domain::cross-domain/read-never-written | 16 | 19 | 2 | · | · | 2 |
+| cross-domain::cross-domain/written-never-read | 18 | 2 | · | · | · | · |
+| data-access::complex-query | 1 | · | · | · | · | · |
+| data-access::hardcoded-connection | · | · | 16 | · | · | · |
+| data-access::loop-query | 212 | 11 | 3 | · | 2 | 11 |
+| data-access::missing-org-filter | · | 68 | · | · | · | · |
+| data-access::sql-injection-risk | 11 | 10 | 4 | · | · | · |
+| dependency-graph::circular-dependency | · | · | · | · | 1 | · |
+| dependency-graph::orphaned-nodes | 23 | 4 | 2 | · | 35 | · |
+| dependency-graph::unreferenced-module | 114 | 84 | · | 1 | 205 | · |
+| documentation::class-documentation | 16 | 39 | · | · | 34 | · |
+| documentation::function-documentation | 574 | 51 | · | 1 | 191 | · |
+| documentation::method-documentation | 80 | 69 | · | · | 161 | · |
+| dry::dry/duplicate | 6 | · | · | · | · | · |
+| dry::dry/similar-expression | 21 | 5 | 1 | · | · | · |
+| dry::dry/structural-similarity | 90 | 46 | 18 | · | 10 | 1 |
+| dry::duplicate-import | 58 | 15 | 1 | 2 | 44 | 26 |
+| dry::duplicate-string-literal | 374 | 237 | 517 | 1 | 55 | 30 |
+| react::accessibility | 12 | 1 | · | · | · | · |
+| react::complexity | 29 | 6 | · | · | · | · |
+| react::performance | 95 | 57 | · | · | 37 | 12 |
+| react::raw-element | 111 | · | · | · | 54 | · |
+| schema-code::reserved-word | · | · | · | · | 7 | · |
+| schema-code::table-naming-convention | · | 9 | · | · | · | · |
+| schema-code::too-many-queries | 57 | 20 | · | · | · | · |
+| schema::dynamic-sql-construction | · | 1 | · | · | · | · |
+| schema::invalid-json | · | 1 | · | · | · | · |
+| schema::stale-table-reference | 19 | 16 | · | · | · | · |
+| schema::unknown-table | 2 | 33 | · | · | 7 | · |
+| secrets::hardcoded-secret | · | · | 1 | · | 3 | · |
+| security::command-injection-risk | 24 | · | 1 | · | · | · |
+| security::dynamic-require-of-project-path | · | · | · | · | 1 | · |
+| security::unescaped-html-interpolation | · | · | · | · | · | 3 |
+| solid::function-length | 95 | 32 | 9 | · | 3 | 1 |
+| solid::interface-size | 2 | · | 4 | · | · | · |
+| solid::parameter-count | 11 | · | · | · | · | · |
+| solid::solid/class-size | 2 | · | 15 | · | · | · |
+| solid::solid/method-complexity | 33 | 7 | · | · | 1 | · |
+| solid::solid/open-closed | · | · | 11 | · | · | · |
+| styles::styles/declaration-set-similarity | 21 | · | · | · | 161 | · |
+| styles::styles/mechanism-fragmentation | 52 | · | · | · | · | · |
+| styles::styles/mechanism-mixing | 9 | · | · | · | · | · |
+| styles::styles/off-scale | 758 | · | · | · | · | · |
+| styles::styles/token-bypass | 455 | · | · | 1 | 16 | 3 |
+| styles::styles/undefined-class | 2 | · | · | · | 2 | · |
+| styles::styles/value-drift | 3 | · | · | · | · | · |
+| styles::styles/z-index-singleton | 7 | · | · | 11 | · | · |
+| styles::styles/z-index-sprawl | 1 | · | · | 1 | · | · |
+
 ---
 
-## recall-protocol — 3,048 advisory findings (2,099 files)
+## recall-protocol — 5,109 advisory findings (2,099 files)
 
 | analyzer::rule | count |
 | --- | --- |
+| documentation::parameter-documentation | 1014 |
 | styles::styles/off-scale | 758 |
 | documentation::function-documentation | 574 |
+| documentation::return-documentation | 545 |
 | styles::styles/token-bypass | 455 |
-| data-access::loop-query | 193 |
+| dry::duplicate-string-literal | 374 |
+| data-access::loop-query | 212 |
 | dependency-graph::unreferenced-module | 114 |
 | react::raw-element | 111 |
 | react::performance | 95 |
 | solid::function-length | 95 |
-| schema-code::too-many-queries | 84 |
+| dry::dry/structural-similarity | 90 |
 | documentation::method-documentation | 80 |
 | conventions::conventions/usage-pair | 60 |
+| dry::duplicate-import | 58 |
+| schema-code::too-many-queries | 57 |
 | styles::styles/mechanism-fragmentation | 52 |
 | conventions::conventions/error-handling | 51 |
 | solid::solid/method-complexity | 33 |
@@ -917,21 +1098,19 @@ or full runs must refresh styles unconditionally. Tracked as a follow-up task.
 | dependency-graph::orphaned-nodes | 23 |
 | dry::dry/similar-expression | 21 |
 | styles::styles/declaration-set-similarity | 21 |
-| cross-domain::cross-domain/written-never-read | 19 |
 | schema::stale-table-reference | 19 |
+| cross-domain::cross-domain/read-never-written | 16 |
 | documentation::class-documentation | 16 |
-| cross-domain::cross-domain/read-never-written | 14 |
-| data-access::sql-injection-risk | 12 |
+| cross-domain::cross-domain/written-never-read | 18 |
 | react::accessibility | 12 |
+| data-access::sql-injection-risk | 11 |
 | solid::parameter-count | 11 |
 | conventions::conventions/naming | 10 |
-| cross-domain::cross-domain/multi-table-write | 10 |
 | styles::styles/mechanism-mixing | 9 |
+| cross-domain::cross-domain/multi-table-write | 9 |
 | styles::styles/z-index-singleton | 7 |
-| data-access::unfiltered-query | 6 |
 | dry::dry/duplicate | 6 |
 | conventions::conventions/import-form | 5 |
-| solid::solid/dependency-inversion | 3 |
 | styles::styles/value-drift | 3 (range 2–3 — all three genuine pairs; Spec 67) |
 | schema::unknown-table | 2 |
 | solid::solid/class-size | 2 |
@@ -939,24 +1118,31 @@ or full runs must refresh styles unconditionally. Tracked as a follow-up task.
 | styles::styles/undefined-class | 2 |
 | conventions::conventions/export-shape | 1 |
 | data-access::complex-query | 1 |
-| dependency-graph::tight-coupling | 1 |
-| dependency-graph::hub-nodes | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## hhra-org — 418 advisory findings (757 files)
+## hhra-org — 1,269 advisory findings (757 files)
 
 | analyzer::rule | count |
 | --- | --- |
+| documentation::parameter-documentation | 256 |
+| dry::duplicate-string-literal | 237 |
+| documentation::return-documentation | 159 |
 | dependency-graph::unreferenced-module | 84 |
 | documentation::method-documentation | 69 |
+| data-access::missing-org-filter | 68 |
 | react::performance | 57 |
 | documentation::function-documentation | 51 |
+| dry::dry/structural-similarity | 46 |
 | documentation::class-documentation | 39 |
+| schema::unknown-table | 33 |
 | solid::function-length | 32 |
-| schema-code::too-many-queries | 21 |
-| data-access::missing-org-filter | 9 |
-| solid::solid/dependency-inversion | 8 |
-| data-access::loop-query | 7 |
+| schema-code::too-many-queries | 20 |
+| cross-domain::cross-domain/read-never-written | 19 |
+| schema::stale-table-reference | 16 |
+| dry::duplicate-import | 15 |
+| data-access::sql-injection-risk | 10 |
+| data-access::loop-query | 11 |
+| schema-code::table-naming-convention | 9 |
 | solid::solid/method-complexity | 7 |
 | conventions::conventions/naming | 6 |
 | react::complexity | 6 |
@@ -964,47 +1150,44 @@ or full runs must refresh styles unconditionally. Tracked as a follow-up task.
 | dry::dry/similar-expression | 5 |
 | dependency-graph::orphaned-nodes | 4 |
 | cross-domain::cross-domain/written-never-read | 2 |
-| cross-domain::cross-domain/read-never-written | 1 |
-| dependency-graph::tight-coupling | 1 |
-| dependency-graph::hub-nodes | 1 |
 | react::accessibility | 1 |
 | schema::invalid-json | 1 |
-| schema-code::dynamic-sql-construction | 1 |
+| schema::dynamic-sql-construction | 1 |
 
-## knex — 100 advisory findings (474 files)
+## knex — 606 advisory findings (474 files)
 
 | analyzer::rule | count |
 | --- | --- |
+| dry::duplicate-string-literal | 517 |
+| dry::dry/structural-similarity | 18 |
 | data-access::hardcoded-connection | 16 |
 | solid::solid/class-size | 15 |
-| schema::unknown-table | 12 |
-| solid::solid/open-closed | 12 |
-| solid::solid/dependency-inversion | 12 |
+| solid::solid/open-closed | 11 |
 | solid::function-length | 9 |
-| data-access::sql-injection-risk | 5 |
-| cross-domain::cross-domain/read-never-written | 4 |
+| data-access::sql-injection-risk | 4 |
 | solid::interface-size | 4 |
-| schema-code::too-many-queries | 3 |
+| data-access::loop-query | 3 |
+| cross-domain::cross-domain/read-never-written | 2 |
 | dependency-graph::orphaned-nodes | 2 |
-| dependency-graph::hub-nodes | 1 |
-| dependency-graph::tight-coupling | 1 |
+| documentation::parameter-documentation | 1 |
+| dry::duplicate-import | 1 |
 | dry::dry/similar-expression | 1 |
-| schema-code::table-naming-convention | 1 |
 | secrets::hardcoded-secret | 1 |
 | security::command-injection-risk | 1 |
 
-## primer-css — 16 advisory findings (137 files)
+## primer-css — 18 advisory findings (137 files)
 
 | analyzer::rule | count |
 | --- | --- |
 | styles::styles/z-index-singleton | 11 |
+| dry::duplicate-import | 2 |
 | dependency-graph::unreferenced-module | 1 |
-| dependency-graph::tight-coupling | 1 |
 | documentation::function-documentation | 1 |
+| dry::duplicate-string-literal | 1 |
 | styles::styles/token-bypass | 1 |
 | styles::styles/z-index-sprawl | 1 |
 
-## blitz — 934 advisory findings (788 files)
+## blitz — 1,040 advisory findings (788 files)
 
 | analyzer::rule | count |
 | --- | --- |
@@ -1012,37 +1195,159 @@ or full runs must refresh styles unconditionally. Tracked as a follow-up task.
 | documentation::function-documentation | 191 |
 | documentation::method-documentation | 161 |
 | styles::styles/declaration-set-similarity | 161 |
+| dry::duplicate-string-literal | 55 |
 | react::raw-element | 54 |
+| dry::duplicate-import | 44 |
 | react::performance | 37 |
-| dependency-graph::orphaned-nodes | 36 |
+| dependency-graph::orphaned-nodes | 35 |
 | documentation::class-documentation | 34 |
 | styles::styles/token-bypass | 16 |
-| solid::solid/dependency-inversion | 11 |
-| schema::unknown-table | 4 |
-| schema-code::reserved-word | 4 |
+| dry::dry/structural-similarity | 10 |
+| schema::unknown-table | 7 |
+| schema-code::reserved-word | 7 |
+| documentation::parameter-documentation | 4 |
+| documentation::return-documentation | 3 |
 | secrets::hardcoded-secret | 3 |
 | solid::function-length | 3 |
 | conventions::conventions/naming | 2 |
 | data-access::loop-query | 2 |
-| solid::solid/open-closed | 2 |
 | styles::styles/undefined-class | 2 |
 | conventions::conventions/export-shape | 1 |
 | dependency-graph::circular-dependency | 1 |
-| dependency-graph::tight-coupling | 1 |
-| dependency-graph::hub-nodes | 1 |
 | security::dynamic-require-of-project-path | 1 |
 | solid::solid/method-complexity | 1 |
 
-## endless-guessing — 25 advisory findings (89 files)
+## endless-guessing — 258 advisory findings (89 files)
 
 | analyzer::rule | count |
 | --- | --- |
+| documentation::parameter-documentation | 118 |
+| documentation::return-documentation | 51 |
+| dry::duplicate-string-literal | 30 |
+| dry::duplicate-import | 26 |
 | react::performance | 12 |
-| data-access::loop-query | 5 |
+| data-access::loop-query | 11 |
 | security::unescaped-html-interpolation | 3 |
 | styles::styles/token-bypass | 3 |
-| dependency-graph::tight-coupling | 1 |
+| cross-domain::cross-domain/read-never-written | 2 |
+| dry::dry/structural-similarity | 1 |
 | solid::function-length | 1 |
+
+---
+
+**Re-pinned 2026-10-01 — Part 1/2 seam work + #408 test/spec DDL scoping.** Four
+deltas across the six corpora; each is attributed to a named cause below, and no
+other rule moved on any corpus. The three unchanged corpora (hhra-org 1,274,
+primer-css 19, blitz 1,041) reproduce byte-identical to the prior pin.
+
+**SHA pinning (new — the drift guard).** Each corpus's baseline now records the
+commit SHA it was measured at, and `scripts/measure-corpus-counts.ts` checks the
+corpus's current HEAD against that pin on every run. A corpus that has moved
+reports `⚠ CORPUS DRIFT: corpus at <sha>, baseline pinned at <sha>` instead of a
+bare finding-count delta — drift then means the corpus changed, not the tool. The
+machine-checked pins live in `specs/corpus-pins.json`; this table is the
+human-readable copy:
+
+| corpus | pinned SHA |
+| --- | --- |
+| recall-protocol | `c007f6ed29c06fede6bdb6edd4d6bf8c35eb346e` |
+| hhra-org | `56bb7c877dd84bb224c9f57714a64b183ca17c9b` |
+| knex | `e25d54bcb707714a17f5a5744eba5c4246bb4d1d` |
+| primer-css | `48826969ac851a46c4efc514db39b845f4f2cc39` |
+| blitz | `b18f81873e641934043f791fec06e22f5fe5a86e` |
+| endless-guessing | `c88eb44a83fe43dedffe8a4e15b7b9c31797f5d2` |
+
+Cause C below is the first pin to pay for itself: endless-guessing's `c88eb44`
+drift had to be reconstructed after the fact (the 39-minute post-pin move). From
+here, a re-measure against a moved corpus surfaces the SHA at measure time.
+
+**Cause A — `data-access::loop-query` recall-protocol 216 → 215 (−1), attribution
+corrected.** This −1 was originally attributed to Part 1's handle-identification
+seam (#425), but that attribution is unsupported. Part 1 landed as a structural
+seam change — verdict types, `combineVerdicts`, `EVIDENCE_SOURCES`,
+`identifyHandle`, `RESOLUTION_IMPLEMENTATIONS` — and was reported with **no corpus
+measurement**: its own summary lists the `handleIdentification.spec.ts` tests
+green, nothing else. There was no Part 1 measurement for the −1 to appear in, so
+the −1 was attributed to Part 1 by elimination, not observation. The real cause is
+the loop-query discriminator rewrite in the same window (#406.3/#422, prepare-based
+discriminator) plus the #423/#424 un-suppress work, which moved the 216 findings
+net −1. The exact site was not diffed before this re-pin — the gap the SHA pinning
+below exists to close: a corpus whose HEAD moved is now reported as drift, and a
+finding-count delta with no named cause stays visible rather than being folded into
+a seam that was never measured.
+
+**Cause B — #408 test/spec DDL scoping (Block 2).** `schema::unknown-table` knex
+1 → **10** (+9). `replayDdlDeclarations` now filters `isTestOrSpecPath` files out
+of the DDL replay (the stale-table-reference fix: a `DROP TABLE users` in a
+`.spec.ts` must not mark the production table dropped). The side effect on knex —
+a library whose `users` table exists only as a test fixture (`create table "users"`
+assertion strings in `test/unit/schema-builder/*.js`) — is that `users` drops out
+of the known-table set, so the `users` references in
+`test-tsd/tsd-tests1.test-d.ts` / `tsd-tests8.test-d.ts` now fire. The ten current
+findings are `users`×9 + `articles`×1, all in those two type-definition test
+files; `articles` is declared in no knex DDL, so it reads as unknown independent
+of this scoping. **Flagged, not silently accepted:** the nine `users` findings are
+illustrative type-parameter tables in type-definition test files (`.test-d.ts`),
+not production schema defects — a named consequence of #408's scoping (correct
+for the stale-table-reference case) surfacing as `unknown-table` noise on a
+test-only corpus. A candidate follow-up is a `.test-d.ts` type-test carve-out if
+that noise is unwanted, mirroring #408's own test-file scoping.
+
+**Cause C — corpus drift (endless-guessing `c88eb44`).** `data-access::loop-query`
+9 → **11** (+2), `cross-domain::cross-domain/written-never-read` 1 → **0** (−1),
+`cross-domain::cross-domain/read-never-written` 0 → **2** (+2); total 256 → **259**
+(+3). endless-guessing's own code moved after the 09-30 pin: `c88eb44` ("Atomic
+metrics, serving params, role coverage, judge thresholds") landed 2026-09-30
+16:03:15 — 39 minutes after the pin's mtime (15:23:48). The three findings are the
+corpus moving under the tool, not a tool change: two new loop-query N+1s and a
+read/write reclassification in the newly-landed code.
+
+---
+
+**Re-pinned — current working tree (post Part 1–5 + S5a–e handle-identification
+seam).** Net −28 across the six corpora from the 2026-10-01 pin, every movement
+attributed to one of three named causes; no other rule moved, and **no corpus SHA
+drifted** (all six pins still match — this is tool movement, not corpus movement).
+New totals: recall-protocol 5,109 (−4), hhra-org 1,269 (−5), knex 606 (−16),
+primer-css 18 (−1), blitz 1,040 (−1), endless-guessing 258 (−1).
+
+**Cause 1 — `tight-coupling` pairwise rewrite (−6).** `dependency-graph::tight-coupling`
+1 → **0** on all six corpora. The metric was rewritten from a single-cluster
+*cohesion* measure (`internalEdges / incidentEdges`, which inverted the concept and
+flagged every well-factored package) to a *pairwise coupling* measure —
+`cross / (cross + within)` per cluster pair, both directions required, ≥3 cross
+edges, >0.7 threshold (spec70-worklist.md §4). The six findings were the
+cohesion over-fire, one per corpus; none survives the pairwise guards. The
+`DependencyGraphBuilder.spec.ts` tests pin the new shape (single cluster → not
+coupled; <3 cross edges → not coupled; one-directional fan-in → not coupled).
+
+**Cause 2 — `.test-d.ts` predicate widening (−15, knex only).**
+`isTestOrSpecPath` gained the `*.test-d.ts` / `*.test-d.tsx` clause (the standard
+`tsd` type-definition test extension — a distinct clause, not folded into
+`*.test.*`, because `.test-d.` has a hyphen where the generic pattern needs a dot).
+This is the "candidate follow-up" the 2026-10-01 Cause B note flagged, now
+implemented:
+- `schema::unknown-table` knex 10 → **0** (−10) — the `users`×9 + `articles`×1
+  findings were all in `test-tsd/tsd-tests1.test-d.ts` / `tsd-tests8.test-d.ts`.
+- `schema-code::too-many-queries` knex 5 → **0** (−5) — same two files.
+
+The widening is a no-op on recall-protocol and hhra-org: their only `.test-d.ts`
+files live under `node_modules/`, which file discovery never scans, so the
+predicate could not move their counts.
+
+**Cause 3 — handle-identification seam precision (−7).** The `DB_CALL_METHODS`
+name-list candidacy was retired in favor of the receiver-resolution seam
+(Spec 69 §10, Part 1–5 + S5a–e). Two rules net-dropped, all over-fire the
+name-list admitted by method name and the resolver now proves is a non-handle:
+- `data-access::sql-injection-risk` hhra-org 13 → **10** (−3) — `isDBProvenanced`
+  no longer consults `DB_CALL_METHODS`.
+- `data-access::loop-query` recall-protocol 215 → **212** (−3), hhra-org 12 →
+  **11** (−1) — the same provenance tightening.
+
+Each of the 28 is a precision gain (over-fire removed), not a recovered finding
+or a newly-introduced silent surface. The two documentation rules
+(`parameter-documentation` / `return-documentation`) are byte-identical to the
+prior pin on every corpus.
 
 ---
 
