@@ -32,15 +32,16 @@ import type {
   ProvenanceEvidenceFact,
 } from './types.js';
 import type { ProvenanceEvidence, R3Site } from '../analyzers/provenance.js';
-import type {
-  WithinFileProvenanceExtract,
-  GoWithinFileProvenanceExtract,
+import {
+  RESOLUTION_IMPLEMENTATIONS,
+  identifyHandle,
+  type WithinFileProvenanceExtract,
+  type GoWithinFileProvenanceExtract,
 } from '../analyzers/handleIdentification.js';
-import type { TsWithinFileProvenanceExtract } from '../analyzers/tsExpressionDescriptor.js';
-import { RESOLUTION_IMPLEMENTATIONS, identifyHandle } from '../analyzers/handleIdentification.js';
 import {
   propagateProvenanceFromExtract,
   detectDbWrapperFunctionsFromExtract,
+  type TsWithinFileProvenanceExtract,
 } from '../analyzers/tsExpressionDescriptor.js';
 import type { RootResolutionEnv, Binding } from '../analyzers/receiverRoot.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';

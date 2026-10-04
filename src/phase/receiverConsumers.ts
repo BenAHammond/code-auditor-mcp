@@ -139,6 +139,50 @@ export function rehydrateWithinGoExtracts(
   return byFile;
 }
 
+/** Re-fold one file's DB-receiver environment from the rehydrated within-file
+ *  extracts + the cross-file seed — the shared setup for the `data-access-calls`
+ *  and `unproven-query-receivers` consumers. Go: the seed is the provenanced set
+ *  and the extract supplies the binding/import env. TS: `classifyBuildProvenance`
+ *  folds the seed + activity R3 sites + function wrappers into `dbProvenanced`,
+ *  and the activity supplies the bindings. */
+function foldReceiverEnvironment(opts: {
+  file: string;
+  isGo: boolean;
+  tsExtracts: ReadonlyMap<string, TsWithinFileProvenanceExtract>;
+  goExtracts: ReadonlyMap<string, GoWithinFileProvenanceExtract>;
+  seeds: ReadonlyMap<string, Map<string, ProvenanceEvidence>>;
+  activityByFile: ReadonlyMap<string, ReceiverActivityFact>;
+  sqlDialect: Dialect | null;
+}): {
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>;
+  bindings: ReadonlyMap<string, Binding>;
+  goEnv: GoResolutionEnv | undefined;
+} {
+  const { file, isGo, tsExtracts, goExtracts, seeds, activityByFile, sqlDialect } = opts;
+  if (isGo) {
+    const seed = seeds.get(file) ?? new Map<string, ProvenanceEvidence>();
+    const goExtract = goExtracts.get(file);
+    return {
+      dbProvenanced: seed,
+      bindings: new Map(),
+      goEnv: {
+        provenance: seed,
+        bindings: goExtract?.bindings ?? new Map<string, GoBinding>(),
+        imports: goExtract?.imports ?? new Map<string, string>(),
+      },
+    };
+  }
+  const extract = tsExtracts.get(file);
+  const activity = rehydrateReceiverActivity(activityByFile.get(file));
+  return {
+    dbProvenanced: extract
+      ? classifyBuildProvenance(extract, seeds.get(file) ?? new Map(), activity.bindings, activity.r3Sites, sqlDialect)
+      : new Map<string, ProvenanceEvidence>(),
+    bindings: activity.bindings,
+    goEnv: undefined,
+  };
+}
+
 // ── The gate mirror ──────────────────────────────────────────────────────────
 
 /**
@@ -796,28 +840,9 @@ export function classifyDataAccessCalls(
   const out: ResolvedQuery[] = [];
   for (const [file, fileCands] of byFile) {
     const isGo = fileCands[0].format === 'go';
-    let dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>;
-    let goEnv: GoResolutionEnv | undefined;
-    let bindings: ReadonlyMap<string, Binding>;
-    if (isGo) {
-      const seed = seeds.get(file) ?? new Map<string, ProvenanceEvidence>();
-      dbProvenanced = seed;
-      const goExtract = goExtracts.get(file);
-      goEnv = {
-        provenance: seed,
-        bindings: goExtract?.bindings ?? new Map<string, GoBinding>(),
-        imports: goExtract?.imports ?? new Map<string, string>(),
-      };
-      bindings = new Map();
-    } else {
-      const extract = tsExtracts.get(file);
-      const activity = rehydrateReceiverActivity(activityByFile.get(file));
-      bindings = activity.bindings;
-      dbProvenanced = extract
-        ? classifyBuildProvenance(extract, seeds.get(file) ?? new Map(), activity.bindings, activity.r3Sites, sqlDialect)
-        : new Map<string, ProvenanceEvidence>();
-      goEnv = undefined;
-    }
+    const { dbProvenanced, bindings, goEnv } = foldReceiverEnvironment({
+      file, isGo, tsExtracts, goExtracts, seeds, activityByFile, sqlDialect,
+    });
 
     const learnedWrappers = new Set(
       [...dbProvenanced.values()].filter((ev) => ev.reason === 'wrapper').map((ev) => ev.identifier),
@@ -988,28 +1013,9 @@ export function classifyUnprovenQueryReceivers(
   const out: UnprovenQueryReceiver[] = [];
   for (const [file, fileCands] of byFile) {
     const isGo = fileCands[0].format === 'go';
-    let dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>;
-    let goEnv: GoResolutionEnv | undefined;
-    let bindings: ReadonlyMap<string, Binding>;
-    if (isGo) {
-      const seed = seeds.get(file) ?? new Map<string, ProvenanceEvidence>();
-      dbProvenanced = seed;
-      const goExtract = goExtracts.get(file);
-      goEnv = {
-        provenance: seed,
-        bindings: goExtract?.bindings ?? new Map<string, GoBinding>(),
-        imports: goExtract?.imports ?? new Map<string, string>(),
-      };
-      bindings = new Map();
-    } else {
-      const extract = tsExtracts.get(file);
-      const activity = rehydrateReceiverActivity(activityByFile.get(file));
-      bindings = activity.bindings;
-      dbProvenanced = extract
-        ? classifyBuildProvenance(extract, seeds.get(file) ?? new Map(), activity.bindings, activity.r3Sites, sqlDialect)
-        : new Map<string, ProvenanceEvidence>();
-      goEnv = undefined;
-    }
+    const { dbProvenanced, bindings, goEnv } = foldReceiverEnvironment({
+      file, isGo, tsExtracts, goExtracts, seeds, activityByFile, sqlDialect,
+    });
 
     for (const cand of fileCands) {
       const id = dataAccessIdentity(cand);

@@ -273,19 +273,21 @@ export async function runDocumentationSlice(files: readonly InputFile[], thresho
 // ── data-access-calls slice (the "repeat" for a second fact kind) ──────────
 
 /**
- * Parse → Process for the `data-access-calls` fact. Returns the assembled
- * corpus fact (every resolved DB call from every file, ASTs already freed).
- *
- * @param files - The input files to parse and process.
- * @param sqlDialect - The corpus's named dialect for SQL parsing, or null/undefined.
- * @returns The assembled `data-access-calls` corpus fact.
+ * Build one of the three receiver-consumer corpus facts (`data-access-calls`,
+ * `loop-queries`, `schema-usage`). The three `buildX` arms shared the identical
+ * six-parse → receiver-provenance → consumer-process shape, differing only in
+ * the candidate fact kind and the producer key, so the loop lives here once and
+ * the callers name the two kinds (the return type is `FactShapes[PK]`, resolved
+ * by `producerKey`).
  */
-export async function buildDataAccessCalls(
+async function buildReceiverConsumer<PK extends 'data-access-calls' | 'loop-queries' | 'schema-usage'>(
   files: readonly InputFile[],
-  sqlDialect?: Dialect | null,
-): Promise<ResolvedQuery[]> {
+  candidateKind: FileFactKind,
+  producerKey: PK,
+  sqlDialect: Dialect | null,
+): Promise<FactShapes[PK]> {
   const [candidates, within, imports, exports, goBindings, activity] = await Promise.all([
-    buildFileFact(files, 'data-access-calls-candidates'),
+    buildFileFact(files, candidateKind),
     buildFileFact(files, 'within-file-provenance'),
     buildFileFact(files, 'import-specifiers'),
     buildFileFact(files, 'export-symbols'),
@@ -298,15 +300,33 @@ export async function buildDataAccessCalls(
     'export-symbols': exports,
     'go-package-bindings': goBindings,
   });
-  return CORPUS_PRODUCERS['data-access-calls'].process(
+  const producer = CORPUS_PRODUCERS[producerKey] as unknown as {
+    process(facts: Record<string, unknown>, ctx?: { sqlDialect?: Dialect | null }): FactShapes[PK];
+  };
+  return producer.process(
     {
-      'data-access-calls-candidates': candidates,
+      [candidateKind]: candidates,
       'within-file-provenance': within,
       'receiver-provenance': provenance,
       'receiver-activity': activity,
     },
-    { sqlDialect: sqlDialect ?? null },
+    { sqlDialect },
   );
+}
+
+/**
+ * Parse → Process for the `data-access-calls` fact. Returns the assembled
+ * corpus fact (every resolved DB call from every file, ASTs already freed).
+ *
+ * @param files - The input files to parse and process.
+ * @param sqlDialect - The corpus's named dialect for SQL parsing, or null/undefined.
+ * @returns The assembled `data-access-calls` corpus fact.
+ */
+export async function buildDataAccessCalls(
+  files: readonly InputFile[],
+  sqlDialect?: Dialect | null,
+): Promise<ResolvedQuery[]> {
+  return buildReceiverConsumer(files, 'data-access-calls-candidates', 'data-access-calls', sqlDialect ?? null);
 }
 
 /** Analyze the assembled `data-access-calls` + `resolution` facts with the
@@ -359,29 +379,7 @@ export async function buildLoopQueries(
   files: readonly InputFile[],
   sqlDialect?: Dialect | null,
 ): Promise<LoopQueryFact[]> {
-  const [candidates, within, imports, exports, goBindings, activity] = await Promise.all([
-    buildFileFact(files, 'loop-query-candidates'),
-    buildFileFact(files, 'within-file-provenance'),
-    buildFileFact(files, 'import-specifiers'),
-    buildFileFact(files, 'export-symbols'),
-    buildFileFact(files, 'go-package-bindings'),
-    buildFileFact(files, 'receiver-activity'),
-  ]);
-  const provenance = CORPUS_PRODUCERS['receiver-provenance'].process({
-    'within-file-provenance': within,
-    'import-specifiers': imports,
-    'export-symbols': exports,
-    'go-package-bindings': goBindings,
-  });
-  return CORPUS_PRODUCERS['loop-queries'].process(
-    {
-      'loop-query-candidates': candidates,
-      'within-file-provenance': within,
-      'receiver-provenance': provenance,
-      'receiver-activity': activity,
-    },
-    { sqlDialect: sqlDialect ?? null },
-  );
+  return buildReceiverConsumer(files, 'loop-query-candidates', 'loop-queries', sqlDialect ?? null);
 }
 
 /**
@@ -465,29 +463,7 @@ export async function buildSchemaUsage(
   files: readonly InputFile[],
   sqlDialect?: Dialect | null,
 ): Promise<SchemaUsageFact[]> {
-  const [candidates, within, imports, exports, goBindings, activity] = await Promise.all([
-    buildFileFact(files, 'schema-usage-candidates'),
-    buildFileFact(files, 'within-file-provenance'),
-    buildFileFact(files, 'import-specifiers'),
-    buildFileFact(files, 'export-symbols'),
-    buildFileFact(files, 'go-package-bindings'),
-    buildFileFact(files, 'receiver-activity'),
-  ]);
-  const provenance = CORPUS_PRODUCERS['receiver-provenance'].process({
-    'within-file-provenance': within,
-    'import-specifiers': imports,
-    'export-symbols': exports,
-    'go-package-bindings': goBindings,
-  });
-  return CORPUS_PRODUCERS['schema-usage'].process(
-    {
-      'schema-usage-candidates': candidates,
-      'within-file-provenance': within,
-      'receiver-provenance': provenance,
-      'receiver-activity': activity,
-    },
-    { sqlDialect: sqlDialect ?? null },
-  );
+  return buildReceiverConsumer(files, 'schema-usage-candidates', 'schema-usage', sqlDialect ?? null);
 }
 
 /**

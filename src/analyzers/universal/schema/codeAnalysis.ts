@@ -440,6 +440,10 @@ export function extractOrmRefs(
  *  generic `db`/`database`/`sql`/`stmt` names are provenanced by declaration only. */
 const QUERY_BUILDER_RECEIVER_NAMES = ['trx', 'knex'] as const;
 
+/** Strategy (5): fluent query-builder reads — `trx('table').method(` and the
+ *  `knex` receiver. Records the *read* only, tagged `origin: 'query-builder'`,
+ *  so a scratch/test table name carried in a fluent builder call is not a schema
+ *  violation and does not flood the naming/unknown-table/lifecycle checks. */
 export function extractQueryBuilderRefs(
   ast: AST,
   adapter: LanguageAdapter,
@@ -515,6 +519,11 @@ function normalizeQueryBuilderTable(table: string): string {
  */
 const COLLECTION_ADAPTER_NAMES: ReadonlySet<string> = new Set(['SqliteCollectionAdapter']);
 
+/** Strategy (6): table-backed collection-facade constructors — `new
+ *  SqliteCollectionAdapter(db, 'table')`. Records the *read* the facade issues
+ *  (tagged `origin: 'collection-adapter'`) so a migration-seeded table read
+ *  through a facade is not flagged `written-never-read`; the facade's writes are
+ *  already seeded by migrations and left unrecorded to avoid double-counting. */
 export function extractCollectionAdapterRefs(
   ast: AST,
   adapter: LanguageAdapter,

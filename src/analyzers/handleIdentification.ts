@@ -50,8 +50,7 @@ import {
   type GoBinding,
 } from '../languages/go/goResolution.js';
 import { parseSql, DEFAULT_SQL_DIALECT } from '../languages/sql/sqlAst.js';
-import type { ProvenanceEvidence } from './provenance.js';
-import { extractTsWithinFileProvenance } from './provenance.js';
+import { extractTsWithinFileProvenance, type ProvenanceEvidence } from './provenance.js';
 import { classifyTsWithinFileProvenance, type TsWithinFileProvenanceExtract } from './tsExpressionDescriptor.js';
 
 // ─── Verdict ─────────────────────────────────────────────────────────────────

@@ -1213,32 +1213,7 @@ async function runPipelineStage(inputs: {
   let indexFactsWritten = 0;
   let writeIndexFactsMs = 0;
 
-  // ── Initialize CodeIndexDB for analyzer DB access ────────────────────
-  let auditIndex: CodeIndexDB | undefined;
-  try {
-    auditIndex = CodeIndexDB.getInstance(undefined, root);
-    await auditIndex.initialize();
-    logMcpInfo('analysis', 'code index initialized for analyzers', { isInitialized: (auditIndex as any).isInitialized, dbPath: (auditIndex as any).dbPath });
-  } catch (err) {
-    logMcpInfo('analysis', 'failed to initialize code index for analyzers (continuing)', {
-      error: err instanceof Error ? err.message : String(err)
-    });
-  }
-
-  // Build IndexHandle for pipeline reducers
-  let pipelineIndexHandle: IndexHandle | undefined;
-  if (auditIndex) {
-    pipelineIndexHandle = {
-      query: (sql, params) => auditIndex!.rawSql.query(sql, params),
-      count: (table) => auditIndex!.rawSql.count(table),
-      tableHasRows: (table) => auditIndex!.rawSql.tableHasRows(table),
-      run: (sql, params) => auditIndex!.rawDb.prepare(sql).run(...(params ?? [])),
-      exec: (sql) => auditIndex!.rawDb.exec(sql),
-      getMeta: (key) => auditIndex!.meta.getMeta(key),
-      getUntestedTopDecile: (td) => auditIndex!.coverage.getUntestedTopDecile(td),
-      rawDb: auditIndex!.rawDb,
-    };
-  }
+  const { auditIndex, pipelineIndexHandle } = await initializeAuditIndex(root);
 
   const {
     pipelineVisitors, pipelineReducers, pipelineDerivedReducers,
@@ -1395,6 +1370,44 @@ async function runPipelineStage(inputs: {
     indexFactsWritten,
     writeIndexFactsMs,
   };
+}
+
+/**
+ * Initialize the analyzer-facing CodeIndexDB and build the `IndexHandle` the
+ * pipeline reducers read through. Both are optional: a failed init degrades to
+ * `undefined` and the pipeline continues without index-backed facts. Hoisted out
+ * of `runPipelineStage` so its body stays under the `function-length` ceiling.
+ */
+async function initializeAuditIndex(root: string): Promise<{
+  auditIndex: CodeIndexDB | undefined;
+  pipelineIndexHandle: IndexHandle | undefined;
+}> {
+  let auditIndex: CodeIndexDB | undefined;
+  try {
+    auditIndex = CodeIndexDB.getInstance(undefined, root);
+    await auditIndex.initialize();
+    logMcpInfo('analysis', 'code index initialized for analyzers', { isInitialized: (auditIndex as any).isInitialized, dbPath: (auditIndex as any).dbPath });
+  } catch (err) {
+    logMcpInfo('analysis', 'failed to initialize code index for analyzers (continuing)', {
+      error: err instanceof Error ? err.message : String(err)
+    });
+  }
+
+  // Build IndexHandle for pipeline reducers
+  let pipelineIndexHandle: IndexHandle | undefined;
+  if (auditIndex) {
+    pipelineIndexHandle = {
+      query: (sql, params) => auditIndex!.rawSql.query(sql, params),
+      count: (table) => auditIndex!.rawSql.count(table),
+      tableHasRows: (table) => auditIndex!.rawSql.tableHasRows(table),
+      run: (sql, params) => auditIndex!.rawDb.prepare(sql).run(...(params ?? [])),
+      exec: (sql) => auditIndex!.rawDb.exec(sql),
+      getMeta: (key) => auditIndex!.meta.getMeta(key),
+      getUntestedTopDecile: (td) => auditIndex!.coverage.getUntestedTopDecile(td),
+      rawDb: auditIndex!.rawDb,
+    };
+  }
+  return { auditIndex, pipelineIndexHandle };
 }
 
 /** Shape of a metadata diagnostic (zero-files, lint config, pipeline). */
