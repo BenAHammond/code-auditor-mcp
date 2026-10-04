@@ -55,6 +55,7 @@ import type { IndexHandle } from '../types.js';
 import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites } from './receiverConsumers.js';
+import { withRuleTimingAsync } from '../analyzers/ruleTiming.js';
 
 /**
  * The result of a phase-model run: the migrated rules' findings plus the
@@ -608,7 +609,11 @@ async function analyzeAll(
       formats: rule.needs.formats,
       thresholds: thresholdsByRule.get(rule.id) ?? {},
     };
-    findings.push(...(await rule.analyze(ctx as never) as readonly Finding[]));
+    // Spec 38 R2 — per-rule timing on the phase path (the legacy `withRuleTiming`
+    // wrappers no longer run for migrated rules). Records the full async analyze
+    // under the rule's ID so the gate's per-rule breakdown reports the dominant
+    // rule again, not `(no rules recorded)`.
+    findings.push(...(await withRuleTimingAsync(rule.id, () => rule.analyze(ctx as never)) as readonly Finding[]));
   }
   return findings;
 }

@@ -61,6 +61,7 @@ import { writeAuditToLedger, detectRunInput } from './ledger.js';
 
 // Pipeline imports (Spec 25 — pipeline replaces hand-rolled analyzer loop)
 import { runPipeline, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
+import { getRuleTimingSortedDesc } from './analyzers/ruleTiming.js';
 import {
   createSolidVisitor,
   createDataAccessVisitor,
@@ -1332,7 +1333,11 @@ async function runPipelineStage(inputs: {
       pipelineSkippedFiles = pipelineResult.metadata?.skippedFiles;
       pipelineUnparsedFiles = pipelineResult.metadata?.unparsedFiles;
       pipelineInputPresence = pipelineResult.metadata?.inputPresence;
-      pipelineRuleTiming = pipelineResult.metadata?.ruleTiming;
+      // Spec 38 R2 — read the live accumulator rather than the `runPipeline`
+      // snapshot: the phase model's `analyzeAll` records its per-rule timing
+      // after `runPipeline` already snapshotted (empty) `ruleTiming`. The
+      // accumulator was reset at `runPipeline` entry, so this is legacy + phase.
+      pipelineRuleTiming = getRuleTimingSortedDesc();
       pipelineFileAccounting = pipelineResult.metadata?.fileAccounting;
       pipelineDiagnostics = [
         ...(pipelineResult.metadata?.diagnostics ?? []),

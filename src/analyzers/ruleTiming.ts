@@ -67,6 +67,22 @@ export function withRuleTiming<T>(ruleId: string, fn: () => T): T {
   }
 }
 
+/**
+ * Async form of `withRuleTiming` for the phase model's `analyze` functions,
+ * which may be async (corpus-shaped rules build derived structures the legacy
+ * reducers computed over the index). Times the full await, not just the
+ * synchronous prefix. Otherwise identical to `withRuleTiming`.
+ */
+export async function withRuleTimingAsync<T>(ruleId: string, fn: () => T | Promise<T>): Promise<T> {
+  if (!isRuleTimingEnabled()) return fn();
+  const t0 = performance.now();
+  try {
+    return await fn();
+  } finally {
+    recordRuleTime(ruleId, performance.now() - t0);
+  }
+}
+
 /** Read the accumulated per-rule timings. */
 export function getRuleTiming(): Map<string, RuleTimingEntry> {
   return timings;
