@@ -29,6 +29,7 @@ import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runPhaseModel } from '../src/phase/phaseModel.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
+import { detectDialect } from '../src/languages/sql/dialectDetection.js';
 import { compareOracleShortfalls } from './verify-oracle-shortfalls-core.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -62,7 +63,14 @@ async function measureCorpus(dir: string): Promise<Map<string, Aggregate>> {
   // Serial (workerCount 1) is deterministic and the same configuration the
   // baseline was recorded under; the fact merge is file-sorted regardless, so
   // worker count never reorders or changes the aggregate.
-  const result = await runPhaseModel(files, new Map(), { projectRoot: dir, workerCount: 1 });
+  // Spec 70 R1 — the corpus's dialect is *detected* from its dependency manifest
+  // (the same `detectDialect` the real audit runs) and threaded to the phase
+  // model, so the SQL-content producers (schema-usage, ddl-declarations,
+  // data-access-calls, query-sites) measure their real emission, not the
+  // `cannot-fire` empty set an unnamed dialect would force. Without this the
+  // gate would pin "no dialect ⇒ 0 SQL facts", which catches nothing.
+  const sqlDialect = detectDialect(dir).dialect;
+  const result = await runPhaseModel(files, new Map(), { projectRoot: dir, workerCount: 1, sqlDialect });
 
   const byKind = new Map<string, Aggregate>();
   for (const s of result.oracleShortfalls) {

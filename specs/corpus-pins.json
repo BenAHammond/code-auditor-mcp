@@ -1,8 +1,26 @@
 {
-  "recall-protocol": "c007f6ed29c06fede6bdb6edd4d6bf8c35eb346e",
-  "hhra-org": "56bb7c877dd84bb224c9f57714a64b183ca17c9b",
-  "knex": "e25d54bcb707714a17f5a5744eba5c4246bb4d1d",
-  "primer-css": "48826969ac851a46c4efc514db39b845f4f2cc39",
-  "blitz": "b18f81873e641934043f791fec06e22f5fe5a86e",
-  "endless-guessing": "c88eb44a83fe43dedffe8a4e15b7b9c31797f5d2"
+  "recall-protocol": {
+    "sha": "c007f6ed29c06fede6bdb6edd4d6bf8c35eb346e",
+    "content": "c05abb4817c6dfcd98e9c0b01922ba32bb94d099"
+  },
+  "hhra-org": {
+    "sha": "56bb7c877dd84bb224c9f57714a64b183ca17c9b",
+    "content": "952337e0616fcbe62a82a109f8fb7350505e32f0"
+  },
+  "knex": {
+    "sha": "e25d54bcb707714a17f5a5744eba5c4246bb4d1d",
+    "content": "bf724ec9d325b90b4e4a74fb9ddb2608d07fe96f"
+  },
+  "primer-css": {
+    "sha": "48826969ac851a46c4efc514db39b845f4f2cc39",
+    "content": "f90db060da705deba524982191fc177e2bc5b8a0"
+  },
+  "blitz": {
+    "sha": "b18f81873e641934043f791fec06e22f5fe5a86e",
+    "content": "bcb539c825c4a3e786803c86dde26cafb1952876"
+  },
+  "endless-guessing": {
+    "sha": "c88eb44a83fe43dedffe8a4e15b7b9c31797f5d2",
+    "content": "24fe2621cbb98568f2c860305c1cf0b05b1aa093"
+  }
 }
