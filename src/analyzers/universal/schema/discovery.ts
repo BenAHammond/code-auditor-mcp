@@ -21,8 +21,6 @@ import type {
   RegistryExtractionContext,
 } from './types.js';
 import {
-  DB_RECEIVER_NAMES,
-  DB_CALL_METHOD_NAMES,
   DB_BINDING_NAMES,
   SQL_TAG_NAMES,
   escapeRegex,
@@ -33,6 +31,7 @@ import {
   readModuleFromDisk,
   extractReExports,
 } from './migrations.js';
+import type { Dialect } from '../../../mcp-tools/discoveryQueries.js';
 import { getCallee } from './codeAnalysis.js';
 
 /**
@@ -115,11 +114,12 @@ export async function discoverTablesFromMigrations(
   const tables = new Set<string>();
   const walkedFiles = await walkFiles(projectRoot, gateGlobs);
   walkedFiles.sort();
+  const dialect = config.sqlDialect ?? null;
 
   for (const file of walkedFiles) {
     try {
       const source = await fs.readFile(file, 'utf8');
-      processMigrationSource(source, tables);
+      processMigrationSource(source, tables, dialect);
     } catch {
       // Skip unreadable files
     }
@@ -166,7 +166,7 @@ function extractWranglerMigrationDirs(wranglerContent: string): string[] {
 }
 
 /** Replay DDL from every `.sql` file in a migration directory into `tables`. */
-async function processMigrationDirectory(absDir: string, tables: Set<string>): Promise<void> {
+async function processMigrationDirectory(absDir: string, tables: Set<string>, dialect: Dialect | null): Promise<void> {
   let entries: string[];
   try {
     const dirents = await fs.readdir(absDir, { withFileTypes: true });
@@ -182,7 +182,7 @@ async function processMigrationDirectory(absDir: string, tables: Set<string>): P
     const filePath = path.join(absDir, entry);
     try {
       const source = await fs.readFile(filePath, 'utf8');
-      processMigrationSource(source, tables);
+      processMigrationSource(source, tables, dialect);
     } catch {
       // Skip unreadable files
     }
@@ -196,10 +196,12 @@ async function processMigrationDirectory(absDir: string, tables: Set<string>): P
  * scans each migration file for `CREATE TABLE` DDL.
  *
  * @param projectRoot Root directory containing `wrangler.toml`.
+ * @param dialect The corpus's named dialect; null means cannot-fire (no DDL facts).
  * @returns Set of table names discovered from D1 migration files.
  */
 export async function discoverTablesFromWrangler(
   projectRoot: string,
+  dialect: Dialect | null,
 ): Promise<Set<string>> {
   const tables = new Set<string>();
 
@@ -212,7 +214,7 @@ export async function discoverTablesFromWrangler(
   }
 
   for (const migDir of extractWranglerMigrationDirs(wranglerContent)) {
-    await processMigrationDirectory(path.resolve(projectRoot, migDir), tables);
+    await processMigrationDirectory(path.resolve(projectRoot, migDir), tables, dialect);
   }
 
   return tables;
@@ -331,27 +333,30 @@ function detectDbUsageByName(sourceCode: string, config: SchemaAnalyzerConfig): 
     if (sourceCode.includes(binding)) return true;
   }
 
-  // Check for DB call patterns (receiver.method)
-  const receivers = config.dbReceiverNames ?? [...DB_RECEIVER_NAMES];
-  const methods = config.dbCallMethods ?? [...DB_CALL_METHOD_NAMES];
-  for (const receiver of receivers) {
-    for (const method of methods) {
-      const pattern = new RegExp(`\\b${escapeRegex(receiver)}\\.${escapeRegex(method)}\\s*\\(`);
-      if (pattern.test(sourceCode)) return true;
-    }
-  }
-
+  // Spec 69 §10 — no receiver.method name loop: a `db.query(...)` call is only a
+  // DB-context signal via declaration resolution (provenanceContext), not by
+  // matching `db`/`database`/`sql`/`stmt` against a name list.
   return false;
 }
 
 /**
  * Detect SQL tagged template literals — a syntax feature, not a naming
  * convention (e.g. sql\`SELECT ...\`).
+ *
+ * Spec 70 §13 — the tag + leading-SQL-keyword form (`sql\`SELECT`, `sql\`INSERT`,
+ * …) was the schema family's fourteenth SQL-content regex. It is an *admission*
+ * gate, not a content parser, so the right fix is to drop the keyword filter
+ * entirely and admit on the syntax alone (identifier followed by a backtick):
+ * any `sql\`…\`` / `db\`…\`` template passes, and `parseSqlTables` decides what
+ * the content means. The keyword filter could only *miss* a real template — a
+ * CTE-leading `sql\`WITH …\`` or `sql\`PRAGMA …\`` would not match and the file
+ * would be skipped, silently dropping its table references. A non-SQL template
+ * admitted here is a cheap cannot-fire, never a false finding.
  */
-function hasSqlTag(sourceCode: string, config: SchemaAnalyzerConfig): boolean {
+export function hasSqlTag(sourceCode: string, config: SchemaAnalyzerConfig): boolean {
   const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
   for (const tag of sqlTags) {
-    const pattern = new RegExp(`\\b${escapeRegex(tag)}\`\\s*SELECT|\\b${escapeRegex(tag)}\`\\s*INSERT|\\b${escapeRegex(tag)}\`\\s*REPLACE|\\b${escapeRegex(tag)}\`\\s*UPDATE|\\b${escapeRegex(tag)}\`\\s*DELETE|\\b${escapeRegex(tag)}\`\\s*CREATE`, 'i');
+    const pattern = new RegExp(`\\b${escapeRegex(tag)}\``, 'i');
     if (pattern.test(sourceCode)) return true;
   }
   return false;
@@ -387,6 +392,14 @@ export function passesFileGate(
   // receiver.method checks in hybrid and provenance modes.
   if (provenanceContext && provenanceContext.mode !== 'names') {
     if (provenanceContext.dbProvenanced.size > 0) {
+      return true;
+    }
+    // Spec 70 criterion 9 — DB-shaped activity (a DB/ORM method call whose
+    // receiver is type-annotated but unproven) is still DB context. A file whose
+    // only DB signal is such a handle with a dynamic SQL argument must NOT be
+    // dropped: the analyzers report the site as unproven rather than silently
+    // clean. `dbActivity` is a shape signal, never a handle decision.
+    if (provenanceContext.dbActivity.size > 0) {
       return true;
     }
   }

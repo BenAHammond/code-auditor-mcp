@@ -19,6 +19,7 @@ import {
   type ProvenanceContext,
   type DetectionMode,
 } from '../provenance.js';
+import { buildBindingEnv, type RootResolutionEnv } from '../receiverRoot.js';
 import { makeVisitorStatus, getFilesProcessed } from '../../pipeline.js';
 
 // Spec 34 — schema analyzer split (Step 0 reconciliation): shared types,
@@ -31,12 +32,9 @@ import {
   extractDdlColumnNames,
   extractDdlTableColumns,
   extractReExports,
-  sqlFileHasDdl,
   extractMigrationOpsFromFile,
 } from './schema/migrations.js';
 import {
-  DB_RECEIVER_NAMES,
-  DB_CALL_METHOD_NAMES,
   DB_BINDING_NAMES,
   DB_WRAPPER_NAMES,
   SQL_TAG_NAMES,
@@ -56,12 +54,14 @@ import {
   findTableReferences,
   checkMissingReferences,
   checkUnresolvedQueries,
+  checkUnparseableSql,
   checkNamingConventions,
   checkQueryPatterns,
   checkSQLInjection,
   findClosestNodeAt,
   findEnclosingFunctionIdentity,
   type UnresolvedQuery,
+  type UnparseableSql,
 } from './schema/codeAnalysis.js';
 import {
   discoverTablesFromMigrations,
@@ -78,10 +78,7 @@ export {
   extractDdlColumnNames,
   extractDdlTableColumns,
   extractReExports,
-  sqlFileHasDdl,
   extractMigrationOpsFromFile,
-  DB_RECEIVER_NAMES,
-  DB_CALL_METHOD_NAMES,
   DB_BINDING_NAMES,
   DB_WRAPPER_NAMES,
   SQL_TAG_NAMES,
@@ -160,6 +157,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     const violations: Violation[] = [];
     const finalConfig = { ...DEFAULT_SCHEMA_CONFIG, ...config };
     const provenanceContext = buildSchemaProvenanceContext(ast, adapter, sourceCode, finalConfig);
+    const handleEnv = buildSchemaHandleEnv(ast, adapter, sourceCode, provenanceContext);
 
     // R2.2 — File gate: only analyze files with DB context (Spec 21: provenance-based)
     if (!passesFileGate(ast.filePath, sourceCode, finalConfig, provenanceContext)) {
@@ -180,7 +178,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
     }
 
     // R2.1 — AST-based table reference extraction (replaces legacy regex scan-all-strings)
-    const { references: tableRefs, unresolved } = findTableReferences(ast, adapter, sourceCode, { config: finalConfig, provenanceContext, allTables });
+    const { references: tableRefs, unresolved, unparseable } = findTableReferences(ast, adapter, sourceCode, { config: finalConfig, provenanceContext, allTables, handleEnv });
 
     // Spec 15 R1 — Record schema usage for cross-domain lifecycle analysis.
     if (finalConfig.enableTableUsageTracking) {
@@ -195,6 +193,7 @@ export class UniversalSchemaAnalyzer extends UniversalAnalyzer {
       config: finalConfig,
       tableRefs,
       unresolved,
+      unparseable,
       allTables,
     });
     this._pendingDiagnostics.push(...diagnostics);
@@ -293,7 +292,8 @@ async function resolveSchemasViaAutoDiscovery(config: any, codeFiles: string[]):
     return config;
   }
   const projectRoot = (config as any).projectRoot || process.cwd();
-  const fromWrangler = await discoverTablesFromWrangler(projectRoot);
+  const dialect = (config as SchemaAnalyzerConfig).sqlDialect ?? null;
+  const fromWrangler = await discoverTablesFromWrangler(projectRoot, dialect);
   const schemaFiles = (config as SchemaAnalyzerConfig).schemaFiles;
   const fromSchemaFiles = schemaFiles && schemaFiles.length > 0
     ? await discoverTablesFromSchemaFiles(schemaFiles, projectRoot)
@@ -356,11 +356,34 @@ function buildSchemaProvenanceContext(
   const detectionMode: DetectionMode = (config as any).detection?.mode ?? 'hybrid';
   return buildProvenanceContext(ast, adapter, sourceCode, {
     mode: detectionMode,
-    dbReceiverNames: config.dbReceiverNames ?? DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
     dbBindingNames: config.dbBindingNames ?? DEFAULT_SCHEMA_CONFIG.dbBindingNames,
-    dbCallMethods: config.dbCallMethods ?? DEFAULT_SCHEMA_CONFIG.dbCallMethods,
     dbWrapperNames: config.dbWrapperNames ?? DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
+    // Spec 70 criterion 8 — thread the corpus's named dialect so a receiver
+    // provenanced only by a (now-deleted) type annotation is still proven by its
+    // parsed SQL argument (R3), not dropped.
+    sqlDialect: config.sqlDialect ?? null,
   });
+}
+
+/**
+ * Build the TypeScript binding environment `identifyHandle` reads for
+ * declaration-resolution, keyed to the file's own declarations plus the
+ * within-file provenance set. Absent (undefined) for Go / non-code, which have
+ * no `RootResolutionEnv` and resolve cross-file.
+ */
+function buildSchemaHandleEnv(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceContext: ProvenanceContext,
+): RootResolutionEnv | undefined {
+  if (adapter.name === 'go') return undefined;
+  return {
+    provenance: provenanceContext.dbProvenanced,
+    bindings: buildBindingEnv(ast, adapter, sourceCode),
+    adapter,
+    sourceCode,
+  };
 }
 
 function collectAllTableNames(schemas: SchemaAnalyzerConfig['schemas']): Set<string> {
@@ -380,6 +403,7 @@ interface SchemaViolationContext {
   config: SchemaAnalyzerConfig;
   tableRefs: TableReference[];
   unresolved: UnresolvedQuery[];
+  unparseable: UnparseableSql[];
   allTables: Set<string>;
 }
 
@@ -388,7 +412,7 @@ function appendSchemaViolations(
   diagnostics: CoverageDiagnostic[],
   ctx: SchemaViolationContext,
 ): void {
-  const { ast, adapter, sourceCode, config, tableRefs, unresolved, allTables } = ctx;
+  const { ast, adapter, sourceCode, config, tableRefs, unresolved, unparseable, allTables } = ctx;
   // Check for missing table references — R2.4: Levenshtein suggestions
   if (config.checkMissingReferences) {
     violations.push(...withRuleTiming('unknown-table', () =>
@@ -398,6 +422,7 @@ function appendSchemaViolations(
   // diagnostic (the analyzer can't see the SQL), not a finding (the code isn't wrong).
   if (config.reportUnresolvedQueries !== false) {
     diagnostics.push(...checkUnresolvedQueries(unresolved, ast.filePath));
+    diagnostics.push(...checkUnparseableSql(unparseable, ast.filePath));
   }
   if (config.checkNamingConventions) {
     violations.push(...checkNamingConventions(tableRefs, ast.filePath));

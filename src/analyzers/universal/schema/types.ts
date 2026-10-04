@@ -9,6 +9,7 @@
 
 import type { SchemaUsage } from '../../../types.js';
 import type { AST, LanguageAdapter } from '../../../languages/types.js';
+import type { Dialect } from '../../../mcp-tools/discoveryQueries.js';
 
 /**
  * Configuration for Schema analyzer
@@ -57,8 +58,6 @@ export interface SchemaAnalyzerConfig {
   // Spec-17 R2 additions — SQL context detection
   // Default values live in DEFAULT_SCHEMA_CONFIG — the single source of truth.
   sqlTagNames?: string[];           // @see DEFAULT_SCHEMA_CONFIG
-  dbReceiverNames?: string[];       // @see DEFAULT_SCHEMA_CONFIG
-  dbCallMethods?: string[];         // @see DEFAULT_SCHEMA_CONFIG
   dbBindingNames?: string[];        // @see DEFAULT_SCHEMA_CONFIG
   dbWrapperNames?: string[];        // @see DEFAULT_SCHEMA_CONFIG
   fileGateGlobs?: string[];         // default ['**/*.sql', '**/migrations/**'] — R2.2
@@ -66,6 +65,15 @@ export interface SchemaAnalyzerConfig {
 
   /** Spec 29: Declarative table-source registry for Tier 2 ORM detection */
   tableSources?: TableSourceEntry[];
+
+  /** Spec 70 R1 — the corpus's named SQL dialect, threaded to the migration/DDL
+   *  extractors so they parse rather than regex. Null (or absent) means the DDL
+   *  facts `cannot-fire` (empty). */
+  sqlDialect?: Dialect | null;
+  /** Spec 70 (detection) — the named reason when `sqlDialect` is null, so an
+   *  undetermined/ambiguous corpus emits a "dialect undetermined" cannot-fire
+   *  diagnostic instead of silently reading an empty reference set as clean. */
+  sqlDialectReason?: string | null;
 }
 
 export interface TableReference {
@@ -73,6 +81,13 @@ export interface TableReference {
   type: 'select' | 'insert' | 'update' | 'delete' | 'create' | 'reference';
   location: { line: number; column: number };
   context: string;
+  /**
+   * True when the statement this reference came from carried a top-level
+   * `ON CONFLICT` clause truncated before parsing (Spec 70). The write facts are
+   * answered by the prefix; this records that an upsert action was present but
+   * unread.
+   */
+  conflictClauseTruncated?: boolean;
   /**
    * When set, the reference came from the knex-style fluent builder form
    * (`db('t').select(...)`, `db('t').where(...)`, `db('t').first(...)`).
@@ -82,7 +97,7 @@ export interface TableReference {
    * and the cross-domain lifecycle rules exempt tables that are *entirely*
    * query-builder.
    */
-  origin?: 'query-builder';
+  origin?: 'query-builder' | 'collection-adapter';
 }
 
 /**

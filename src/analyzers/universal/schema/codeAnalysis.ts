@@ -11,12 +11,23 @@
 
 import type { Violation, CoverageDiagnostic } from '../../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../../languages/types.js';
-import { isDBProvenanced, DB_CALL_METHODS, type ProvenanceContext } from '../../provenance.js';
+import {
+  getCallExpressionCallee,
+  getMemberExpressionReceiver,
+  extractMemberExpressionProperty,
+  resolveSiteDialect,
+  type ProvenanceContext,
+} from '../../provenance.js';
+import { identifyHandle, type HandleVerdict } from '../../handleIdentification.js';
+import { resolveReceiverRoot, buildBindingEnv, type RootResolutionEnv } from '../../receiverRoot.js';
+import { DB_CALL_METHODS, isOrmMethod } from '../../tsEcosystem.js';
 import { OrmAdapterRegistry } from '../../orm/index.js';
-import { SQL_TAG_NAMES, DB_CALL_METHOD_NAMES, DB_RECEIVER_NAMES, SQL_CARRYING_METHOD_NAMES, DEFAULT_SCHEMA_CONFIG } from './config.js';
+import { SQL_TAG_NAMES, DEFAULT_SCHEMA_CONFIG } from './config.js';
 import type { SchemaAnalyzerConfig, TableReference } from './types.js';
 import { createSchemaViolation } from './violations.js';
 import { isTestOrSpecPath } from '../../../languages/testConventions.js';
+import { parseSqlProgramTolerant, collectTypedRelations, DEFAULT_SQL_DIALECT, type TypedRelation } from '../../../languages/sql/sqlAst.js';
+import type { Dialect } from '../../../mcp-tools/discoveryQueries.js';
 
 /**
  * Bundled inputs for `findTableReferences`: config, provenance context, and the
@@ -26,6 +37,10 @@ export interface FindTableReferencesContext {
   config: SchemaAnalyzerConfig;
   provenanceContext?: ProvenanceContext;
   allTables?: Set<string>;
+  /** Spec 70 R1.2 — the TS binding environment `identifyHandle` reads for
+   *  declaration-resolution, so an `unproven` (type-annotated) receiver is
+   *  admitted *as unproven* rather than dropped. Absent for Go / non-code. */
+  handleEnv?: RootResolutionEnv;
 }
 
 /**
@@ -42,12 +57,37 @@ export interface UnresolvedQuery {
 }
 
 /**
+ * A DB-call whose SQL argument is a static string that a named dialect cannot
+ * parse (e.g. SQLite `PRAGMA table_info(x)`, `VACUUM`, `ANALYZE`). The argument
+ * is in a SQL position — provenance already established the receiver is a DB
+ * handle — so its table read/write status is *unreadable*, not "no tables".
+ * Reported as a `cannot-fire` coverage diagnostic rather than silently emitting
+ * an empty table-reference fact (Spec 70: the schema regex `parseSqlTables`
+ * matched no FROM/JOIN keyword, so without this the site read as clean).
+ */
+export interface UnparseableSql {
+  /** The static SQL text that could not be turned into table facts. */
+  sqlText: string;
+  /** The call-site location. */
+  location: { line: number; column: number };
+  /** The failure reason (parser reason, or "dialect undetermined (…) — and the
+   *  SQL does not parse under the default grammar: <reason>"). */
+  reason: string;
+  /** Why the SQL was unreadable: `parse-failure` when a named dialect failed to
+   *  parse it; `dialect-undetermined` when the dialect was undetermined *and* the
+   *  default grammar also failed (the failure may be dialect-specific). */
+  kind: 'parse-failure' | 'dialect-undetermined';
+}
+
+/**
  * Bundled result of `findTableReferences`: extracted table references plus any
- * unresolvable DB-call SQL arguments encountered during extraction.
+ * unresolvable DB-call SQL arguments and unparseable static SQL encountered
+ * during extraction.
  */
 export interface TableReferenceResult {
   references: TableReference[];
   unresolved: UnresolvedQuery[];
+  unparseable: UnparseableSql[];
 }
 
 /**
@@ -70,19 +110,31 @@ export function findTableReferences(
 ): TableReferenceResult {
   const references: TableReference[] = [];
   const unresolved: UnresolvedQuery[] = [];
+  const unparseable: UnparseableSql[] = [];
 
   // (1) Tagged template SQL — e.g. sql`SELECT * FROM heroes`
-  references.push(...extractTaggedTemplateRefs(ast, adapter, sourceCode, ctx));
+  const taggedRefs = extractTaggedTemplateRefs(ast, adapter, sourceCode, ctx);
+  references.push(...taggedRefs.references);
+  unparseable.push(...taggedRefs.unparseable);
 
   // (2) DB-call patterns — e.g. db.exec("SELECT * FROM heroes")
   const dbRefs = extractDbCallRefs(ast, adapter, sourceCode, ctx);
   references.push(...dbRefs.references);
   unresolved.push(...dbRefs.unresolved);
+  unparseable.push(...dbRefs.unparseable);
 
   // (3) .sql files — scan the entire source (the whole file IS SQL).
   if (ast.filePath.endsWith('.sql')) {
-    const fileRefs = parseSqlTables(sourceCode, { line: 1, column: 1 }, sourceCode, ctx.allTables);
-    references.push(...fileRefs);
+    const fileRefs = parseSqlTables(
+      sourceCode,
+      { line: 1, column: 1 },
+      sourceCode,
+      ctx.allTables,
+      ctx.config.sqlDialect ?? null,
+      ctx.config.sqlDialectReason ?? null,
+    );
+    references.push(...fileRefs.references);
+    unparseable.push(...fileRefs.unparseable);
   }
 
   // (4) Spec 15 R2 — ORM-aware extraction (Drizzle + Prisma)
@@ -91,7 +143,10 @@ export function findTableReferences(
   // (5) knex-style query-builder reads — db('table').select(...) / .where(...) / .first(...)
   references.push(...extractQueryBuilderRefs(ast, adapter, sourceCode, ctx));
 
-  return { references, unresolved };
+  // (6) table-backed collection-facade constructors — new SqliteCollectionAdapter(db, 't')
+  references.push(...extractCollectionAdapterRefs(ast, adapter, sourceCode));
+
+  return { references, unresolved, unparseable };
 }
 
 /**
@@ -103,9 +158,10 @@ function extractTaggedTemplateRefs(
   adapter: LanguageAdapter,
   sourceCode: string,
   ctx: FindTableReferencesContext,
-): TableReference[] {
-  const { config, allTables } = ctx;
+): { references: TableReference[]; unparseable: UnparseableSql[] } {
+  const { config, allTables, provenanceContext } = ctx;
   const references: TableReference[] = [];
+  const unparseable: UnparseableSql[] = [];
   const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
 
   const taggedTemplates = adapter.findNodes(ast, {
@@ -123,16 +179,141 @@ function extractTaggedTemplateRefs(
     const templateText = getTemplateText(callNode, adapter, sourceCode);
     if (!templateText) continue;
     const location = getCallLocation(callNode);
-    references.push(...parseSqlTables(templateText, location, sourceCode, allTables));
+    // Spec 70 (per-site dialect) — a tag imported from `postgres` (the `postgres`
+    // package's `sql\`…\``) is postgres, not whatever the repo-level detection
+    // names. Resolves from the tag identifier's package, else falls back.
+    const siteDialect = resolveSiteDialect(callNode, adapter, sourceCode, provenanceContext);
+    const parsed = parseSqlTables(
+      templateText,
+      location,
+      sourceCode,
+      allTables,
+      siteDialect ?? config.sqlDialect ?? null,
+      siteDialect ? null : (config.sqlDialectReason ?? null),
+    );
+    references.push(...parsed.references);
+    unparseable.push(...parsed.unparseable);
   }
 
-  return references;
+  return { references, unparseable };
+}
+
+/**
+ * Spec 70 R1.2 — the schema family's DB-call admission funnels through
+ * `identifyHandle` (the one entry point) instead of the boolean
+ * `isDBProvenanced`. A `handle` or `unproven` verdict admits the call — an
+ * `unproven` receiver whose type annotation is no longer a handle test
+ * (criterion 9) stays visible so `unresolved-query` / `unparseable` report its
+ * SQL as unreadable rather than silently clean; `not-handle` drops it. `null`
+ * means "not a query-shaped call" (a non-DB/ORM method, or a name with no DB
+ * signal at all). Admission is tri-state, not boolean.
+ */
+function dbCallVerdict(
+  node: ASTNode,
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  ctx: FindTableReferencesContext,
+): HandleVerdict | null {
+  const { provenanceContext, config, handleEnv } = ctx;
+  if (!provenanceContext || provenanceContext.mode === 'names') return null;
+
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee) return null;
+
+  // The declaration-resolution env `identifyHandle` reads. Production threads it
+  // (`handleEnv`); a direct caller that seeded only `dbProvenanced` (unit tests)
+  // falls back to a freshly-built env over that provenance — the same evidence the
+  // boolean `isDBProvenanced` gate this replaced consumed, so a seeded-provenanced
+  // receiver still admits and its SQL still reaches `parseSqlTables`.
+  const env: RootResolutionEnv = handleEnv ?? {
+    provenance: provenanceContext.dbProvenanced,
+    bindings: buildBindingEnv(ast, adapter, sourceCode),
+    adapter,
+    sourceCode,
+  };
+
+  const dialect =
+    resolveSiteDialect(node, adapter, sourceCode, provenanceContext) ??
+    config.sqlDialect ?? null;
+
+  const facts = (): Parameters<typeof identifyHandle>[1] => ({
+    imports: new Map(),
+    typeAnnotations: new Map(),
+    bindings: new Map(),
+    withinFileProvenance: new Map(),
+    sqlDialect: dialect,
+    resolution: { dialect: 'ts', env },
+  });
+
+  // Bare-identifier call (`query(…)` / `d1(…)`): a provenanced wrapper or a
+  // type-annotated handle — the seam decides. A truly unbound name carries no DB
+  // signal, so it is rejected before its SQL argument could prove handle-ness.
+  if (callee.type === 'identifier') {
+    const name = adapter.getNodeText(callee, sourceCode);
+    if (!name) return null;
+    const binding = env.bindings.get(name);
+    const isProvenanced = provenanceContext.dbProvenanced.has(name);
+    const isTypeAnnotated = !!binding && !!binding.typeText;
+    if (!isProvenanced && !isTypeAnnotated) return null;
+    return identifyHandle(
+      {
+        format: 'typescript',
+        root: name,
+        receiver: name,
+        method: name,
+        sqlArgument: getFirstStringArgument(node, adapter, sourceCode),
+        thisField: false,
+      },
+      facts(),
+    );
+  }
+
+  if (callee.type !== 'member_expression' && callee.type !== 'selector_expression') {
+    return null;
+  }
+
+  const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+  if (!method) return null;
+  const m = method.toLowerCase();
+  if (!DB_CALL_METHODS.has(m) && !isOrmMethod(method)) return null;
+
+  const root = resolveReceiverRoot(callee, adapter, sourceCode);
+  if (root === null) return null;
+  const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
+
+  return identifyHandle(
+    {
+      format: 'typescript',
+      root,
+      receiver,
+      method,
+      sqlArgument: getFirstStringArgument(node, adapter, sourceCode),
+      thisField: receiverIsThisRootedLocal(callee, adapter),
+    },
+    facts(),
+  );
+}
+
+/** Walk a member chain to see whether it bottoms out at `this`/`super`. */
+export function receiverIsThisRootedLocal(callee: ASTNode, adapter: LanguageAdapter): boolean {
+  let current: ASTNode = callee;
+  while (current.type === 'member_expression' || current.type === 'selector_expression') {
+    const children = adapter.getChildren(current);
+    const firstChild = children.find(
+      (c) => c.type !== '.' && c.type !== 'property_identifier' && c.type !== 'field_identifier',
+    );
+    if (!firstChild) return false;
+    current = firstChild;
+  }
+  return current.type === 'this' || current.type === 'super';
 }
 
 /**
  * Strategy (2): DB-call patterns — e.g. db.exec("SELECT * FROM heroes").
- * Spec 21: provenance-based isDBProvenanced when available, falling back to
- * the name-based isDbMemberCall for `names` mode / no context.
+ * Spec 70 R1.2: admission is decided once by {@link dbCallVerdict} (via
+ * `identifyHandle`); a `handle` or `unproven` receiver is a DB call, a
+ * `not-handle` receiver is not. There is no name-list fallback.
  */
 function extractDbCallRefs(
   ast: AST,
@@ -140,69 +321,56 @@ function extractDbCallRefs(
   sourceCode: string,
   ctx: FindTableReferencesContext,
 ): TableReferenceResult {
-  const { config, provenanceContext, allTables } = ctx;
+  const { provenanceContext, allTables, config } = ctx;
   const references: TableReference[] = [];
   const unresolved: UnresolvedQuery[] = [];
+  const unparseable: UnparseableSql[] = [];
 
   const dbCalls = adapter.findNodes(ast, {
     custom: (node: ASTNode) => {
       if (node.type !== 'call_expression') return false;
-      // Spec 21: Use provenance when available, fall back to name-based check
-      if (provenanceContext && provenanceContext.mode !== 'names') {
-        return isDBProvenanced(node, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS });
-      }
-      // Legacy name-based check for names mode / no context
-      const callee = getCallee(node, adapter, sourceCode);
-      if (!callee) return false;
-      const dbMethods = config.dbCallMethods ?? [...DB_CALL_METHOD_NAMES];
-      const dbReceivers = config.dbReceiverNames ?? [...DB_RECEIVER_NAMES];
-      return isDbMemberCall(callee, dbMethods, dbReceivers);
+      const verdict = dbCallVerdict(node, ast, adapter, sourceCode, ctx);
+      return verdict !== null && verdict.kind !== 'not-handle';
     },
   });
 
   for (const callNode of dbCalls) {
     // A string/template argument is always SQL text, for *every* DB-call method:
     // node-sqlite3's `db.all(sql, cb)` / `db.run(sql, cb)` pass SQL as a literal
-    // just as D1's `db.prepare(sql)` does. Only the identifier-resolution path
-    // is method-gated — `batch`/`run`/`all`/`first` take a statements array or a
-    // bound-parameter object, so `db.batch(stmts)` (where `stmts` is an array)
-    // must not resolve `stmts` as SQL and emit a spurious `unresolved-query`.
-    const methodName = extractDbCallMethodName(callNode, adapter, sourceCode);
-    const resolveIdentifier =
-      methodName === null ||
-      (SQL_CARRYING_METHOD_NAMES as readonly string[]).includes(methodName);
-
+    // just as D1's `db.prepare(sql)` does. "Is this argument SQL" is answered by
+    // the resolved value's shape, not by a method name list (Spec 70): a string
+    // literal is SQL, an array/object literal is a statements array / parameter
+    // object (not SQL), and anything unreadable stays `unresolved`.
     const location = getCallLocation(callNode);
-    const resolved = resolveQuerySql(callNode, ast, adapter, sourceCode, resolveIdentifier);
+    const resolved = resolveQuerySql(callNode, ast, adapter, sourceCode);
     if (resolved.sqlText !== null) {
-      references.push(...parseSqlTables(resolved.sqlText, location, sourceCode, allTables));
+      // §13 — a static SQL argument in a SQL position (provenanced receiver) is
+      // parsed, not regex-scanned. A named dialect that cannot parse it, or no
+      // dialect at all, is `cannot-fire` — surfaced by `parseSqlTables` as an
+      // unreadable statement rather than a silent empty reference set that
+      // `unknown-table` / `stale-table-reference` would read as clean.
+      // Spec 70 (per-site dialect) — the dialect is a property of the call site's
+      // receiver, not the repo: `pool.query(…)` where `pool` → `pg` parses as
+      // postgres even in a repo that also names `mysql2`. Falls back to the
+      // repo-level detection result only when the receiver doesn't resolve to a
+      // package (or resolves to a cross-dialect ORM).
+      const siteDialect = resolveSiteDialect(callNode, adapter, sourceCode, provenanceContext);
+      const parsed = parseSqlTables(
+        resolved.sqlText,
+        location,
+        sourceCode,
+        allTables,
+        siteDialect ?? config.sqlDialect ?? null,
+        siteDialect ? null : (config.sqlDialectReason ?? null),
+      );
+      references.push(...parsed.references);
+      unparseable.push(...parsed.unparseable);
     } else if (resolved.unresolved !== null) {
       unresolved.push(resolved.unresolved);
     }
   }
 
-  return { references, unresolved };
-}
-
-/**
- * Extract the method name from a DB call's callee, returning the final
- * identifier segment stripped of any chained call / type-argument text.
- * Handles bare identifiers (`query(...)`) and member expressions, including
- * chained ones (`db.prepare(sql).run()` → `run`, `env.DB.prepare(...)` →
- * `prepare`). Returns null only when the callee text cannot be read.
- */
-function extractDbCallMethodName(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-): string | null {
-  const callee = getCallee(node, adapter, sourceCode);
-  if (!callee) return null;
-  const dotIdx = callee.lastIndexOf('.');
-  const segment = dotIdx === -1 ? callee : callee.substring(dotIdx + 1);
-  // Strip a chained argument list (`run(...)`) or generic type args (`all<Row>`).
-  const name = segment.replace(/[<(].*$/, '').trim();
-  return name.length > 0 ? name : null;
+  return { references, unresolved, unparseable };
 }
 
 /**
@@ -210,7 +378,7 @@ function extractDbCallMethodName(
  * adapter. Complements raw-SQL extraction by picking up ORM-specific patterns
  * like db.select().from(users) and prisma.user.findMany().
  */
-function extractOrmRefs(
+export function extractOrmRefs(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
@@ -267,20 +435,19 @@ function extractOrmRefs(
  * and flips the fail-open ratio.
  */
 
-/** Extra knex/transaction receiver names beyond the configured DB receivers. */
+/** Knex/transaction receiver names for the fluent `receiver('table').method(` form.
+ *  Spec 69 §10: this is a structural knex idiom, not a name-list fallback — the
+ *  generic `db`/`database`/`sql`/`stmt` names are provenanced by declaration only. */
 const QUERY_BUILDER_RECEIVER_NAMES = ['trx', 'knex'] as const;
 
-function extractQueryBuilderRefs(
+export function extractQueryBuilderRefs(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
   ctx: FindTableReferencesContext,
 ): TableReference[] {
   const references: TableReference[] = [];
-  const receivers = new Set<string>([
-    ...(ctx.config.dbReceiverNames ?? [...DB_RECEIVER_NAMES]),
-    ...QUERY_BUILDER_RECEIVER_NAMES,
-  ]);
+  const receivers = new Set<string>([...QUERY_BUILDER_RECEIVER_NAMES]);
 
   const calls = adapter.findNodes(ast, { type: 'call_expression' });
   for (const call of calls) {
@@ -319,6 +486,60 @@ function normalizeQueryBuilderTable(table: string): string {
   return table.split(/\s+as\s+/i)[0].trim();
 }
 
+/**
+ * Strategy (6): table-backed collection-facade constructors — e.g.
+ * `new SqliteCollectionAdapter(db, 'project_tasks')`.
+ *
+ * `SqliteCollectionAdapter` (src/codeIndex/sqliteCollection.ts) is a
+ * LokiJS-`Collection`-compatible facade over a SQLite table. Every statement it
+ * issues interpolates the table from an instance field — `SELECT * FROM
+ * "${this.tableName}"`, `INSERT INTO "${this.tableName}" (…)`, `UPDATE
+ * "${this.tableName}" …`, `DELETE FROM "${this.tableName}" …` — so the keyword-
+ * anchored `parseSqlTables` never sees the table name and the facade's reads and
+ * writes are both invisible to the schema-usage fact. The one place the table
+ * name is a string literal is the constructor call. Recognizing it records the
+ * *read* (the `find`/`findOne` SELECT) so a table seeded by a migration and then
+ * read through the facade is not flagged `written-never-read` — the
+ * `project_tasks` case: `new SqliteCollectionAdapter(db, 'project_tasks')` with
+ * reads through `this.tasksAdapter.find(...)`.
+ *
+ * Only the read is recorded, mirroring strategy (5)'s read-only choice: the
+ * facade's write verbs (`insert`/`update`/`remove`/`clear`) back tables that
+ * migrations already `CREATE`/`INSERT` seed, so the write is already in the fact
+ * and recording a second, unsourceable write from the constructor would
+ * double-count. The read is the missing half of the lifecycle pair. References
+ * are tagged `origin: 'collection-adapter'` — a real schema table, so naming/
+ * unknown-table checks still run on it (unlike 'query-builder'), but the
+ * discriminator lets the cross-domain analyzer recognise a table that is *only*
+ * seen through a facade.
+ */
+const COLLECTION_ADAPTER_NAMES: ReadonlySet<string> = new Set(['SqliteCollectionAdapter']);
+
+export function extractCollectionAdapterRefs(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): TableReference[] {
+  const references: TableReference[] = [];
+  const constructors = adapter.findNodes(ast, { type: 'new_expression' });
+  for (const node of constructors) {
+    const text = adapter.getNodeText(node, sourceCode).trim();
+    // `new SqliteCollectionAdapter(db, 'project_tasks')` — the first argument is
+    // the shared handle, the second is the literal table name the facade backs.
+    // `[^,]+` for the handle tolerates `this.db` / `db` / any receiver expression.
+    const m = /^new\s+([A-Za-z_$][\w$]*)\s*\(\s*[^,]+,\s*['"]([^'"]+)['"]/.exec(text);
+    if (!m || !COLLECTION_ADAPTER_NAMES.has(m[1])) continue;
+    references.push({
+      table: m[2],
+      type: 'select',
+      location: node.location.start,
+      context: `new ${m[1]}(…, '${m[2]}')`,
+      origin: 'collection-adapter',
+    });
+  }
+  return references;
+}
+
 /** True when `call` is the object of a parent member_expression (it is chained
  *  into a further `.method(...)`), so it is not the outermost call of its chain. */
 function isChainedFurther(call: ASTNode, adapter: LanguageAdapter): boolean {
@@ -332,252 +553,134 @@ function isChainedFurther(call: ASTNode, adapter: LanguageAdapter): boolean {
 }
 
 /**
- * Parse SQL table names from a SQL text string.
- * R2.3: Template expressions (${...}) resolve portions to wildcards.
+ * Parse SQL table names from a SQL text string via the node-sql-parser AST
+ * (Spec 70 §13). This is the schema family's successor to the keyword-regex
+ * scanner: relations come from a typed statement walk (`collectTypedRelations`),
+ * so a `FROM`/`JOIN`/`INSERT INTO`/`UPDATE`/`DELETE`/`CREATE TABLE` is read
+ * exactly where the grammar says it is, and a CTE name or an `ALTER … RENAME`
+ * target is subtracted from the walk instead of regex-guessed.
  *
- * @param sqlText The SQL text to scan.
- * @param baseLocation The line/column of the SQL text's start in `sourceCode`.
- * @param sourceCode The full source text (for offset-to-location mapping).
- * @param allTables Known-table catalog used to keep short CTE/alias identifiers.
- * @returns Table references found in the SQL text.
- */
-/** Bundled inputs for the SQL-pattern match loop inside `parseSqlTables`. */
-interface SqlParseContext {
-  sqlText: string;
-  cleaned: string;
-  baseLocation: { line: number; column: number };
-  sourceCode: string;
-  allTables?: Set<string>;
-}
-
-/**
- * SQL patterns anchored to SQL keywords (not arbitrary substrings).
- *
- * Uses Unicode-aware \p{L} so non-Latin table names (日, 注文, пользователи)
- * are correctly matched — \w is ASCII-only. Spec 21 R5. No trailing \b:
- * greedy [\p{L}\p{N}_]* consumes the full identifier and \b after a closing
- * quote (non-word char) fails, blocking quoted-table extraction.
- */
-function sqlTablePatterns(): Array<{ regex: RegExp; type: TableReference['type']; fromKeyword?: boolean }> {
-  return [
-    // `fromKeyword` marks the generic FROM pattern so the match loop can
-    // exclude `DELETE FROM` — a write context whose table is already captured
-    // by the DELETE pattern below. Without the gate, `DELETE FROM users` is
-    // also tagged `select`, misclassifying a delete-only table as read.
-    { regex: /\bFROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select', fromKeyword: true },
-    { regex: /\bJOIN\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'select' },
-    // Spec 52 R2 — the four D1/SQLite upsert forms are writes. MySQL's
-    // `INSERT IGNORE INTO` (no OR) and `ON DUPLICATE KEY UPDATE` are
-    // deliberately out of scope: the classifier targets the D1/Workers SQLite
-    // dialect, and `ON DUPLICATE KEY UPDATE col = …` (no `SET`) would otherwise
-    // misfire the UPDATE pattern below onto the column name.
-    { regex: /\b(?:INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?|REPLACE)\s+INTO\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'insert' },
-    { regex: /\bUPDATE\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'update' },
-    { regex: /\bDELETE\s+FROM\s+([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'delete' },
-    { regex: /\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([`"']?)([\p{L}_][\p{L}\p{N}_]*)\1/giu, type: 'create' },
-  ];
-}
-
-/**
- * Run the keyword-anchored SQL patterns over `cleaned`, skipping system
- * tables, table-valued functions, module-specifier FROMs, short CTE/alias
- * identifiers, and SQL keywords.
- */
-function matchSqlPatterns(ctx: SqlParseContext): TableReference[] {
-  const { sqlText, cleaned, baseLocation, sourceCode, allTables } = ctx;
-  const references: TableReference[] = [];
-
-  for (const { regex, type, fromKeyword } of sqlTablePatterns()) {
-    // Create fresh regex since we might consume with exec
-    const re = new RegExp(regex.source, regex.flags);
-    let match;
-    while ((match = re.exec(cleaned)) !== null) {
-      const table = match[2]; // The table name (capture group 2)
-      if (!table || isSystemTable(table) || isTableValuedFunction(table)) continue;
-
-      // Skip JS/TS module specifiers (`import x from 'mod'`) that step (3)'s
-      // full-source scan of migration `.ts` files otherwise captures as tables.
-      if (isModuleImportFrom(cleaned, match.index)) continue;
-
-      // `DELETE FROM` is a write, not a read — the DELETE pattern below already
-      // classifies the table, so the generic FROM pattern must not also tag it
-      // `select` (Spec 56 R4 finding: a delete-only table was misread as
-      // also-read, suppressing written-never-read).
-      if (fromKeyword && isDeleteFrom(cleaned, match.index)) continue;
-
-      // Skip very short identifiers (likely CTE names / bare aliases like 'x',
-      // 't', 'o', 'c') unless they are known table names — the guard catches
-      // false positives from single-char CTE/alias identifiers.
-      if (!isSqlKeyword(table) && table.length < 3 && !allTables?.has(table.toLowerCase())) continue;
-
-      // Skip common false positives: common variable names, keywords
-      if (isSqlKeyword(table)) continue;
-
-      // Calculate position in original source. Anchor against `sqlText` — the
-      // original SQL, which appears verbatim in the source — NOT `cleaned`, which
-      // carries `__TMPL__` sentinels for `${…}` substitutions that never appear
-      // in the source. `sourceCode.indexOf(cleaned)` returns -1 for any
-      // interpolated template, collapsing every anchor to a plausible-but-wrong
-      // line. An `indexOf` that returns -1 is a bug, not a fallback — throw
-      // rather than mis-place (same guard the severity lookup uses for `undefined`).
-      if (match[0].includes('__TMPL__')) {
-        // The match overlaps a template substitution (a templated table name);
-        // there is no verbatim anchor to point at, and the reference is filtered
-        // out downstream — skip it rather than fabricate a location.
-        continue;
-      }
-      const sqlAbs = sourceCode.indexOf(sqlText);
-      if (sqlAbs < 0) {
-        throw new Error(
-          `parseSqlTables: SQL text not found in source — a table reference that cannot be anchored is a bug, not something to mis-place.`,
-        );
-      }
-      const offset = sqlText.indexOf(match[0]);
-      if (offset < 0) {
-        throw new Error(
-          `parseSqlTables: match "${match[0]}" not found in SQL text — a table reference that cannot be anchored is a bug, not something to mis-place.`,
-        );
-      }
-      const location = offsetToLocation(sourceCode, sqlAbs + offset, baseLocation);
-
-      references.push({
-        table,
-        type,
-        location,
-        context: match[0].trim(),
-      });
-    }
-  }
-
-  return references;
-}
-
-/**
- * Parse a SQL string (possibly with template expressions) into table references.
+ * Contract (Spec 70): a named dialect that cannot parse the SQL is *unreadable*,
+ * not "no tables". A null dialect does not skip the parse (R2: parsing a literal
+ * does not require proving the site's dialect first) — the SQL is attempted under
+ * {@link DEFAULT_SQL_DIALECT}; when it parses, the tables are derived; when it
+ * fails, the record is `cannot-fire` naming **both** the parse failure and the
+ * undetermined dialect (the failure may be dialect-specific syntax). Either way
+ * a failure is returned as an `unparseable` record, never a silent empty
+ * reference set that `unknown-table` / `stale-table-reference` would read clean.
  *
  * @param sqlText The SQL text to parse.
- * @param baseLocation Location of the SQL text within its source file.
- * @param sourceCode The full source file contents.
- * @param allTables Optional known table set for match filtering.
- * @returns Table references discovered in the SQL text.
+ * @param baseLocation The line/column of the SQL text's start in `sourceCode`.
+ * @param sourceCode The full source text (for offset-to-location mapping).
+ * @param allTables Known-table catalog used to keep short (1–2 char) identifiers.
+ * @param dialect The corpus's named dialect, or null when detection named none.
+ * @param dialectReason Why `dialect` is null (for the cannot-fire message).
+ * @returns Table references parsed from the SQL, plus unparseable statements.
  */
 export function parseSqlTables(
   sqlText: string,
   baseLocation: { line: number; column: number },
   sourceCode: string,
-  allTables?: Set<string>,
-): TableReference[] {
-  // R2.3: Strip template expressions — `${prefix}_builds` → `_builds`
-  // (the prefix is replaced with empty, the suffix remains for matching)
-  const cleaned = resolveTemplateExpressions(sqlText);
-  const ctx: SqlParseContext = { sqlText, cleaned, baseLocation, sourceCode, allTables };
+  allTables: Set<string> | undefined,
+  dialect: Dialect | null,
+  dialectReason: string | null,
+): { references: TableReference[]; unparseable: UnparseableSql[] } {
+  const references: TableReference[] = [];
+  const unparseable: UnparseableSql[] = [];
+  const trimmed = sqlText.trim();
+  if (trimmed.length === 0) return { references, unparseable };
 
-  let references = matchSqlPatterns(ctx);
+  const program = parseSqlProgramTolerant(sqlText, dialect ?? DEFAULT_SQL_DIALECT);
+  for (const failure of program.failures) {
+    unparseable.push({
+      sqlText,
+      location: baseLocation,
+      reason: dialect === null
+        ? `${dialectReason ?? 'dialect undetermined (no database driver in package.json or wrangler.toml)'} — and the SQL does not parse under the default ${DEFAULT_SQL_DIALECT} grammar: ${failure.reason}`
+        : failure.reason,
+      kind: dialect === null ? 'dialect-undetermined' : 'parse-failure',
+    });
+  }
+  if (program.statements.length === 0) return { references, unparseable };
 
-  // Template sentinel filter: resolveTemplateExpressions() replaces
-  // ${...} with __TMPL__. Strip these before alias extraction and
-  // before returning — __TMPL__ is never a real table name.
-  references = references.filter(ref => !ref.table.startsWith('__TMPL__'));
-
-  // Spec 22 R4.3: Filter out alias identifiers.
-  // "FROM x AS t" defines t as an alias; later references like "JOIN t.posts"
-  // would capture t via the JOIN regex. Scan for explicit AS aliases.
-  const aliasIds = extractAliasIdentifiers(cleaned);
-  if (aliasIds.size > 0) {
-    return references.filter(ref => !aliasIds.has(ref.table.toLowerCase()));
+  // Anchor the SQL text against the source exactly once. The raw `sqlText`
+  // (still carrying `${…}`) appears verbatim in the source; the normalized
+  // parse input does not. An absent match is a bug, not a fallback — throw
+  // rather than mis-place every reference onto a wrong line.
+  const sqlAbs = sourceCode.indexOf(sqlText);
+  if (sqlAbs < 0) {
+    throw new Error(
+      `parseSqlTables: SQL text not found in source — a table reference that cannot be anchored is a bug, not something to mis-place.`,
+    );
   }
 
+  references.push(...extractSqlTables(
+    collectTypedRelations(program.statements, new Set(program.truncatedConflictIndices)),
+    sqlText,
+    sqlAbs,
+    baseLocation,
+    sourceCode,
+    allTables,
+  ));
+  return { references, unparseable };
+}
+
+/**
+ * Convert typed AST relations into `TableReference`s, applying the same guards
+ * the regex scanner applied (system tables, table-valued functions, SQL
+ * keywords, short 1–2-char identifiers) and anchoring each to its source line.
+ */
+function extractSqlTables(
+  relations: readonly TypedRelation[],
+  sqlText: string,
+  sqlAbs: number,
+  baseLocation: { line: number; column: number },
+  sourceCode: string,
+  allTables: Set<string> | undefined,
+): TableReference[] {
+  const references: TableReference[] = [];
+  const lowerSql = sqlText.toLowerCase();
+  for (const rel of relations) {
+    const table = rel.table;
+    if (isSystemTable(table)) continue;
+    if (rel.db !== null && isSystemTable(`${rel.db}.${table}`)) continue;
+    if (isTableValuedFunction(table)) continue;
+    if (isSqlKeyword(table)) continue;
+    // Short 1–2-char identifiers are almost always CTE names / bare aliases
+    // (`x`, `t`, `o`) rather than real tables; keep one only when the catalog
+    // names it. (CTE names are already subtracted by collectTypedRelations.)
+    if (table.length < 3 && !allTables?.has(table.toLowerCase())) continue;
+
+    const qualified = rel.db !== null ? `${rel.db}.${table}` : table;
+    references.push({
+      table,
+      type: rel.type,
+      location: anchorTable(table, lowerSql, sqlAbs, baseLocation, sourceCode),
+      context: `${rel.type} ${qualified}`,
+      ...(rel.conflictClauseTruncated ? { conflictClauseTruncated: true } : {}),
+    });
+  }
   return references;
 }
 
 /**
- * Spec 22 R4.3: Extract alias identifiers from SQL text.
- *
- * Detects both explicit (`FROM x AS t`) and bare (`FROM x t`) aliases
- * so they can be filtered from table-references in parseSqlTables().
- * Without this, "JOIN t.posts" captures t via the JOIN regex when t is
- * an alias for the real table x.
- *
- * @param sqlText The SQL text to scan for alias identifiers.
- * @returns Lowercased alias identifiers to filter from table references.
+ * Anchor a table name to its source location. The node-sql-parser AST is
+ * location-free, so the anchor is the first case-insensitive occurrence of the
+ * bare name within the SQL text — a line-level attribution good enough for the
+ * lifecycle rules' per-function re-homing. When the name is not found (a quoted
+ * identifier the parser normalized, or a name only present via a substitution),
+ * fall back to the SQL text's own start.
  */
-export function extractAliasIdentifiers(sqlText: string): Set<string> {
-  const aliases = new Set<string>();
-
-  // CTE: WITH [RECURSIVE] <name> [(cols)] AS ( — the CTE name is an alias, not
-  // a real table, so it must not be captured by FROM/JOIN/subquery patterns.
-  // The old shape `WITH name AS (` missed three real-world cases: the
-  // `RECURSIVE` keyword (WITH RECURSIVE deps…), a column list after the name
-  // (`deps(id, callee_name, depth)`), and every comma-separated sibling after
-  // the first (`WITH a AS (…), b AS (…)`). Each of those leaked the CTE name
-  // into a later `FROM <cte>` / `JOIN <cte>` and was flagged unknown-table.
-  // The `(?:WITH(?:RECURSIVE)?|,)` prefix anchors the name to a CTE position —
-  // the WITH head or a comma — so `, name AS (` is not read from a SELECT list.
-  const cteRe = /(?:WITH(?:\s+RECURSIVE)?|,)\s*([\p{L}_][\p{L}\p{N}_]*)\s*(?:\([^)]*\))?\s+AS\s*\(/giu;
-  let m: RegExpExecArray | null;
-  while ((m = cteRe.exec(sqlText)) !== null) {
-    aliases.add(m[1].toLowerCase());
-  }
-
-  // ALTER TABLE <t> RENAME TO <new> — the rename target is a transient name
-  // (the table under a temporary name, typically dropped in the same
-  // migration), not a persistent table. A later `FROM <new>` / `JOIN <new>`
-  // is the migration's own data-copy, not an unknown-table reference.
-  const renameRe = /\bRENAME\s+TO\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
-  while ((m = renameRe.exec(sqlText)) !== null) {
-    aliases.add(m[1].toLowerCase());
-  }
-
-  // Explicit: FROM/JOIN <table> AS <alias>
-  const explicitRe = /\b(?:FROM|JOIN)\s+[\p{L}_][\p{L}\p{N}_]*\s+AS\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
-  while ((m = explicitRe.exec(sqlText)) !== null) {
-    aliases.add(m[1].toLowerCase());
-  }
-
-  // Subquery bare alias: FROM (SELECT ...) <alias>
-  // The '(' stops the bare FROM/JOIN regex below because \w+ can't match it.
-  // Pattern: FROM/JOIN \s* \( ... \) \s* <alias>
-  const subqueryRe = /\b(?:FROM|JOIN)\s*\([^)]*\)\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
-  while ((m = subqueryRe.exec(sqlText)) !== null) {
-    const alias = m[1];
-    if (!isSqlKeyword(alias)) {
-      aliases.add(alias.toLowerCase());
-    }
-  }
-
-  // Bare: FROM/JOIN <table> <alias> (alias is a bare identifier, not a keyword)
-  // Pattern: keyword + table + word — the third word is the alias if it's
-  // not a SQL keyword and not followed by '.' (table.column reference).
-  const bareRe = /\b(?:FROM|JOIN)\s+([\p{L}_][\p{L}\p{N}_]*)\s+([\p{L}_][\p{L}\p{N}_]*)\b/giu;
-  while ((m = bareRe.exec(sqlText)) !== null) {
-    const alias = m[2];
-    // Don't add if it looks like a keyword or is followed by '.' (table ref)
-    if (!isSqlKeyword(alias)) {
-      const afterMatch = sqlText.substring(m.index + m[0].length);
-      if (!/^\s*\./.test(afterMatch)) {
-        aliases.add(alias.toLowerCase());
-      }
-    }
-  }
-
-  return aliases;
-}
-
-/**
- * R2.3: Resolve template expressions in SQL text.
- *
- * Uses the sentinel `__TMPL__` instead of an empty string. An empty
- * replacement produces whitespace artifacts (e.g. `FROM   t WHERE`
- * when `${tableName}` is stripped), which causes the bare-alias regex
- * in extractAliasIdentifiers() to misalign: `t` lands in the table-name
- * capture group instead of the alias group, and is never denylisted.
- *
- * `__TMPL__` keeps the token boundaries intact so alias extraction
- * correctly identifies `t` as the alias. `__TMPL__` table references
- * are filtered in parseSqlTables().
- */
-export function resolveTemplateExpressions(text: string): string {
-  return text.replace(/\$\{[^}]+\}/g, '__TMPL__');
+function anchorTable(
+  table: string,
+  lowerSql: string,
+  sqlAbs: number,
+  baseLocation: { line: number; column: number },
+  sourceCode: string,
+): { line: number; column: number } {
+  const idx = lowerSql.indexOf(table.toLowerCase());
+  const rel = idx >= 0 ? idx : 0;
+  return offsetToLocation(sourceCode, sqlAbs + rel, baseLocation);
 }
 
 /**
@@ -1058,7 +1161,15 @@ export function getTemplateText(node: ASTNode, adapter: LanguageAdapter, sourceC
   for (const child of node.children) {
     const type = adapter.getNodeType(child);
     if (type === 'template_string' || type === 'template_literal') {
-      return adapter.getNodeText(child, sourceCode).trim();
+      const text = adapter.getNodeText(child, sourceCode).trim();
+      // A template literal's source text includes its surrounding backticks
+      // (`` `SELECT …` ``). node-sql-parser rejects a statement wrapped in
+      // backticks, so strip them before handing the SQL to the AST parser —
+      // the same unwrap `getFirstStringArgument` already does for string args.
+      if (text.startsWith('`') && text.endsWith('`')) {
+        return text.slice(1, -1);
+      }
+      return text;
     }
   }
   return null;
@@ -1145,41 +1256,50 @@ function unquoteLiteral(text: string): string | null {
 }
 
 /**
+ * True when an initializer's source text is a structured literal — an array
+ * (`[...]`) or object (`{...}`) — rather than a string, call result, or
+ * identifier. A DB-call first argument that resolves to a structured literal
+ * is a statements array / bound-parameter object, not SQL text.
+ */
+function isStructuredLiteral(text: string): boolean {
+  const t = text.trim();
+  return t.startsWith('[') || t.startsWith('{');
+}
+
+/**
  * Resolve the SQL text held by a DB call's first argument.
  *
  * Strategy: a direct string/template argument is used as-is. Otherwise, a bare
  * identifier argument is resolved via the adapter's `resolveLocalConstant`
  * capability — a same-module `const` bound to a string/template literal yields
  * its SQL text (template substitutions are left in place; `parseSqlTables`
- * resolves them). Anything else (imported constant, reassigned/concatenated
- * expression, call result, parameter, unsupported language) is reported as
- * `unresolved` so the query is not silently treated as table-free.
+ * resolves them).
+ *
+ * "Is this argument SQL" is answered by the resolved value's shape, not by a
+ * method name list (Spec 70): a string/template literal is SQL; an array/object
+ * literal is a statements array or parameter object (not SQL, so it is skipped
+ * rather than reported as unresolvable); anything unreadable (imported constant,
+ * reassigned/concatenated expression, call result, parameter, unsupported
+ * language) is reported as `unresolved` so the query is not silently treated as
+ * table-free.
  *
  * @param callNode The DB call_expression node.
  * @param ast The full AST (for local-constant scope traversal).
  * @param adapter The language adapter for the file's syntax.
  * @param sourceCode The raw source text.
- * @param resolveIdentifier When false, skip identifier resolution entirely (the
- *   call's first argument is not SQL — e.g. `db.batch(stmts)`).
  * @returns The resolved SQL text, an unresolved-query record, or neither.
  */
-function resolveQuerySql(
+export function resolveQuerySql(
   callNode: ASTNode,
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
-  resolveIdentifier = true,
 ): { sqlText: string | null; unresolved: UnresolvedQuery | null } {
   // Direct string/template argument — the common, fully-static path. This runs
   // for every DB-call method (node-sqlite3 `db.all(sql)` / `db.run(sql)` pass
   // SQL as a literal, not just `prepare`/`exec`).
   const direct = getFirstStringArgument(callNode, adapter, sourceCode);
   if (direct !== null) return { sqlText: direct, unresolved: null };
-
-  // Identifier resolution is method-gated by the caller: `batch`/`run`/`all`/
-  // `first` take statements/parameters, not SQL, so a bare identifier argument
-  // there is not SQL and must not be reported as unresolvable.
-  if (!resolveIdentifier) return { sqlText: null, unresolved: null };
 
   // Bare identifier argument — resolve the local constant.
   const identNode = getFirstIdentifierArgument(callNode, adapter);
@@ -1202,8 +1322,13 @@ function resolveQuerySql(
 
   const sqlText = unquoteLiteral(resolved.initText);
   if (sqlText === null) {
-    // initText is not a string literal — a call result, binary expr, or a
-    // chained identifier (`const B = A`). Cannot statically read the SQL.
+    // initText is not a string literal. A structured literal (array/object) is
+    // a statements array / parameter object, not SQL — skip it. Anything else
+    // (call result, binary expr, chained identifier `const B = A`) cannot be
+    // statically read, so the query is genuinely unseen.
+    if (isStructuredLiteral(resolved.initText)) {
+      return { sqlText: null, unresolved: null };
+    }
     return { sqlText: null, unresolved: { identifier, location } };
   }
 
@@ -1233,24 +1358,151 @@ export function checkUnresolvedQueries(unresolved: UnresolvedQuery[], filePath: 
 }
 
 /**
- * Check if a callee is a DB member call like db.exec, database.query, etc.
+ * Build `cannot-fire` coverage diagnostics for DB-call SQL whose static string
+ * argument a named dialect cannot parse (`PRAGMA table_info(x)`, `VACUUM`,
+ * `ANALYZE`, and other grammar gaps). These are the SQL-position siblings of the
+ * unresolvable-identifier `unresolved-query` diagnostic: the argument *is* read,
+ * but the parser cannot answer "which tables", so the table-read/write facts are
+ * unreadable rather than "no tables". Reporting (rather than letting
+ * `unknown-table` / `stale-table-reference` read an empty reference set as clean)
+ * is what keeps an unparseable statement visibly unreadable (Spec 70 R2).
  *
- * @param calleeText The callee text (e.g. "db.exec").
- * @param methods The allowed DB call method names.
- * @param receivers The allowed DB receiver names.
- * @returns True when the callee is a permitted receiver.method DB call.
+ * @param unparseable The unparseable-SQL records to report.
+ * @param filePath The file path the diagnostics belong to.
+ * @returns One `cannot-fire` diagnostic per unparseable SQL argument.
  */
-export function isDbMemberCall(
-  calleeText: string,
-  methods: string[],
-  receivers: string[]
-): boolean {
-  // calleeText might be like "db.exec"
-  const dotIdx = calleeText.indexOf('.');
-  if (dotIdx === -1) return false;
-  const receiver = calleeText.substring(0, dotIdx);
-  const method = calleeText.substring(dotIdx + 1);
-  return receivers.includes(receiver) && methods.includes(method);
+export function checkUnparseableSql(unparseable: UnparseableSql[], filePath: string): CoverageDiagnostic[] {
+  return unparseable.map((u) => {
+    const why =
+      u.kind === 'parse-failure'
+        ? `cannot be parsed ('${u.reason}')`
+        : `is ${u.reason}`;
+    return {
+      analyzerName: 'schema',
+      kind: 'cannot-fire',
+      message: `SQL statement ${why} — its table read/write status is unreadable, so cross-domain lifecycle rules (unknown-table, stale-table-reference) may be unreliable for this file.`,
+      file: filePath,
+      line: u.location.line,
+      details: { sql: u.sqlText, reason: u.reason, kind: u.kind },
+    };
+  });
+}
+
+/**
+ * Build `cannot-fire` coverage diagnostics for DB-looking imports whose
+ * specifier could not be resolved to an in-repo file. This is the Spec 69 §10
+ * coverage-parity signal: the deleted `DB_RECEIVER_NAMES` name-list fallback
+ * used to mark a receiver named `db`/`database`/`sql`/`stmt` as DB-provenanced
+ * even without a declaration. With that gone, a receiver imported from a
+ * non-resolvable `./db`-style specifier can no longer be provenanced by
+ * declaration, so any DB access through it is unseen. Reporting that as
+ * `cannot-fire` (rather than letting the affected rules report `clean`) is what
+ * prevents a silent regression — the coverage count must rise by exactly the
+ * amount the finding count falls.
+ *
+ * @param unresolved The unresolved-import records for this file (already
+ *   filtered to the current file by the caller).
+ * @param filePath The file path the diagnostics belong to.
+ * @returns One `cannot-fire` diagnostic per unresolved DB-looking import.
+ */
+export function checkUnresolvedReceiverImports(
+  unresolved: Array<{ source: string; names: string[] }>,
+  filePath: string,
+): CoverageDiagnostic[] {
+  return unresolved.map((u) => ({
+    analyzerName: 'schema',
+    kind: 'cannot-fire',
+    message:
+      `Import of ${u.names.length > 0 ? u.names.map((n) => `'${n}'`).join(', ') : 'a DB receiver'} ` +
+      `from '${u.source}' does not resolve to an in-repo file, so its DB provenance cannot be ` +
+      `established by declaration. DB access through this receiver is unseen: table-reference ` +
+      `and data-access rules may report clean on access they could not observe.`,
+    file: filePath,
+    line: 0,
+    details: { source: u.source, names: u.names },
+  }));
+}
+
+/**
+ * Build `cannot-fire` coverage diagnostics for query-shaped call sites whose
+ * receiver is unproven (Spec 69 §10 S5a — disposition replaces step-failure).
+ *
+ * The §10 guard is keyed to *the question being unanswered*, not to a resolution
+ * step failing: an unproven receiver — whether an unresolved import, a runtime
+ * binding (`env.DB`), an unannotated parameter, or a `new <wrapper-class>()` the
+ * resolution does not trace — must report `cannot-fire` with a reason, never
+ * `clean`. This is the per-call-site complement to
+ * {@link checkUnresolvedReceiverImports} (which is keyed to the import alone).
+ *
+ * @param unproven The unproven-query-receiver records for this file.
+ * @param filePath The file path the diagnostics belong to.
+ * @returns One `cannot-fire` diagnostic per unproven query receiver.
+ */
+export function checkUnprovenQueryReceivers(
+  unproven: Array<{ receiver: string; method: string; line: number; reason: string }>,
+  filePath: string,
+): CoverageDiagnostic[] {
+  return unproven.map((u) => ({
+    analyzerName: 'schema',
+    kind: 'cannot-fire',
+    message:
+      `Query-shaped call \`.${u.method}()\` on ${u.receiver}: ${u.reason}`,
+    file: filePath,
+    line: u.line,
+    details: { receiver: u.receiver, method: u.method, reason: u.reason },
+  }));
+}
+
+/**
+ * Deduplicate `cannot-fire` diagnostics so one receiver gets one disposition
+ * (Spec 69 §10 Q3).
+ *
+ * Two emission paths can both report the same unanswered question — "is this
+ * receiver a DB handle?" — for one receiver:
+ *
+ *   - {@link checkUnresolvedReceiverImports} — keyed to the *import* (`line: 0`,
+ *     `details.names`) for a receiver imported from an unresolvable `./db`-style
+ *     specifier.
+ *   - {@link checkUnprovenQueryReceivers} — keyed to the *call site* (real line,
+ *     `details.receiver`) for a query-shaped call through an unproven receiver.
+ *
+ * A receiver imported from an unresolvable specifier *and* called at a query
+ * site therefore produced two diagnostics for one unanswered question, doubling
+ * the coverage count and making the §10 finding↔coverage arithmetic reconcile
+ * when it should not.
+ *
+ * The call-site diagnostic wins: it carries the precise line and method. The
+ * import-level diagnostic is dropped for each name the call-site path already
+ * dispositioned (compared by bare receiver name — `this.db` → `db`), and
+ * survives only for names imported but never called, where it is the sole
+ * signal that a receiver is unseen.
+ *
+ * @param diagnostics The merged `cannot-fire` diagnostics for one file.
+ * @returns The same diagnostics, with redundant import-level signals removed.
+ */
+export function dedupeCannotFireByReceiver(diagnostics: CoverageDiagnostic[]): CoverageDiagnostic[] {
+  const callSiteReceivers = new Set<string>();
+  for (const d of diagnostics) {
+    const receiver = d.details?.receiver;
+    if (typeof receiver !== 'string' || receiver.length === 0) continue;
+    const bare = receiver.split('.').pop() ?? receiver;
+    callSiteReceivers.add(`${d.file} ${bare}`);
+  }
+
+  const out: CoverageDiagnostic[] = [];
+  for (const d of diagnostics) {
+    const names = d.details?.names;
+    if (Array.isArray(names) && d.line === 0) {
+      const remaining = names.filter(
+        (n) => typeof n === 'string' && !callSiteReceivers.has(`${d.file} ${n}`),
+      );
+      if (remaining.length === 0) continue; // fully dispositioned by the call-site path
+      out.push({ ...d, details: { ...d.details, names: remaining } });
+    } else {
+      out.push(d);
+    }
+  }
+  return out;
 }
 
 /**
@@ -1361,62 +1613,6 @@ export function isTableValuedFunction(name: string): boolean {
  */
 export function isSqlKeyword(word: string): boolean {
   return SQL_KEYWORDS.has(word.toLowerCase());
-}
-
-/**
- * True when the `from` keyword at `fromIndex` is a JavaScript/TypeScript
- * module specifier (`import x from 'mod'`, `import { a } from 'mod'`,
- * `export { a } from 'mod'`, `export * from 'mod'`) rather than a SQL
- * FROM clause.
- *
- * Step (3) of findTableReferences() full-source scans `.ts` files under
- * `migrations/`, where a case-insensitive `\bFROM\s+([`"']?)...` pattern
- * matches `from 'typeorm'` / `from 'path'` / `from 'dotenv'` and records the
- * module name as an unknown table. SQL never introduces FROM with
- * `import`/`export`, so requiring that introducer at a statement boundary is
- * unambiguous — and only checking the introducer at a line/`;` boundary
- * avoids misreading a SQL comment (`-- import data`) or a table named
- * `import_log` as a module statement.
- *
- * @param sqlText The source text being scanned for a FROM introducer.
- * @param fromIndex The character index of the `from` keyword within `sqlText`.
- * @returns True when the introducer preceding `fromIndex` is an import/export.
- */
-export function isDeleteFrom(sqlText: string, fromIndex: number): boolean {
-  // `DELETE FROM` is a write: the table is captured by the DELETE pattern, and
-  // the generic FROM pattern must not re-tag it as a read. Check whether the
-  // word immediately preceding the FROM keyword (across any whitespace) is
-  // `DELETE` — the only SQL keyword that introduces a write-FROM. `SELECT …
-  // FROM`, `JOIN`, and `INSERT INTO … SELECT … FROM` all keep their read FROM.
-  return /\bDELETE\s+$/iu.test(sqlText.slice(0, fromIndex));
-}
-
-/**
- * Whether the `from` keyword at `fromIndex` is the FROM of a module
- * `import`/`export` statement rather than the read-FROM of a SQL `SELECT`/`JOIN`.
- *
- * Scans back from `fromIndex` to the enclosing statement boundary (a `;` or a
- * blank line — a module introducer never crosses either) and checks that the
- * prefix is introduced by `import`/`export`. This keeps `SELECT … FROM`,
- * `JOIN …`, and `INSERT … SELECT … FROM` out of the module-import count while
- * letting `IMPORT … FROM` and `EXPORT … FROM` through.
- *
- * @param sqlText The source text being scanned.
- * @param fromIndex The character index of the `from` keyword within `sqlText`.
- * @returns True when the introducer preceding `fromIndex` is an import/export.
- */
-export function isModuleImportFrom(sqlText: string, fromIndex: number): boolean {
-  let start = fromIndex;
-  while (start > 0) {
-    const prev = sqlText[start - 1];
-    // Stop at a statement terminator or a blank line — a module statement's
-    // `import`/`export` introducer never crosses these.
-    if (prev === ';') break;
-    if (prev === '\n' && start >= 2 && sqlText[start - 2] === '\n') break;
-    start--;
-  }
-  const prefix = sqlText.slice(start, fromIndex);
-  return /(?:^|[\n;])\s*(?:import|export)\b/m.test(prefix);
 }
 
 /**
@@ -1764,4 +1960,94 @@ export function findEnclosingFunctionIdentity(
 export function functionIdentityLabel(id: FunctionIdentity): string {
   if (id.topLevel) return 'top-level';
   return id.name ?? `fn:${id.startLine}:${id.startColumn}`;
+}
+
+/** The serializable projection of one enclosing-function node — the start/end
+ *  coordinate plus the declaration name. The corpus `schema-usage` producer
+ *  re-homes a reference to its innermost enclosing function from this list,
+ *  reproducing `findClosestNodeAt` + `findEnclosingFunctionIdentity` with no AST. */
+export interface FunctionSpan {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  name: string | null;
+}
+
+/**
+ * Project every node `findEnclosingFunctionIdentity` would match — the six
+ * `FUNCTION_NODE_TYPES` plus `adapter.isMethod` — into a `FunctionSpan`. The set
+ * and the `adapter.getNodeName` text are byte-identical to the identity walk, so
+ * a corpus-side "innermost span containing the location" reproduces the walk's
+ * result (a nested function's start is inside its parent's span, hence later, so
+ * the containing span with the latest start is the deepest one).
+ *
+ * @param ast The parsed AST whose enclosing functions are projected.
+ * @param adapter The language adapter for type/name traversal.
+ * @returns One `FunctionSpan` per enclosing-function node, in walk pre-order.
+ */
+export function extractEnclosingFunctionSpans(ast: AST, adapter: LanguageAdapter): FunctionSpan[] {
+  const spans: FunctionSpan[] = [];
+  const walk = (node: ASTNode) => {
+    const type = adapter.getNodeType(node);
+    if (FUNCTION_NODE_TYPES.has(type) || adapter.isMethod(node)) {
+      spans.push({
+        startLine: node.location.start.line,
+        startColumn: node.location.start.column,
+        endLine: node.location.end.line,
+        endColumn: node.location.end.column,
+        name: adapter.getNodeName(node),
+      });
+    }
+    if (node.children) {
+      for (const child of node.children) walk(child);
+    }
+  };
+  walk(ast.root);
+  return spans;
+}
+
+/** The serializable projection of one `string_fragment` leaf — the start/end
+ *  coordinate of the literal text inside a `string` / `template_string`. The
+ *  corpus `schema-usage` producer re-homes a *top-level* reference to this
+ *  fragment's start (the deepest node `findClosestNodeAt` returns for a table
+ *  name inside a SQL string), reproducing the coordinate with no AST. */
+export interface StringFragmentSpan {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+}
+
+/**
+ * Project every `string_fragment` leaf into a `StringFragmentSpan`. The legacy
+ * re-home's `findClosestNodeAt(ref.location)` returns the deepest node containing
+ * the reference; for a table name parsed out of a SQL string that node is a
+ * `string_fragment` (the `alias(…, $.string_fragment)` token, a named leaf). The
+ * set and the start/end coordinates are byte-identical to that node, so a
+ * corpus-side "innermost fragment containing the location" reproduces the
+ * top-level coordinate (a reference is always inside exactly one fragment — the
+ * fragments of one string are disjoint, and distinct strings are disjoint).
+ *
+ * @param ast The parsed AST whose string fragments are projected.
+ * @param adapter The language adapter for type/child traversal.
+ * @returns One `StringFragmentSpan` per `string_fragment` node, in walk pre-order.
+ */
+export function extractStringFragmentSpans(ast: AST, adapter: LanguageAdapter): StringFragmentSpan[] {
+  const spans: StringFragmentSpan[] = [];
+  const walk = (node: ASTNode) => {
+    if (adapter.getNodeType(node) === 'string_fragment') {
+      spans.push({
+        startLine: node.location.start.line,
+        startColumn: node.location.start.column,
+        endLine: node.location.end.line,
+        endColumn: node.location.end.column,
+      });
+    }
+    if (node.children) {
+      for (const child of node.children) walk(child);
+    }
+  };
+  walk(ast.root);
+  return spans;
 }
