@@ -75,53 +75,58 @@
         }
       }
     },
-    "data-access-calls": {
-      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one resolved DB call per call/template the provenance scan recognizes as a database operation. Residual = the large majority of calls/templates that are not DB calls.",
+    "data-access-calls-candidates": {
+      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one raw, provenance-free candidate per query-shaped call (the extract half of the `data-access-calls` collapse — the handle verdict, injection gate, and per-site SQL parse are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = the large majority of calls/templates that are not DB/ORM-shaped.",
       "corpora": {
         "hhra-org": {
-          "files": 525,
-          "expected": 16992,
-          "actual": 334
+          "files": 488,
+          "expected": 16854,
+          "actual": 5397
         },
         "blitz": {
-          "files": 528,
-          "expected": 9423,
-          "actual": 119
+          "files": 408,
+          "expected": 9123,
+          "actual": 3602
         },
         "openstatus": {
-          "files": 1980,
-          "expected": 75573,
-          "actual": 2187
+          "files": 1648,
+          "expected": 74463,
+          "actual": 36262
         },
         "recall-protocol": {
-          "files": 1416,
-          "expected": 95724,
-          "actual": 1848
+          "files": 1373,
+          "expected": 95597,
+          "actual": 31074
         }
       }
     },
     "ddl-declarations": {
-      "composition": "Oracle counts DDL statement headers (CREATE/DROP/ALTER TABLE) off source text; the producer emits one op per CREATE/DROP/ALTER-RENAME matched by its own DDL_RE. Residual = ALTER TABLE \u2026 ADD COLUMN/ADD CONSTRAINT headers, which the producer records in tableColumns rather than as an op.",
+      "composition": "Oracle counts op-producing DDL statements off source text — CREATE/DROP/ALTER-RENAME TABLE headers only (an ALTER TABLE … ADD/DROP/ALTER COLUMN / ADD CONSTRAINT header is a column/constraint change recorded in `tableColumns`, not an op, so the oracle does not count it). The producer emits one op per CREATE (incl. the FTS5 `CREATE VIRTUAL TABLE` recovery), one per DROP target, and one per `ALTER TABLE … RENAME TO` parsed by `parseMigrationOps` under the corpus's detected dialect (Spec 70 R1 threads `detectDialect`). A null-dialect corpus (hhra-org ambiguous pg+mysql, blitz and openstatus no driver) abstains — `parseMigrationOps` no longer guesses sqlite, so its DDL emits zero ops and the whole header count is a `cannot-fire` population, not an under-emission. The only real residual is recall-protocol (sqlite via a D1 binding): 12 op-producing statements across 6 files that node-sql-parser rejects (valid sqlite the grammar cannot parse). See `specs/known-issues.md` §ddl-declarations.",
       "corpora": {
         "hhra-org": {
-          "files": 10,
-          "expected": 219,
-          "actual": 91
+          "files": 27,
+          "expected": 201,
+          "actual": 0
+        },
+        "blitz": {
+          "files": 12,
+          "expected": 40,
+          "actual": 0
         },
         "openstatus": {
-          "files": 46,
-          "expected": 136,
-          "actual": 17
+          "files": 42,
+          "expected": 97,
+          "actual": 0
         },
         "recall-protocol": {
-          "files": 88,
-          "expected": 376,
-          "actual": 59
+          "files": 6,
+          "expected": 29,
+          "actual": 17
         }
       }
     },
     "dynamic-sql": {
-      "composition": "Oracle counts `query(`/`execute(` call sites off source text; the producer emits one candidate only for the dangerous `${\u2026}`/`+` forms that survive the parameterized-query and taint-safety filters. Residual = safe/parameterized query/execute calls.",
+      "composition": "Oracle counts `query(`/`execute(` call sites off source text; the producer emits one candidate only for the dangerous `${…}`/`+` forms that survive the parameterized-query and taint-safety filters. Residual = safe/parameterized query/execute calls.",
       "corpora": {
         "hhra-org": {
           "files": 36,
@@ -146,7 +151,7 @@
       }
     },
     "export-form": {
-      "composition": "Oracle counts `export_statement` nodes; the producer emits one `(name, isDefault)` fact per statement `extractExports` can name (the first named export of a multi-name clause). Residual = namespace re-exports (`export * from '\u2026'`) and empty clauses (`export {}`) that name nothing.",
+      "composition": "Oracle counts `export_statement` nodes; the producer emits one `(name, isDefault)` fact per statement `extractExports` can name (the first named export of a multi-name clause). Residual = namespace re-exports (`export * from '…'`) and empty clauses (`export {}`) that name nothing.",
       "corpora": {
         "hhra-org": {
           "files": 168,
@@ -245,6 +250,16 @@
         }
       }
     },
+    "go-package-bindings": {
+      "composition": "Oracle counts package-scope declaration nodes (function/method/type_spec/var_spec); the producer emits one name-deduped binding per declaration. Residual = duplicate names — methods on different receivers share a bare method name (`String()`, `MarshalJSON()`), and a `var a, b, c` spec's identifier-list is a single binding.",
+      "corpora": {
+        "openstatus": {
+          "files": 9,
+          "expected": 412,
+          "actual": 205
+        }
+      }
+    },
     "import-form": {
       "composition": "Oracle counts `import_statement` nodes; the producer re-runs a per-line source-text regex classifier (`parseFileImports`) that recognizes fewer forms. Residual = statements the classifier does not project (multi-line imports, `import type`, inline `{ type X }`).",
       "corpora": {
@@ -260,53 +275,53 @@
         }
       }
     },
-    "loop-queries": {
-      "composition": "Oracle counts loop nodes (for/for-in/while/do); the producer emits one candidate per loop whose body issues a DB call. Residual = loops with no DB call in the body.",
+    "loop-query-candidates": {
+      "composition": "Oracle counts loop nodes (for/for-in/while/do); the producer emits one raw candidate per loop whose body holds a DB-shaped call (the extract half of the `loop-queries` collapse — the strict-handle filter, per-loop dedup, and stable symbol are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = loops whose body holds no DB-shaped call.",
       "corpora": {
         "hhra-org": {
-          "files": 56,
-          "expected": 120,
-          "actual": 5
+          "files": 19,
+          "expected": 52,
+          "actual": 14
         },
         "blitz": {
-          "files": 31,
-          "expected": 65,
-          "actual": 0
+          "files": 10,
+          "expected": 29,
+          "actual": 16
         },
         "openstatus": {
-          "files": 234,
-          "expected": 508,
-          "actual": 11
+          "files": 90,
+          "expected": 191,
+          "actual": 46
         },
         "recall-protocol": {
-          "files": 641,
-          "expected": 2665,
-          "actual": 176
+          "files": 289,
+          "expected": 1145,
+          "actual": 442
         }
       }
     },
-    "query-sites": {
-      "composition": "Oracle counts every member call (`\\.\\w+(`) plus every SQL keyword occurrence (SELECT/INSERT/UPDATE/DELETE) in the raw source; the producer emits one site per recognized query mechanism \u2014 an eager call on `query/execute/run/first/raw/batch/all`, an `.exec` whose argument holds a SQL keyword, or a standalone SQL keyword \u2014 and only in a DB-context file (gated by `passesFileGate`). Residual = member calls that are not query mechanisms, SQL keywords inside a query-call body (stripped before the standalone pass), and every site in a non-DB-context file.",
+    "query-site-candidates": {
+      "composition": "Oracle counts every member call (`\\.\\w+(`) plus every SQL keyword occurrence (SELECT/INSERT/UPDATE/DELETE) in the raw source; the producer emits one located site per recognized query mechanism (un-gated — the DB-context file gate and handle-ness are re-applied corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = member calls that are not query mechanisms and SQL keywords inside a recognized call body (which the located scan strips).",
       "corpora": {
         "hhra-org": {
-          "files": 453,
-          "expected": 11624,
-          "actual": 540
+          "files": 447,
+          "expected": 11609,
+          "actual": 1093
         },
         "blitz": {
-          "files": 356,
-          "expected": 5143,
-          "actual": 10
+          "files": 350,
+          "expected": 5137,
+          "actual": 46
         },
         "openstatus": {
-          "files": 1550,
-          "expected": 38355,
-          "actual": 1097
+          "files": 1535,
+          "expected": 38329,
+          "actual": 1556
         },
         "recall-protocol": {
-          "files": 1347,
-          "expected": 58555,
-          "actual": 2316
+          "files": 1339,
+          "expected": 58547,
+          "actual": 2699
         }
       }
     },
@@ -335,28 +350,28 @@
         }
       }
     },
-    "schema-usage": {
-      "composition": "Oracle counts `call_expression` + `string` + `template_string` nodes; the producer emits one fact per table reference parsed out of those containers. Residual = the large majority of strings/calls/templates that name no table reference.",
+    "schema-usage-candidates": {
+      "composition": "Oracle counts `call_expression` + `string` + `template_string` nodes; the producer emits one candidate per provenance-free table reference (ORM / query-builder / collection-adapter), tagged-template candidate, or DB-call candidate — the extract half of the `schema-usage` collapse (the two provenance-dependent strategies are re-admitted corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = strings/calls/templates naming no table reference.",
       "corpora": {
         "hhra-org": {
           "files": 599,
           "expected": 35810,
-          "actual": 13
+          "actual": 3201
         },
         "blitz": {
           "files": 637,
           "expected": 17964,
-          "actual": 0
+          "actual": 2246
         },
         "openstatus": {
           "files": 2242,
           "expected": 138856,
-          "actual": 8
+          "actual": 16833
         },
         "recall-protocol": {
-          "files": 1502,
-          "expected": 164402,
-          "actual": 1909
+          "files": 1500,
+          "expected": 164400,
+          "actual": 17640
         }
       }
     },

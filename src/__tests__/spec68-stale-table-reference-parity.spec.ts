@@ -7,7 +7,7 @@
  * the migration-history — which migration dropped a table and what that
  * migration introduced — which is only visible across files. This test runs BOTH
  * paths — the legacy reducer over reshaped facts and the new `analyze(ctx)` over
- * the same `schema-usage` + `table-catalog` + `migration-history` facts — and
+ * the same `schema-usage` + `resolution` + `migration-history` facts — and
  * asserts the identity multiset (file, line, column, rule, severity) is equal and
  * non-empty.
  *
@@ -78,8 +78,8 @@ function reshapeToReducerFacts(
 /** Run the old Stage-3 reducer and the new schema rules, return the
  *  `stale-table-reference` identity multisets. */
 async function parity(files: File[]) {
-  const usages = await buildSchemaUsage(files);
-  const declarations = await buildDdlDeclarations(files);
+  const usages = await buildSchemaUsage(files, 'sqlite');
+  const declarations = await buildDdlDeclarations(files, 'sqlite');
   const allFacts = reshapeToReducerFacts(usages, declarations);
 
   // Old path — the legacy schema reducer over the same reshaped facts.
@@ -91,7 +91,7 @@ async function parity(files: File[]) {
     .sort();
 
   // New path — the migrated rules over the same facts.
-  const catalog = CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations, 'schema-objects': [] });
+  const catalog = CORPUS_PRODUCERS['resolution'].process({ 'ddl-declarations': declarations, 'schema-objects': [], 'file-symbols': [] });
   const migrationHistory = CORPUS_PRODUCERS['migration-history'].process({ 'ddl-declarations': declarations });
   const fresh = await analyzeSchemaRules(usages, catalog, migrationHistory);
   const nu = fresh

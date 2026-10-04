@@ -153,7 +153,7 @@ describe('Spec-17 R2 — Schema Analyzer', () => {
 
   it('R2.1 — sql tagged template produces unknown-table findings (fixture 8)', async () => {
     const file = join(FIXTURES, 'sql-tagged-template.ts');
-    const result = await analyzer.analyze([file], { schemas: [] });
+    const result = await analyzer.analyze([file], { schemas: [], sqlDialect: 'sqlite' });
     expect(result.errors).toHaveLength(0);
 
     // With auto-discovery enabled (schemas: []), discoverTablesFromMigrations
@@ -205,7 +205,7 @@ describe('Spec-17 R2 — Schema Analyzer', () => {
     const tsFile = join(FIXTURES, 'schema-auto-discover.ts');
     // No schemas configured — discoverTablesFromMigrations() should scan the
     // .sql file for CREATE TABLE and feed "heroes"/"quests" into allTables.
-    const result = await analyzer.analyze([sqlFile, tsFile], { schemas: [] });
+    const result = await analyzer.analyze([sqlFile, tsFile], { schemas: [], sqlDialect: 'sqlite' });
     expect(result.errors).toHaveLength(0);
     // "heroes" and "quests" are auto-discovered → zero unknown-table
     const tableViolations = result.violations.filter(v => v.rule === 'unknown-table');
@@ -302,7 +302,7 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
 
   it('R4.1 — query inside for loop → loop-query finding (fixture 15)', async () => {
     const file = join(FIXTURES, 'for-loop-query.ts');
-    const result = await analyzer.analyze([file], { skipTestFiles: false });
+    const result = await analyzer.analyze([file], { skipTestFiles: false, dialect: 'sqlite' });
     expect(result.errors).toHaveLength(0);
 
     const loopViolations = result.violations.filter(v => v.rule === 'loop-query');
@@ -319,7 +319,7 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
 
   it('R4.2 — nested loops → innermost loop cited with depth (fixture 16)', async () => {
     const file = join(FIXTURES, 'nested-loops-query.ts');
-    const result = await analyzer.analyze([file], { skipTestFiles: false });
+    const result = await analyzer.analyze([file], { skipTestFiles: false, dialect: 'sqlite' });
     expect(result.errors).toHaveLength(0);
 
     const loopViolations = result.violations.filter(v => v.rule === 'loop-query');
@@ -337,7 +337,7 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
 
   it('R4.1 — per-item .prepare().get() in a loop fires (§69 Fix 5)', async () => {
     const file = join(FIXTURES, 'get-eager-loop.ts');
-    const result = await analyzer.analyze([file], { skipTestFiles: false });
+    const result = await analyzer.analyze([file], { skipTestFiles: false, dialect: 'sqlite' });
     expect(result.errors).toHaveLength(0);
 
     const loopViolations = result.violations.filter(v => v.rule === 'loop-query');

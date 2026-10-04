@@ -134,7 +134,7 @@ describe('handleProjectTasks from_audit', () => {
     overrides?: Record<string, any>
   ): Promise<string> {
     const auditResult = fixtureAuditResult(overrides);
-    return db.storeAuditResults(auditResult, projectPath);
+    return db.auditResults.storeAuditResults(auditResult, projectPath);
   }
 
   // ---- Tests ----
@@ -228,7 +228,7 @@ describe('handleProjectTasks from_audit', () => {
 
     // Complete all created tasks
     for (const task of first.tasks) {
-      await db.updateProjectTask(task.taskId, { status: 'done' });
+      await db.projectTasks.updateProjectTask(task.taskId, { status: 'done' });
     }
 
     // Second run should create new tasks (resurfaced violations)
@@ -259,7 +259,7 @@ describe('handleProjectTasks from_audit', () => {
 
     // Complete all tasks
     for (const task of first.tasks) {
-      await db.updateProjectTask(task.taskId, { status: 'done' });
+      await db.projectTasks.updateProjectTask(task.taskId, { status: 'done' });
     }
 
     // Now run from_audit for a different project (but with same audit result
@@ -268,7 +268,7 @@ describe('handleProjectTasks from_audit', () => {
     const otherPath = join(dir, 'other-project');
     // Store the same fixture under the other path
     const auditResult = fixtureAuditResult();
-    const otherAuditId = await db.storeAuditResults(auditResult, otherPath);
+    const otherAuditId = await db.auditResults.storeAuditResults(auditResult, otherPath);
 
     const other = await handleProjectTasks({
       action: 'from_audit',
@@ -334,7 +334,7 @@ describe('handleProjectTasks from_audit', () => {
         }
       }
     });
-    await db.storeAuditResults(secondResult, projectPath);
+    await db.auditResults.storeAuditResults(secondResult, projectPath);
 
     // Use the first audit ID explicitly
     const result = await handleProjectTasks({

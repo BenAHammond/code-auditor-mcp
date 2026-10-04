@@ -12,15 +12,15 @@ interface RankRow {
 }
 
 export class Leaderboard {
-  private ctx: { storage: { sql: { exec: (query: string, ...bind: unknown[]) => void } } };
+  private sql: D1Database;
 
-  constructor(ctx: { storage: { sql: { exec: (query: string, ...bind: unknown[]) => void } } }) {
-    this.ctx = ctx;
+  constructor(sql: D1Database) {
+    this.sql = sql;
   }
 
   async applyRanks(rows: RankRow[]): Promise<void> {
     for (const row of rows) {
-      this.ctx.storage.sql.exec('UPDATE leaderboard SET rank = ? WHERE id = ?', row.rank, row.id);
+      this.sql.exec('UPDATE leaderboard SET rank = ? WHERE id = ?', row.rank, row.id);
     }
   }
 }

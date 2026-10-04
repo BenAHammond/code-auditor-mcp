@@ -45,33 +45,33 @@ async function unfilteredViolations(code: string, name: string): Promise<any[]> 
   const sourceCode = await readFile(filePath, 'utf-8');
   const ast = parseFile(filePath, sourceCode)!;
   if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode)) as any[];
+  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
   return vs.filter((v) => v.rule === 'unfiltered-query');
 }
 
 /** A bare DELETE — whole-table maintenance, exempt (Spec 68 disposition (a)). */
-const DELETE_ALL = `import { db } from './db';
+const DELETE_ALL = `const db: D1Database = getDb();
 export function nuke() {
   return db.exec("DELETE FROM users");
 }
 `;
 
 /** An unfiltered UPDATE — sets a flag on every row. */
-const UPDATE_ALL = `import { db } from './db';
+const UPDATE_ALL = `const db: D1Database = getDb();
 export function reset() {
   return db.exec("UPDATE users SET active = 0");
 }
 `;
 
 /** A filtered DELETE — scoped to a predicate, must NOT fire. */
-const DELETE_FILTERED = `import { db } from './db';
+const DELETE_FILTERED = `const db: D1Database = getDb();
 export function one(id: string) {
   return db.exec("DELETE FROM users WHERE id = ?");
 }
 `;
 
 /** A bare SELECT — an unfiltered *read*, which is out of scope (intentional full-set load). */
-const BARE_SELECT = `import { db } from './db';
+const BARE_SELECT = `const db: D1Database = getDb();
 export function all() {
   return db.query("SELECT * FROM users");
 }
@@ -83,35 +83,35 @@ export function all() {
 // WHERE. (The crowd-answer-game report §6 flagged these as false positives.)
 
 /** Upsert — `INSERT … ON CONFLICT … DO UPDATE` (the reported false positive). */
-const UPSERT_ON_CONFLICT_DO_UPDATE = `import { db } from './db';
+const UPSERT_ON_CONFLICT_DO_UPDATE = `const db: D1Database = getDb();
 export function touch(kind: string, value: number) {
   return db.exec("INSERT INTO metrics (hour_key, value) VALUES ('x', 1) ON CONFLICT(hour_key) DO UPDATE SET value = excluded.value");
 }
 `;
 
 /** Upsert — `INSERT OR IGNORE`. */
-const UPSERT_INSERT_OR_IGNORE = `import { db } from './db';
+const UPSERT_INSERT_OR_IGNORE = `const db: D1Database = getDb();
 export function ignore(name: string) {
   return db.exec("INSERT OR IGNORE INTO tags (name) VALUES ('x')");
 }
 `;
 
 /** Upsert — `INSERT OR REPLACE INTO`. */
-const UPSERT_INSERT_OR_REPLACE = `import { db } from './db';
+const UPSERT_INSERT_OR_REPLACE = `const db: D1Database = getDb();
 export function replace(name: string) {
   return db.exec("INSERT OR REPLACE INTO tags (name) VALUES ('x')");
 }
 `;
 
 /** Upsert — `REPLACE INTO`. */
-const UPSERT_REPLACE_INTO = `import { db } from './db';
+const UPSERT_REPLACE_INTO = `const db: D1Database = getDb();
 export function repl(name: string) {
   return db.exec("REPLACE INTO tags (name) VALUES ('x')");
 }
 `;
 
 /** Upsert — `INSERT … ON DUPLICATE KEY UPDATE` (MySQL variant, same class). */
-const UPSERT_ON_DUPLICATE_KEY_UPDATE = `import { db } from './db';
+const UPSERT_ON_DUPLICATE_KEY_UPDATE = `const db: D1Database = getDb();
 export function mysqlUpsert(id: number, value: number) {
   return db.exec("INSERT INTO metrics (id, value) VALUES (1, 2) ON DUPLICATE KEY UPDATE value = VALUES(value)");
 }

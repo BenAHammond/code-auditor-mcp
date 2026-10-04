@@ -6,6 +6,8 @@
  * → zero unknown-table violations. If aliases leak through, u, o, p would
  * appear as unknown tables → false positives.
  */
+import { getDB } from './db';
+
 async function explicitAliasQuery(): Promise<void> {
   // Explicit AS aliases — u and o should NOT be extracted as tables
   await db.exec(`
@@ -35,9 +37,7 @@ async function mixedAliasQuery(): Promise<void> {
   `);
 }
 
-// Mock db for compilation
-const db = {
-  exec: async (_sql: string): Promise<void> => {},
-};
+// Real D1 handle (getDB(): D1Database) — resolution proves `db` is a DB handle.
+const db = getDB();
 
 export { explicitAliasQuery, bareAliasQuery, mixedAliasQuery };

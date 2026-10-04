@@ -41,7 +41,7 @@ function seedFunctionEx(
   opts: { isExported?: boolean; usedImports?: string[] } = {},
 ): number {
   const { isExported = false, usedImports } = opts;
-  const info = db.run(
+  const info = db.rawSql.run(
     `INSERT INTO functions (name, file_path, line_number, entity_type, language,
        is_exported, used_imports)
      VALUES (?, ?, ?, 'function', 'typescript', ?, ?)`,
@@ -51,7 +51,7 @@ function seedFunctionEx(
 }
 
 function seedUsage(db: CodeIndexDB, fn: string, file: string, line: number): void {
-  db.run(
+  db.rawSql.run(
     `INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
      VALUES ('orders', ?, ?, 'insert', ?)`,
     [file, fn, line],
@@ -59,7 +59,7 @@ function seedUsage(db: CodeIndexDB, fn: string, file: string, line: number): voi
 }
 
 function seedCallEdge(db: CodeIndexDB, caller: number, callee: number): void {
-  db.run(
+  db.rawSql.run(
     `INSERT INTO graph_cache (graph_type, node_key, neighbor_key, weight)
      VALUES ('call', ?, ?, 1.0)`,
     [String(caller), String(callee)],
@@ -81,7 +81,7 @@ describe('cross-domain/no-validator-reachable (reachability, honest name)', () =
 
   async function analyze(config: Record<string, any>) {
     return analyzer.analyze([`${writerDir}/create.ts`], {
-      indexHandle: db,
+      indexHandle: db.indexHandle,
       projectRoot,
       schemaLifecycle: {
         enableWrittenNeverRead: false,

@@ -793,7 +793,7 @@ export function doUntrustedWork() {
 
     // Simulate what synchronizeFile → FunctionScanner.scanFunctions produces:
     // functions with functionCalls in their metadata.
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       {
         name: 'dangerousFn',
         filePath: 'src/lib/secrets.ts',
@@ -828,7 +828,7 @@ export function doUntrustedWork() {
     ]);
 
     // Rebuild the call graph — this is what syncFileIndex calls internally at line 1000
-    await db.updateDependencyGraph();
+    await db.graph.updateDependencyGraph();
 
     // Now run the rule engine WITH the DB
     const result = await checkRulesWithSource({
@@ -843,7 +843,7 @@ export function doUntrustedWork() {
       ],
       files: ['src/untrusted/caller.ts'],
       projectDir: testDir,
-      indexHandle: db as any,
+      indexHandle: db.indexHandle as any,
     });
 
     expect(result.errors).toHaveLength(0);
@@ -861,7 +861,7 @@ export function doTrustedWork() {
 }
 `);
 
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       {
         name: 'dangerousFn',
         filePath: 'src/lib/secrets.ts',
@@ -893,7 +893,7 @@ export function doTrustedWork() {
       },
     ]);
 
-    await db.updateDependencyGraph();
+    await db.graph.updateDependencyGraph();
 
     const result = await checkRulesWithSource({
       rules: [
@@ -907,7 +907,7 @@ export function doTrustedWork() {
       ],
       files: ['src/trusted/caller.ts'],
       projectDir: testDir,
-      indexHandle: db as any,
+      indexHandle: db.indexHandle as any,
     });
 
     expect(result.errors).toHaveLength(0);
@@ -922,7 +922,7 @@ export function renderPage() {
 }
 `);
 
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       {
         name: 'dangerAPI',
         filePath: 'src/api/unsafe.ts',
@@ -954,7 +954,7 @@ export function renderPage() {
       },
     ]);
 
-    await db.updateDependencyGraph();
+    await db.graph.updateDependencyGraph();
 
     const result = await checkRulesWithSource({
       rules: [
@@ -970,7 +970,7 @@ export function renderPage() {
       ],
       files: ['src/ui/component.ts'],
       projectDir: testDir,
-      indexHandle: db as any,
+      indexHandle: db.indexHandle as any,
     });
 
     expect(result.errors).toHaveLength(0);

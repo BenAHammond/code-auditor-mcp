@@ -12,7 +12,7 @@ interface ItemRow {
   id: number;
 }
 
-export async function fetchMapped(db: any, rows: ItemRow[]): Promise<unknown[]> {
+export async function fetchMapped(db: D1Database, rows: ItemRow[]): Promise<unknown[]> {
   for (const row of rows) {
     await Promise.all(
       rows.map((r) => db.prepare('SELECT id FROM items WHERE id = ?').bind(r.id).all()),

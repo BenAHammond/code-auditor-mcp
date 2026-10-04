@@ -46,13 +46,13 @@ async function loopQueryViolations(code: string, name: string): Promise<any[]> {
   const sourceCode = await readFile(filePath, 'utf-8');
   const ast = parseFile(filePath, sourceCode)!;
   if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode)) as any[];
+  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
   return vs.filter((v) => v.rule === 'loop-query');
 }
 
 describe('loop-query queue-consumer discriminator', () => {
   it('suppresses a MessageBatch consumer that acks and retries per message', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 type Job = { jobId: string };
 
@@ -71,7 +71,7 @@ async function queue(batch: MessageBatch<Job>, env: Env) {
   });
 
   it('suppresses an SQS-style consumer that acknowledges each message', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function handler(records: { id: string }[]) {
   for (const record of records) {
@@ -84,7 +84,7 @@ async function handler(records: { id: string }[]) {
   });
 
   it('suppresses a consumer that nacks failed messages', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function drain(queue: MessageBatch<{ id: string }>) {
   for (const msg of queue.messages) {
@@ -101,7 +101,7 @@ async function drain(queue: MessageBatch<{ id: string }>) {
   });
 
   it('still fires a batchable N+1 with no lifecycle call (plain query-in-loop)', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function getUserOrders(ids: string[]) {
   for (const id of ids) {
@@ -116,7 +116,7 @@ async function getUserOrders(ids: string[]) {
   it('still fires a query-in-loop whose body has an unrelated member call', async () => {
     // `markSeen` is not a queue-lifecycle method — the discriminator must be
     // scoped to ack/nack/acknowledge/deleteMessage/retry, not any member call.
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function migrate(items: { id: string }[]) {
   for (const item of items) {

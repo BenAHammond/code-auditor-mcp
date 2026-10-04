@@ -70,8 +70,7 @@ describe('CodeIndexDB SQLite — Schema', () => {
   it('has FTS5 triggers that keep functions_fts in sync', () => {
     const rawDb = (db as any).db;
     const func = makeFunc({ name: 'testFunc', filePath: 'src/test.ts', body: 'console.log("fts test")' });
-    (db as any).functionToRow = (db as any).functionToRow.bind(db);
-    const row = (db as any).functionToRow(func);
+    const row = (db as any).functionIndex.functionToRow(func);
 
     // Insert
     (db as any).db.prepare(`INSERT INTO functions (name, file_path, body, purpose, context, language, complexity)
@@ -93,7 +92,7 @@ describe('CodeIndexDB SQLite — Schema', () => {
   });
 
   it('enforces foreign key cascade from functions to function_calls', () => {
-    const row = (db as any).functionToRow(makeFunc({ name: 'parent', filePath: 'src/parent.ts' }));
+    const row = (db as any).functionIndex.functionToRow(makeFunc({ name: 'parent', filePath: 'src/parent.ts' }));
     const info = (db as any).db.prepare(
       `INSERT INTO functions (name, file_path, purpose, context, language, complexity) VALUES (@name, @file_path, @purpose, @context, @language, @complexity)`
     ).run(row);
@@ -129,7 +128,7 @@ describe('CodeIndexDB SQLite — CRUD', () => {
   });
 
   it('registerFunction inserts a row with content_hash populated', async () => {
-    await db.registerFunction(makeFunc({
+    await db.functionIndex.registerFunction(makeFunc({
       name: 'hashMe',
       filePath: 'src/hash.ts',
       body: 'function hashMe() { return 1 + 1; }',
@@ -143,8 +142,8 @@ describe('CodeIndexDB SQLite — CRUD', () => {
   });
 
   it('registerFunction upserts by (name, file_path, line_number)', async () => {
-    await db.registerFunction(makeFunc({ name: 'upsertMe', filePath: 'src/upsert.ts', body: 'v1', complexity: 1 }));
-    await db.registerFunction(makeFunc({ name: 'upsertMe', filePath: 'src/upsert.ts', body: 'v2', complexity: 5 }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'upsertMe', filePath: 'src/upsert.ts', body: 'v1', complexity: 1 }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'upsertMe', filePath: 'src/upsert.ts', body: 'v2', complexity: 5 }));
 
     const rows = (db as any).db.prepare('SELECT * FROM functions WHERE name = ?').all('upsertMe') as any[];
     expect(rows).toHaveLength(1);
@@ -157,7 +156,7 @@ describe('CodeIndexDB SQLite — CRUD', () => {
       makeFunc({ name: 'batch1', filePath: 'src/batch.ts', body: 'one' }),
       makeFunc({ name: 'batch2', filePath: 'src/batch.ts', body: 'two' }),
     ];
-    const result = await db.registerFunctions(funcs);
+    const result = await db.functionIndex.registerFunctions(funcs);
     expect(result.registered).toBe(2);
     expect(result.errors).toHaveLength(0);
 
@@ -167,7 +166,7 @@ describe('CodeIndexDB SQLite — CRUD', () => {
 
   it('syncFileIndex adds, updates, and removes correctly', async () => {
     // Seed two functions
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       makeFunc({ name: 'keep', filePath: 'src/sync.ts', body: 'keep me' }),
       makeFunc({ name: 'remove', filePath: 'src/sync.ts', body: 'remove me' }),
     ]);
@@ -188,8 +187,8 @@ describe('CodeIndexDB SQLite — CRUD', () => {
 
   it('registerFunction creates separate rows for same name at different lines', async () => {
     // Same name, same file, different lines → two distinct rows (no upsert collision)
-    await db.registerFunction(makeFunc({ name: 'dup', filePath: 'src/dups.ts', lineNumber: 5, body: 'v1' }));
-    await db.registerFunction(makeFunc({ name: 'dup', filePath: 'src/dups.ts', lineNumber: 20, body: 'v2' }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'dup', filePath: 'src/dups.ts', lineNumber: 5, body: 'v1' }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'dup', filePath: 'src/dups.ts', lineNumber: 20, body: 'v2' }));
 
     const rows = (db as any).db.prepare(
       'SELECT name, line_number, body FROM functions WHERE file_path = ? ORDER BY line_number'
@@ -221,12 +220,12 @@ describe('CodeIndexDB SQLite — CRUD', () => {
   });
 
   it('getAllFunctions returns all rows with correct unpacking', async () => {
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       makeFunc({ name: 'f1', filePath: 'src/all.ts', complexity: 3 }),
       makeFunc({ name: 'f2', filePath: 'src/all.ts', complexity: 7 }),
     ]);
 
-    const all = await db.getAllFunctions();
+    const all = await db.functionIndex.getAllFunctions();
     expect(all.length).toBeGreaterThanOrEqual(2);
     const f1 = all.find(f => f.name === 'f1');
     expect(f1).toBeTruthy();
@@ -234,36 +233,36 @@ describe('CodeIndexDB SQLite — CRUD', () => {
   });
 
   it('findDefinition finds by name', async () => {
-    await db.registerFunction(makeFunc({ name: 'uniqueFinder', filePath: 'src/find.ts', body: 'special' }));
-    const found = await db.findDefinition('uniqueFinder');
+    await db.functionIndex.registerFunction(makeFunc({ name: 'uniqueFinder', filePath: 'src/find.ts', body: 'special' }));
+    const found = await db.functionIndex.findDefinition('uniqueFinder');
     expect(found).toBeTruthy();
     expect(found!.name).toBe('uniqueFinder');
     expect(found!.filePath).toBe('src/find.ts');
   });
 
   it('findDefinition returns null for unknown name', async () => {
-    const found = await db.findDefinition('nonexistent');
+    const found = await db.functionIndex.findDefinition('nonexistent');
     expect(found).toBeNull();
   });
 
   it('findDefinition filters by filePath when provided', async () => {
     const db2 = db;
-    await db2.registerFunction(makeFunc({ name: 'shared', filePath: 'src/a.ts', body: 'a' }));
-    await db2.registerFunction(makeFunc({ name: 'shared', filePath: 'src/b.ts', body: 'b' }));
+    await db2.functionIndex.registerFunction(makeFunc({ name: 'shared', filePath: 'src/a.ts', body: 'a' }));
+    await db2.functionIndex.registerFunction(makeFunc({ name: 'shared', filePath: 'src/b.ts', body: 'b' }));
 
-    const found = await db2.findDefinition('shared', 'src/b.ts');
+    const found = await db2.functionIndex.findDefinition('shared', 'src/b.ts');
     expect(found).toBeTruthy();
     expect(found!.filePath).toBe('src/b.ts');
   });
 
   it('getStats returns correct counts, languages, and file counts', async () => {
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       makeFunc({ name: 'ts1', filePath: 'src/x.ts', language: 'typescript' }),
       makeFunc({ name: 'ts2', filePath: 'src/y.ts', language: 'typescript' }),
       makeFunc({ name: 'js1', filePath: 'lib/util.js', language: 'javascript' }),
     ]);
 
-    const stats = await db.getStats();
+    const stats = await db.functionIndex.getStats();
     expect(stats.totalFunctions).toBe(3);
     expect(stats.filesIndexed).toBe(3);
     expect(stats.languages['typescript']).toBe(2);
@@ -271,7 +270,7 @@ describe('CodeIndexDB SQLite — CRUD', () => {
   });
 
   it('content_hash is non-null for all functions after registerFunctions', async () => {
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       makeFunc({ name: 'h1', filePath: 'src/hashes.ts', body: 'return a' }),
       makeFunc({ name: 'h2', filePath: 'src/hashes.ts', body: 'return b' }),
     ]);
@@ -283,10 +282,10 @@ describe('CodeIndexDB SQLite — CRUD', () => {
   });
 
   it('content_hash changes when body changes', async () => {
-    await db.registerFunction(makeFunc({ name: 'hashChange', filePath: 'src/hc.ts', body: 'v1' }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'hashChange', filePath: 'src/hc.ts', body: 'v1' }));
     const hash1 = (db as any).db.prepare('SELECT content_hash FROM functions WHERE name = ?').get('hashChange') as any;
 
-    await db.registerFunction(makeFunc({ name: 'hashChange', filePath: 'src/hc.ts', body: 'v2' }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'hashChange', filePath: 'src/hc.ts', body: 'v2' }));
     const hash2 = (db as any).db.prepare('SELECT content_hash FROM functions WHERE name = ?').get('hashChange') as any;
 
     expect(hash1.content_hash).not.toBe(hash2.content_hash);
@@ -323,8 +322,8 @@ describe('CodeIndexDB SQLite — bulkCleanup discovery reconciliation', () => {
   it('removes functions for files present on disk but not discoverable', async () => {
     const keptPath = join(root, 'src', 'kept.ts');
     const orphanPath = join(root, 'node_modules', 'pkg', 'index.ts');
-    await db.registerFunction(makeFunc({ name: 'keptFn', filePath: keptPath }));
-    await db.registerFunction(makeFunc({ name: 'orphanFn', filePath: orphanPath }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'keptFn', filePath: keptPath }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'orphanFn', filePath: orphanPath }));
 
     const result = await db.bulkCleanup(root);
 
@@ -338,7 +337,7 @@ describe('CodeIndexDB SQLite — bulkCleanup discovery reconciliation', () => {
 
   it('leaves functions for paths outside the project root untouched', async () => {
     const outsidePath = join(dir, 'sibling', 'other.ts');
-    await db.registerFunction(makeFunc({ name: 'siblingFn', filePath: outsidePath }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'siblingFn', filePath: outsidePath }));
 
     const result = await db.bulkCleanup(root);
 
@@ -350,7 +349,7 @@ describe('CodeIndexDB SQLite — bulkCleanup discovery reconciliation', () => {
   it('falls back to on-disk existence when no project root is given', async () => {
     // Root-less cleanup must still drop rows for genuinely deleted files.
     const missingPath = join(root, 'src', 'deleted.ts');
-    await db.registerFunction(makeFunc({ name: 'goneFn', filePath: missingPath }));
+    await db.functionIndex.registerFunction(makeFunc({ name: 'goneFn', filePath: missingPath }));
 
     const result = await db.bulkCleanup();
 
@@ -525,7 +524,7 @@ describe('CodeIndexDB SQLite — searchFunctions', () => {
     await db.initialize();
 
     // Seed test fixtures
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       makeFunc({
         name: 'renderButton',
         filePath: 'src/components/Button.tsx',
@@ -565,31 +564,31 @@ describe('CodeIndexDB SQLite — searchFunctions', () => {
   });
 
   it('free-text search returns ranked results', async () => {
-    const result = await db.searchFunctions({ query: 'validate' });
+    const result = await db.search.searchFunctions({ query: 'validate' });
     expect(result.functions.length).toBeGreaterThan(0);
     expect(result.functions.some(f => f.name === 'validateEmail')).toBe(true);
   });
 
   it('entity: filter works', async () => {
-    const result = await db.searchFunctions({ query: 'entity:component' });
+    const result = await db.search.searchFunctions({ query: 'entity:component' });
     expect(result.functions.length).toBe(1);
     expect(result.functions[0].name).toBe('renderButton');
   });
 
   it('lang: filter works', async () => {
-    const result = await db.searchFunctions({ query: 'lang:javascript' });
+    const result = await db.search.searchFunctions({ query: 'lang:javascript' });
     expect(result.functions.length).toBe(1);
     expect(result.functions[0].name).toBe('formatDate');
   });
 
   it('complexity:> filter works', async () => {
-    const result = await db.searchFunctions({ query: 'complexity:>4' });
+    const result = await db.search.searchFunctions({ query: 'complexity:>4' });
     expect(result.functions.length).toBe(1);
     expect(result.functions[0].name).toBe('validateEmail');
   });
 
   it('complexity range filter works', async () => {
-    const result = await db.searchFunctions({ query: 'complexity:2..3' });
+    const result = await db.search.searchFunctions({ query: 'complexity:2..3' });
     expect(result.functions.length).toBe(2);
     const names = result.functions.map(f => f.name).sort();
     expect(names).toContain('renderButton');
@@ -597,7 +596,7 @@ describe('CodeIndexDB SQLite — searchFunctions', () => {
   });
 
   it('multiple filters combined work', async () => {
-    const result = await db.searchFunctions({ query: 'lang:typescript complexity:>3' });
+    const result = await db.search.searchFunctions({ query: 'lang:typescript complexity:>3' });
     expect(result.functions.length).toBeGreaterThanOrEqual(2);
     // All results should be typescript with complexity > 3
     for (const f of result.functions) {
@@ -607,7 +606,7 @@ describe('CodeIndexDB SQLite — searchFunctions', () => {
   });
 
   it('search with no results returns empty array', async () => {
-    const result = await db.searchFunctions({ query: 'zzzznonexistent' });
+    const result = await db.search.searchFunctions({ query: 'zzzznonexistent' });
     expect(result.functions).toHaveLength(0);
   });
 });
@@ -626,7 +625,7 @@ describe('CodeIndexDB SQLite — calls: operator', () => {
     db = new CodeIndexDB(join(dir, 'index.db'));
     await db.initialize();
     // Empty index — no functions registered
-    const result = await db.searchFunctions({ query: 'calls:validateEmail' });
+    const result = await db.search.searchFunctions({ query: 'calls:validateEmail' });
     expect(result.functions).toHaveLength(0);
   });
 
@@ -635,7 +634,7 @@ describe('CodeIndexDB SQLite — calls: operator', () => {
     db = new CodeIndexDB(join(dir, 'index.db'));
     await db.initialize();
 
-    await db.registerFunctions([
+    await db.functionIndex.registerFunctions([
       makeFunc({
         name: 'validateEmail',
         filePath: 'src/utils/validation.ts',
@@ -660,9 +659,9 @@ describe('CodeIndexDB SQLite — calls: operator', () => {
     // Pass a filePath so metadata_json is fetched from the DB
     // (updateDependencyGraph without filePath doesn't fetch metadata_json —
     //  pre-existing call-graph-population bug, not related to this test).
-    await db.updateDependencyGraph('src/components/Form.tsx');
+    await db.graph.updateDependencyGraph('src/components/Form.tsx');
 
-    const result = await db.searchFunctions({ query: 'calls:validateEmail' });
+    const result = await db.search.searchFunctions({ query: 'calls:validateEmail' });
     expect(result.functions.length).toBe(1);
     expect(result.functions[0].name).toBe('submitForm');
   });
@@ -770,7 +769,7 @@ describe('CodeIndexDB SQLite — LokiJS migration', () => {
     await db.initialize();
 
     // Tasks survived
-    const tasks = await db.listProjectTasks('/test/proj');
+    const tasks = await db.projectTasks.listProjectTasks('/test/proj');
     expect(tasks).toHaveLength(2);
     const t1 = tasks.find(t => t.taskId === 'task-1')!;
     expect(t1).toBeTruthy();
@@ -787,11 +786,11 @@ describe('CodeIndexDB SQLite — LokiJS migration', () => {
     expect(t2.completedAt).toBe('2025-01-03T00:00:00.000Z');
 
     // Analyzer config survived
-    const config = await db.getAnalyzerConfig('solid', '/test/proj');
+    const config = await db.analyzerConfig.getAnalyzerConfig('solid', '/test/proj');
     expect(config).toEqual({ maxComplexity: 10 });
 
     // Whitelist survived
-    const wl = await db.getWhitelist();
+    const wl = await db.whitelist.getWhitelist();
     const ignoreConsole = wl.find(w => w.name === 'ignore-console');
     expect(ignoreConsole).toBeTruthy();
     expect(ignoreConsole!.patterns).toEqual(['*.test.ts', '*.spec.ts']);
@@ -815,7 +814,7 @@ describe('CodeIndexDB SQLite — LokiJS migration', () => {
     // Second initialization with bak + valid SQLite should skip
     const db2 = new CodeIndexDB(dbPath);
     await db2.initialize();
-    const tasks = await db2.listProjectTasks('/test/proj');
+    const tasks = await db2.projectTasks.listProjectTasks('/test/proj');
     expect(tasks).toHaveLength(2);
     await db2.close();
   });
@@ -828,10 +827,10 @@ describe('CodeIndexDB SQLite — LokiJS migration', () => {
     await db.initialize();
 
     // Should initialize cleanly
-    const tasks = await db.listProjectTasks('/test/proj');
+    const tasks = await db.projectTasks.listProjectTasks('/test/proj');
     expect(tasks).toHaveLength(0);
 
-    const config = await db.getAnalyzerConfig('solid');
+    const config = await db.analyzerConfig.getAnalyzerConfig('solid');
     expect(config).toBeNull();
 
     await db.close();
@@ -841,7 +840,7 @@ describe('CodeIndexDB SQLite — LokiJS migration', () => {
     const db = new CodeIndexDB(':memory:');
     await db.initialize();
     // Should not crash or attempt file operations
-    const tasks = await db.listProjectTasks('/test/proj');
+    const tasks = await db.projectTasks.listProjectTasks('/test/proj');
     expect(tasks).toHaveLength(0);
     await db.close();
   });
@@ -917,7 +916,7 @@ describe('CodeIndexDB SQLite — schema migration replay', () => {
 
     // The destructive 16→17 step cleared the derived index rather than reading
     // the stale rows.
-    expect((await reopened.getAllFunctions()).length).toBe(0);
+    expect((await reopened.functionIndex.getAllFunctions()).length).toBe(0);
 
     // And it left the database sound, not just empty.
     const integrity = (reopened as any).db.prepare(`PRAGMA integrity_check`).get() as { integrity_check: string };
@@ -930,7 +929,7 @@ describe('CodeIndexDB SQLite — schema migration replay', () => {
     expect(ftsCols.some(c => c.name === 'signature')).toBe(false);
 
     const version = (reopened as any).db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as { value: string };
-    expect(version.value).toBe('18');
+    expect(version.value).toBe('19');
 
     // Migration 17 → 18 added the phase facts store.
     const factsTable = (reopened as any).db.prepare(
@@ -938,11 +937,15 @@ describe('CodeIndexDB SQLite — schema migration replay', () => {
     ).get();
     expect(factsTable).toBeDefined();
 
+    // Migration 18 → 19 added the file_hash column.
+    const fnCols2 = (reopened as any).db.prepare(`PRAGMA table_info('functions')`).all() as Array<{ name: string }>;
+    expect(fnCols2.some(c => c.name === 'file_hash')).toBe(true);
+
     await reopened.close();
   });
 
   it('integrity holds after replaying forward from every historical version', async () => {
-    for (let version = 0; version < 18; version++) {
+    for (let version = 0; version < 19; version++) {
       const vdir = join(dir, `v${version}`);
       await mkdir(vdir, { recursive: true });
       const dbPath = join(vdir, 'index.db');
@@ -960,7 +963,7 @@ describe('CodeIndexDB SQLite — schema migration replay', () => {
       expect(integrity.integrity_check, `from version ${version}`).toBe('ok');
 
       const verRow = (reopened as any).db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as { value: string };
-      expect(verRow.value, `from version ${version}`).toBe('18');
+      expect(verRow.value, `from version ${version}`).toBe('19');
 
       await reopened.close();
     }

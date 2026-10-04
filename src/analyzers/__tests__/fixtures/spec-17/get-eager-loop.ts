@@ -10,9 +10,7 @@
 
 export function loadNames(
   ids: number[],
-  db: {
-    prepare(sql: string): { get(id: number): { name: string } | undefined };
-  },
+  db: D1Database,
 ): string[] {
   const names: string[] = [];
   for (const id of ids) {

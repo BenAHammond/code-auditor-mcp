@@ -10,7 +10,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../../languages/index.js';
 import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { extractTablesFromRegistry } from './schema/discovery.js';
-import { parseSqlTables, checkQueryPatterns, findTableReferences, checkUnresolvedQueries } from './schema/codeAnalysis.js';
+import { parseSqlTables, checkQueryPatterns, findTableReferences, checkUnresolvedQueries, checkUnparseableSql, checkUnresolvedReceiverImports } from './schema/codeAnalysis.js';
+import type { ProvenanceContext } from '../../provenance.js';
 import type { TableSourceEntry, TableProvenance } from './schema/types.js';
 import type { LanguageAdapter, AST } from '../../languages/types.js';
 
@@ -383,9 +384,9 @@ export const users = pgTable('users', { id: serial('id') });`;
 // ── Spec 33 Item 11 — unknown-table false-positive guards ─────────────────
 
 describe('parseSqlTables — table-valued function and module-import guards', () => {
-  function tables(sql: string, allTables: Set<string> = new Set()): string[] {
-    return parseSqlTables(sql, { line: 1, column: 1 }, sql, allTables)
-      .map(r => r.table);
+  function tables(sql: string, allTables: Set<string> = new Set(), dialect: 'sqlite' | 'mysql' | 'postgresql' = 'sqlite'): string[] {
+    return parseSqlTables(sql, { line: 1, column: 1 }, sql, allTables, dialect, null)
+      .references.map(r => r.table);
   }
 
   it('still extracts a genuine table reference', () => {
@@ -426,20 +427,22 @@ describe('parseSqlTables — table-valued function and module-import guards', ()
   });
 
   it('does not read FOR UPDATE SKIP LOCKED as a table', () => {
-    // `UPDATE` inside a locking clause must not capture `SKIP`/`LOCKED` as a
-    // table name (isSqlKeyword covers them).
-    expect(tables('SELECT * FROM users WHERE id = 1 FOR UPDATE SKIP LOCKED')).toEqual(['users']);
+    // FOR UPDATE SKIP LOCKED is a row-locking clause, not a relation; the AST
+    // walk yields only `users`. node-sql-parser parses the locking clause only
+    // under the mysql grammar (its sqlite/postgresql grammars reject it), so pin
+    // the Spec 55 fix under the dialect that can read it.
+    expect(tables('SELECT * FROM users WHERE id = 1 FOR UPDATE SKIP LOCKED', new Set(), 'mysql')).toEqual(['users']);
   });
 
   it('does not read FOR UPDATE NOWAIT as a table', () => {
-    expect(tables('SELECT * FROM users WHERE id = 1 FOR UPDATE NOWAIT')).toEqual(['users']);
+    expect(tables('SELECT * FROM users WHERE id = 1 FOR UPDATE NOWAIT', new Set(), 'mysql')).toEqual(['users']);
   });
 });
 
 describe('parseSqlTables — DELETE FROM is a write, not a read (Spec 56 R4)', () => {
   function refs(sql: string): Array<{ table: string; type: string }> {
-    return parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set())
-      .map(r => ({ table: r.table, type: r.type }))
+    return parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(), 'sqlite', null)
+      .references.map(r => ({ table: r.table, type: r.type }))
       .sort((a, b) => a.table.localeCompare(b.table) || a.type.localeCompare(b.type));
   }
 
@@ -497,14 +500,34 @@ describe('checkQueryPatterns — ceiling fallback', () => {
 // ── Spec 58 R1 — SQL held in a variable ──────────────────────────────────────
 
 describe('findTableReferences — SQL assembled in a constant (Spec 58 R1)', () => {
+  // Spec 69 §10 — a bare `db` receiver is no longer provenanced by name. Seed it
+  // the way the cross-file declaration-resolution pass would, so these tests keep
+  // exercising SQL-constant resolution rather than the (deleted) name-list path.
+  function seededProvenance(): ProvenanceContext {
+    return {
+      mode: 'hybrid',
+      dbProvenanced: new Map([
+        ['db', { identifier: 'db', reason: 'binding', source: 'test seed', chain: [] }],
+      ]),
+      validatorProvenanced: new Map(),
+    };
+  }
+
   async function refs(source: string) {
     const ast = await parseSource(source);
-    return findTableReferences(ast, getAdapter(), source, { config: {} });
+    return findTableReferences(ast, getAdapter(), source, {
+      config: { sqlDialect: 'sqlite' },
+      provenanceContext: seededProvenance(),
+    });
   }
 
   it('resolves a module-level template-literal constant at a DB call site', async () => {
+    // §13 (Spec 70) — the constant's SQL is now parsed under the corpus dialect.
+    // The original ON CONFLICT DO UPDATE form is a postgresql-ism node-sql-parser
+    // cannot read under sqlite, so the upsert is expressed in the sqlite form
+    // (INSERT OR REPLACE) that parses — the resolution contract is unchanged.
     const source = [
-      'const UPSERT_SQL = `INSERT INTO metrics (hour_key, a) VALUES (?, ?) ON CONFLICT(hour_key) DO UPDATE SET a = a + excluded.a`;',
+      'const UPSERT_SQL = `INSERT OR REPLACE INTO metrics (hour_key, a) VALUES (?, ?)`;',
       'db.prepare(UPSERT_SQL);',
     ].join('\n');
     const { references, unresolved } = await refs(source);
@@ -534,6 +557,30 @@ describe('findTableReferences — SQL assembled in a constant (Spec 58 R1)', () 
     expect(unresolved[0].identifier).toBe('SQL');
   });
 
+  it('skips a structured array-literal first argument — not SQL, not unresolved (Spec 70)', async () => {
+    // `db.batch(stmts)` where `stmts` is a local statements array. Before Spec 70
+    // this was method-gated by SQL_CARRYING_METHOD_NAMES; now "is this SQL" is
+    // answered by the resolved value's shape, so an array literal is skipped
+    // rather than reported as an unresolvable query.
+    const source = [
+      'const stmts = [stmt1, stmt2];',
+      'db.batch(stmts);',
+    ].join('\n');
+    const { references, unresolved } = await refs(source);
+    expect(references).toHaveLength(0);
+    expect(unresolved).toHaveLength(0);
+  });
+
+  it('skips a structured object-literal first argument — not SQL, not unresolved (Spec 70)', async () => {
+    const source = [
+      'const params = { org_id: 1 };',
+      'db.all(params);',
+    ].join('\n');
+    const { references, unresolved } = await refs(source);
+    expect(references).toHaveLength(0);
+    expect(unresolved).toHaveLength(0);
+  });
+
   it('still extracts a direct string argument without an unresolved record', async () => {
     const source = 'db.prepare("INSERT INTO users VALUES (?)");';
     const { references, unresolved } = await refs(source);
@@ -553,5 +600,132 @@ describe('findTableReferences — SQL assembled in a constant (Spec 58 R1)', () 
     expect(v[0].line).toBe(2);
     expect(v[0].message).toContain('UPSERT_SQL');
     expect(v[0].details).toEqual({ identifier: 'UPSERT_SQL' });
+  });
+
+  it('builds cannot-fire coverage diagnostics for an unresolvable DB receiver import (Spec 69 §10)', async () => {
+    const v = checkUnresolvedReceiverImports(
+      [{ source: './db', names: ['db'] }],
+      'src/a.ts',
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0].kind).toBe('cannot-fire');
+    expect(v[0].analyzerName).toBe('schema');
+    expect(v[0].file).toBe('src/a.ts');
+    expect(v[0].line).toBe(0);
+    expect(v[0].message).toContain("'db'");
+    expect(v[0].message).toContain('./db');
+    expect(v[0].message).toContain('unseen');
+    expect(v[0].details).toEqual({ source: './db', names: ['db'] });
+  });
+});
+
+// ── Spec 70 R2 — unparseable SQL in a SQL position is unreadable, not clean ─
+
+describe('findTableReferences — PRAGMA/VACUUM is unreadable, not "no tables" (Spec 70 R2)', () => {
+  function seededProvenance(): ProvenanceContext {
+    return {
+      mode: 'hybrid',
+      dbProvenanced: new Map([
+        ['db', { identifier: 'db', reason: 'binding', source: 'test seed', chain: [] }],
+      ]),
+      validatorProvenanced: new Map(),
+    };
+  }
+
+  async function refs(source: string) {
+    const ast = await parseSource(source);
+    return findTableReferences(ast, getAdapter(), source, {
+      config: { sqlDialect: 'sqlite' },
+      provenanceContext: seededProvenance(),
+    });
+  }
+
+  it('a static PRAGMA argument is reported unparseable, not an empty reference set', async () => {
+    const source = 'db.prepare("PRAGMA table_info(stadium_builds)");';
+    const { references, unparseable } = await refs(source);
+    // The SQL-position argument is read, but the parser cannot answer "which
+    // tables" — so it must surface as unreadable, not as "no tables" (which
+    // unknown-table / stale-table-reference would read as clean).
+    expect(unparseable).toHaveLength(1);
+    expect(unparseable[0].sqlText).toBe('PRAGMA table_info(stadium_builds)');
+    expect(unparseable[0].location.line).toBe(1);
+    expect(unparseable[0].reason.length).toBeGreaterThan(0);
+    expect(references).toHaveLength(0);
+  });
+
+  it('a static VACUUM argument is reported unparseable', async () => {
+    const { unparseable } = await refs('db.run("VACUUM");');
+    expect(unparseable).toHaveLength(1);
+    expect(unparseable[0].sqlText).toBe('VACUUM');
+  });
+
+  it('a static ANALYZE argument is reported unparseable', async () => {
+    const { unparseable } = await refs('db.exec("ANALYZE");');
+    expect(unparseable).toHaveLength(1);
+    expect(unparseable[0].sqlText).toBe('ANALYZE');
+  });
+
+  it('a parseable SELECT argument produces no unparseable record', async () => {
+    const source = 'db.prepare("SELECT * FROM users WHERE org_id = ?");';
+    const { references, unparseable } = await refs(source);
+    expect(unparseable).toHaveLength(0);
+    expect(references.some(r => r.table === 'users')).toBe(true);
+  });
+
+  it('without a dialect, a SQL argument that also fails the default grammar is dialect-undetermined (cannot-fire), not silently empty', async () => {
+    const ast = await parseSource('db.prepare("PRAGMA table_info(stadium_builds)");');
+    const result = findTableReferences(ast, getAdapter(), 'db.prepare("PRAGMA table_info(stadium_builds)");', {
+      config: {},
+      provenanceContext: seededProvenance(),
+    });
+    // No dialect does not skip the parse (Spec 70 R2) — the SQL is attempted
+    // under the default sqlite grammar. `PRAGMA table_info(…)` fails there too,
+    // so the site abstains *loudly*: a "dialect undetermined" cannot-fire that
+    // names both the undetermined dialect and the default-grammar parse failure,
+    // and no table facts (never an empty reference set read as clean).
+    expect(result.unparseable).toHaveLength(1);
+    expect(result.unparseable[0].kind).toBe('dialect-undetermined');
+    expect(result.unparseable[0].reason).toContain('dialect undetermined');
+    expect(result.unparseable[0].reason).toContain('default sqlite grammar');
+    expect(result.references).toHaveLength(0);
+  });
+
+  it('without a dialect, a SQL argument that parses under the default grammar still yields table facts (R2 — parse before dialect)', async () => {
+    const source = 'db.prepare("SELECT * FROM users WHERE org_id = ?");';
+    const ast = await parseSource(source);
+    const result = findTableReferences(ast, getAdapter(), source, {
+      config: {},
+      provenanceContext: seededProvenance(),
+    });
+    // No dialect does not skip the parse — the SELECT parses under the default
+    // sqlite grammar, so the table fact is derived and no cannot-fire record is
+    // produced (the dialect gate no longer sits upstream of the parse).
+    expect(result.unparseable).toHaveLength(0);
+    expect(result.references.some(r => r.table === 'users')).toBe(true);
+  });
+
+  it('checkUnparseableSql builds a parse-failure cannot-fire diagnostic with file + line + reason', () => {
+    const v = checkUnparseableSql(
+      [{ sqlText: 'PRAGMA table_info(stadium_builds)', location: { line: 3, column: 1 }, reason: 'Expected ...', kind: 'parse-failure' }],
+      'src/a.ts',
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0].kind).toBe('cannot-fire');
+    expect(v[0].analyzerName).toBe('schema');
+    expect(v[0].file).toBe('src/a.ts');
+    expect(v[0].line).toBe(3);
+    expect(v[0].message).toContain('cannot be parsed');
+    expect(v[0].details).toEqual({ sql: 'PRAGMA table_info(stadium_builds)', reason: 'Expected ...', kind: 'parse-failure' });
+  });
+
+  it('checkUnparseableSql builds a dialect-undetermined cannot-fire diagnostic naming the reason', () => {
+    const v = checkUnparseableSql(
+      [{ sqlText: 'PRAGMA table_info(stadium_builds)', location: { line: 3, column: 1 }, reason: 'dialect undetermined (no database driver in package.json or wrangler.toml)', kind: 'dialect-undetermined' }],
+      'src/a.ts',
+    );
+    expect(v).toHaveLength(1);
+    expect(v[0].kind).toBe('cannot-fire');
+    expect(v[0].message).toContain('dialect undetermined');
+    expect(v[0].details).toEqual({ sql: 'PRAGMA table_info(stadium_builds)', reason: 'dialect undetermined (no database driver in package.json or wrangler.toml)', kind: 'dialect-undetermined' });
   });
 });

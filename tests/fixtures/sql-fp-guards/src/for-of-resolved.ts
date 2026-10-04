@@ -6,12 +6,12 @@
  * Constants declared in for-of loops are resolved as compile-time constants.
  * Must produce 0 sql-injection-risk violations.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 const TABLES = ['users', 'projects'] as const;
 
 export function queryAllTables(): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   for (const table of TABLES) {
     db.prepare(
       `SELECT COUNT(*) FROM ${table}`

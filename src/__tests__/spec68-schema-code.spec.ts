@@ -3,7 +3,7 @@
  *
  * The liveness guard (§16.1) proves the producer returns a live, shaped array;
  * this test proves the extraction is *correct* against the per-file shape the
- * `table-catalog` / `migration-history` corpus processors read: the ordered
+ * `resolution` / `migration-history` corpus processors read: the ordered
  * `ops` (CREATE/DROP/RENAME, verbatim from `parseMigrationOps`) and the
  * per-table `tableColumns` (`extractDdlTableColumns`, lowercased). The producer
  * is a pure projection — it does NOT net-replay, so a file whose only effect is
@@ -32,6 +32,7 @@ function code(path: string, source: string): SchemaDeclaration[] {
     source,
     ast,
     adapter: adapter!,
+    sqlDialect: 'sqlite',
   };
   try {
     return PRODUCERS['ddl-declarations']['typescript'].process(file);

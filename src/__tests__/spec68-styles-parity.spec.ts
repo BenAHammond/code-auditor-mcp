@@ -52,10 +52,10 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(() => {
-  db.exec('DELETE FROM style_declarations');
-  db.exec('DELETE FROM style_tokens');
-  db.exec('DELETE FROM style_class_usage');
-  db.exec('DELETE FROM style_defined_classes');
+  db.rawSql.exec('DELETE FROM style_declarations');
+  db.rawSql.exec('DELETE FROM style_tokens');
+  db.rawSql.exec('DELETE FROM style_class_usage');
+  db.rawSql.exec('DELETE FROM style_defined_classes');
   _declId = 0;
   _tokenId = 0;
 });
@@ -67,7 +67,7 @@ afterAll(async () => {
 
 function insertDecl(s: Seed): void {
   const normalized = normalizeValue(s.rawValue, s.property);
-  db.run(
+  db.rawSql.run(
     `INSERT INTO style_declarations
       (id, property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -88,7 +88,7 @@ function insertDecl(s: Seed): void {
 }
 
 function insertToken(name: string, value: string, filePath: string, mechanism: 'css-custom-property' | 'tailwind-theme'): void {
-  db.run(
+  db.rawSql.run(
     `INSERT INTO style_tokens (id, name, value, file_path, mechanism) VALUES (?, ?, ?, ?, ?)`,
     [++_tokenId, name, value, filePath, mechanism],
   );
@@ -106,12 +106,12 @@ async function parity(seeds: Seed[]): Promise<Record<string, string[]>> {
 
   // Legacy: query the index and run the full detector set.
   const analyzer = new UniversalStylesAnalyzer();
-  const legacy = await analyzer.analyze(['a.css', 'b.css', 'c.css', 'd.css', 'e.css', 'f.css'], { indexHandle: db });
+  const legacy = await analyzer.analyze(['a.css', 'b.css', 'c.css', 'd.css', 'e.css', 'f.css'], { indexHandle: db.indexHandle });
 
   // Phase: re-read the SAME rows in the legacy query's order and convert to the
   // camelCase fact (so the flattened order — which first-occurrence anchors in
   // color-drift / fragmentation / block-building depend on — is identical).
-  const declRows = db.query(
+  const declRows = db.rawSql.query(
     'SELECT property, raw_value, normalized_value, mechanism, file_path, line, context, token_ref ' +
     'FROM style_declarations ORDER BY property, file_path, line',
   ) as Array<{
@@ -124,7 +124,7 @@ async function parity(seeds: Seed[]): Promise<Record<string, string[]>> {
     context: string | null;
     token_ref: string | null;
   }>;
-  const tokenRows = db.query('SELECT name, value, file_path, mechanism FROM style_tokens') as Array<{
+  const tokenRows = db.rawSql.query('SELECT name, value, file_path, mechanism FROM style_tokens') as Array<{
     name: string;
     value: string;
     file_path: string;

@@ -58,9 +58,9 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(() => {
-  db.exec('DELETE FROM function_calls');
-  db.exec('DELETE FROM functions');
-  db.exec('DELETE FROM conventions');
+  db.rawSql.exec('DELETE FROM function_calls');
+  db.rawSql.exec('DELETE FROM functions');
+  db.rawSql.exec('DELETE FROM conventions');
 });
 
 afterAll(async () => {
@@ -89,7 +89,7 @@ function insertFunction(opts: {
   componentType?: string | null;
   isExported?: boolean;
 }): number {
-  const res = db.run(
+  const res = db.rawSql.run(
     `INSERT INTO functions (name, file_path, line_number, body, language, entity_type, component_type, is_exported)
      VALUES (?, ?, ?, ?, 'typescript', ?, ?, ?)`,
     [
@@ -106,7 +106,7 @@ function insertFunction(opts: {
 }
 
 function insertCall(callerId: number, calleeName: string): void {
-  db.run('INSERT INTO function_calls (caller_id, callee_name) VALUES (?, ?)', [callerId, calleeName]);
+  db.rawSql.run('INSERT INTO function_calls (caller_id, callee_name) VALUES (?, ?)', [callerId, calleeName]);
 }
 
 /** Project a legacy `Convention` onto the serializable `MinedConvention` fact. */
@@ -241,11 +241,11 @@ async function parity(result: SeedResult): Promise<void> {
   insertConventions(legacyConventions);
 
   const analyzer = new UniversalConventionsAnalyzer();
-  const legacy = await analyzer.analyze(['a.ts'], { indexHandle: db, exportsMap });
+  const legacy = await analyzer.analyze(['a.ts'], { indexHandle: db.indexHandle, exportsMap });
 
   // Re-read the SAME rows as the `function-index` fact (id order), and derive the
   // call set from the function_calls table in rowid order (grouped by caller).
-  const funcRows = db.query(
+  const funcRows = db.rawSql.query(
     'SELECT id, name, file_path, line_number, body, language, entity_type, component_type, is_exported FROM functions ORDER BY id',
   ) as Array<{
     id: number;
@@ -270,9 +270,10 @@ async function parity(result: SeedResult): Promise<void> {
     complexity: 0,
     body: r.body,
     functionCalls: [],
+    usedImports: [],
     language: r.language,
   }));
-  const callRows = db.query('SELECT caller_id, callee_name FROM function_calls') as Array<{
+  const callRows = db.rawSql.query('SELECT caller_id, callee_name FROM function_calls') as Array<{
     caller_id: number;
     callee_name: string;
   }>;

@@ -5,10 +5,10 @@
  * bound out-of-band via `.all(...params)`, so the joined text is only
  * placeholders, never raw data.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 export function queryFindings(runId: string, rule?: string): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   const where: string[] = ['run_id = ?'];
   const params: unknown[] = [runId];
   if (rule) {

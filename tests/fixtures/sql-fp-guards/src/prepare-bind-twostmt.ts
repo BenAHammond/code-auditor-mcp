@@ -5,10 +5,10 @@
  * The `.prepare()` result is assigned to a variable, then `.bind()` is called.
  * Must produce 0 sql-injection-risk violations.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 export function getUsersByRole(role: string): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   const stmt = db.prepare(`SELECT * FROM users WHERE role = ?`);
   stmt.bind(role).all();
 }

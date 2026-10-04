@@ -23,6 +23,13 @@ describe('isTestOrSpecPath — test/spec filename and directory shapes', () => {
     'foo.spec.js',
     'deep/nested/bar.test.ts',
     'foo_test.go',
+    // tsd type-definition tests — the standard `tsd` extension, a distinct clause
+    // from `*.test.*` because `.test-d.` has a hyphen where the generic pattern
+    // needs a dot.
+    'tsd-tests1.test-d.ts',
+    'test-tsd/tsd-tests8.test-d.ts',
+    'foo.test-d.tsx',
+    'C:\\proj\\test-tsd\\foo.test-d.ts',
     'C:\\proj\\tests\\foo.test.ts', // windows separators normalize
   ];
 

@@ -43,33 +43,33 @@ async function complexQueryViolations(code: string, name: string): Promise<any[]
   const sourceCode = await readFile(filePath, 'utf-8');
   const ast = parseFile(filePath, sourceCode)!;
   if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode)) as any[];
+  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
   return vs.filter((v) => v.rule === 'complex-query');
 }
 
 /** A 6-way join — complex by table count. */
-const MANY_TABLES = `import { db } from './db';
+const MANY_TABLES = `const db: D1Database = getDb();
 export function report() {
   return db.query("SELECT * FROM users JOIN orders JOIN products JOIN categories JOIN inventory JOIN shipments");
 }
 `;
 
 /** A subquery with only two tables — an ordinary SQLite idiom, NOT complex. */
-const SUBQUERY_FEW_TABLES = `import { db } from './db';
+const SUBQUERY_FEW_TABLES = `const db: D1Database = getDb();
 export function subquery() {
   return db.query("SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)");
 }
 `;
 
 /** An EXISTS subquery — the report's §1.6 example, NOT complex. */
-const EXISTS_SUBQUERY = `import { db } from './db';
+const EXISTS_SUBQUERY = `const db: D1Database = getDb();
 export function stale() {
   return db.query("SELECT q.id FROM questions q WHERE EXISTS (SELECT 1 FROM answers a WHERE a.q = q.id)");
 }
 `;
 
 /** A simple single-table query — not complex under any contract. */
-const SIMPLE = `import { db } from './db';
+const SIMPLE = `const db: D1Database = getDb();
 export function count() {
   return db.query("SELECT COUNT(*) FROM users WHERE active = ?");
 }

@@ -119,7 +119,17 @@ const runDry: Runner = async (code) => {
 const runDataAccess: Runner = async (code) => {
   const ast = parseFile('data-access-nearmiss.ts', code)!;
   if (!ast) throw new Error('failed to parse data-access near-miss');
-  const vs = await (dataAccess as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, code);
+  // Spec 70 R2 — the SQL-content facts (`isWrite`/`isMassWrite`/`tables`) are
+  // AST-derived and require a named dialect; without one they `cannot-fire` and
+  // the write/join guards would read a surface that never emits. The near-miss
+  // samples are D1/SQLite, so pin `sqlite` the same way the property-based
+  // generators do.
+  const vs = await (dataAccess as any).analyzeAST(
+    ast,
+    tsAdapter,
+    { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' },
+    code,
+  );
   return ruleIds(vs);
 };
 
@@ -168,6 +178,10 @@ const runDocumentation: Runner = async (code) => {
  *  against a real catalog rather than failing open on an empty one. */
 const SCHEMA_CODE_CONFIG = {
   ...DEFAULT_SCHEMA_CONFIG,
+  // Spec 70 §13 — the schema SQL-content rules (table-naming-convention /
+  // unknown-table) are AST-derived and require a named dialect; without one they
+  // `cannot-fire` and the near-miss/liveness runs would read an empty surface.
+  sqlDialect: 'sqlite',
   schemas: [
     {
       name: 'public',
@@ -367,30 +381,30 @@ const LIVENESS_POINTERS: Record<string, string> = {
   'import-style': 'goImportOrganization.spec.ts — flags dot imports',
 
   // ── dry (1) ────────────────────────────────────────────────────────────────
-  'dry/diverging-clone': 'UNCOVERED — cross-run (dry_pair_history) pass; no test seeds ≥2 declining-similarity runs',
+  'dry/diverging-clone': 'spec70-dry-pair-seed-persist.spec.ts — seeds three declining-similarity runs under one fingerprint and asserts the cross-run pass fires',
 
   // ── data-access (1) ────────────────────────────────────────────────────────
   'missing-org-filter': 'integration/fixture-data-access-rules.test.ts — true positive fires (line 12), near-misses stay quiet',
 
   // ── schema JSON path (17) — data instances validated against a schema↔data
-  //    pair; only invalid-format has a real harness.
+  //    pair; all seventeen now have a real harness.
   'invalid-format': 'schema/jsonSchema.spec.ts — invalid email/date fire through analyzeJsonSchemas',
-  'invalid-json': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'missing-schema-declaration': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'undefined-required-field': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'invalid-type': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'invalid-range': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'type-mismatch': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'string-too-short': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'string-too-long': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'pattern-mismatch': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'below-minimum': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'above-maximum': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'too-few-items': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'too-many-items': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'missing-required-field': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'unexpected-property': 'UNCOVERED — no schema↔data harness asserts it fires',
-  'enum-mismatch': 'UNCOVERED — no schema↔data harness asserts it fires',
+  'invalid-json': 'schema/jsonSchemaLiveness.spec.ts — a schema file that fails to parse fires',
+  'missing-schema-declaration': 'schema/jsonSchemaLiveness.spec.ts — a schema with no $schema fires',
+  'undefined-required-field': 'schema/jsonSchemaLiveness.spec.ts — a required field absent from properties fires',
+  'invalid-type': 'schema/jsonSchemaLiveness.spec.ts — a schema type outside the allowed set fires',
+  'invalid-range': 'schema/jsonSchemaLiveness.spec.ts — minimum > maximum fires',
+  'type-mismatch': 'schema/jsonSchemaLiveness.spec.ts — data of the wrong type fires',
+  'string-too-short': 'schema/jsonSchemaLiveness.spec.ts — a string under minLength fires',
+  'string-too-long': 'schema/jsonSchemaLiveness.spec.ts — a string over maxLength fires',
+  'pattern-mismatch': 'schema/jsonSchemaLiveness.spec.ts — a string not matching the pattern fires',
+  'below-minimum': 'schema/jsonSchemaLiveness.spec.ts — a number under minimum fires',
+  'above-maximum': 'schema/jsonSchemaLiveness.spec.ts — a number over maximum fires',
+  'too-few-items': 'schema/jsonSchemaLiveness.spec.ts — an array under minItems fires',
+  'too-many-items': 'schema/jsonSchemaLiveness.spec.ts — an array over maxItems fires',
+  'missing-required-field': 'schema/jsonSchemaLiveness.spec.ts — an object missing a required field fires',
+  'unexpected-property': 'schema/jsonSchemaLiveness.spec.ts — an extra key under additionalProperties:false fires',
+  'enum-mismatch': 'schema/jsonSchemaLiveness.spec.ts — a value outside the enum fires',
 
   // ── schema reducer (1) ─────────────────────────────────────────────────────
   'stale-table-reference': 'dbWrapperEndToEnd.spec.ts — migration-drop surfaces as stale-table-reference',
@@ -399,8 +413,8 @@ const LIVENESS_POINTERS: Record<string, string> = {
   'no-error-boundary': 'reactErrorBoundary.spec.ts — flags a boundary-less app (app-level, Spec 55 R4)',
   'performance': 'reactAnalyzer.spec.ts — flags an inline arrow prop (true positive)',
   'raw-element': 'nearMissGuards.spec.ts — flags real <button> JSX, not createElement(Button)',
-  'hooks-naming': 'UNCOVERED — emitted by reactAnalyzer (hooks-naming) but no test asserts it fires',
-  'missing-props': 'UNCOVERED — emitted by reactAnalyzer (missing-props) but no test asserts it fires',
+  'hooks-naming': 'spec68-react-parity.spec.ts — a non-use-prefixed hook-using function called in a component fires',
+  'missing-props': 'spec68-react-parity.spec.ts — a component with no prop validation fires when requirePropTypes is enabled',
 
   // ── schema-validator (3) ───────────────────────────────────────────────────
   'schema-field-mismatch': 'cross-language/fieldMismatch.spec.ts — genuine primitive mismatch fires',
@@ -409,12 +423,12 @@ const LIVENESS_POINTERS: Record<string, string> = {
 
   // ── dependency-graph (7) ───────────────────────────────────────────────────
   'circular-dependency': 'DependencyGraphBuilder.spec.ts — renders a 2-cycle path',
-  'tight-coupling': 'DependencyGraphBuilder.spec.ts — flags a 3-node mutually-calling cluster',
+  'tight-coupling': 'DependencyGraphBuilder.spec.ts — flags two clusters whose mutual edges dominate',
   'orphaned-nodes': 'DependencyGraphBuilder.spec.ts + pipelineAdapters.reachability.spec.ts — flags a private unreferenced node',
   'unreferenced-module': 'pipelineAdapters.reachability.spec.ts — flags an exported-but-unimported file',
-  'break-cycles': 'UNCOVERED — emitted as advisory suggestionType, not a gating violation; no test asserts it',
-  'reduce-coupling': 'UNCOVERED — emitted as advisory suggestionType, not a gating violation; no test asserts it',
-  'review-orphans': 'UNCOVERED — emitted as advisory suggestionType, not a gating violation; no test asserts it',
+  'break-cycles': 'spec68-dependency-graph-parity.spec.ts — the modA ⇄ modB cycle fires the advisory suggestion',
+  'reduce-coupling': 'spec68-dependency-graph-parity.spec.ts — the modA ⇄ modB boundary fires the advisory suggestion',
+  'review-orphans': 'spec68-dependency-graph-parity.spec.ts — the dead orphan function fires the advisory suggestion',
 
   // ── styles (9) ─────────────────────────────────────────────────────────────
   'styles/value-drift': 'UniversalStylesAnalyzer.spec.ts — Detector 1 flags a rare color among a dominant cluster',
@@ -430,16 +444,16 @@ const LIVENESS_POINTERS: Record<string, string> = {
   // ── conventions (5) ────────────────────────────────────────────────────────
   'conventions/export-shape': 'integration/fixture-conventions.test.ts — default export in named-majority dir fires',
   'conventions/naming': 'integration/fixture-conventions.test.ts — PascalCase in camelCase dir fires',
-  'conventions/usage-pair': 'UNCOVERED — emitted by UniversalConventionsAnalyzer; no test asserts it fires',
-  'conventions/import-form': 'UNCOVERED — emitted by UniversalConventionsAnalyzer; no test asserts it fires',
-  'conventions/error-handling': 'UNCOVERED — emitted by UniversalConventionsAnalyzer; no test asserts it fires',
+  'conventions/usage-pair': 'spec68-conventions-parity.spec.ts — a function calling the antecedent but not the consequent fires',
+  'conventions/import-form': 'spec68-import-form-parity.spec.ts — a default import among named imports of the same source fires',
+  'conventions/error-handling': 'spec68-conventions-parity.spec.ts + errorHandlingShape.spec.ts — a wrong error-handling shape fires',
 
   // ── cross-domain (5) ───────────────────────────────────────────────────────
   'cross-domain/written-never-read': 'CrossDomainAnalyzer.test.ts — flags a table inserted but never selected',
   'cross-domain/read-never-written': 'CrossDomainAnalyzer.test.ts — flags a table selected but never written',
   'cross-domain/multi-table-write': 'CrossDomainAnalyzer.test.ts — flags a function writing ≥threshold tables',
   'cross-domain/no-validator-reachable': 'CrossDomainAnalyzer.test.ts — flags a writer with no path to a validator',
-  'cross-domain/uncovered-risk': 'UNCOVERED — emitted by CrossDomainAnalyzer; no test asserts it fires',
+  'cross-domain/uncovered-risk': 'spec68-cross-domain-parity.spec.ts — a table referenced with no schema coverage fires',
 };
 
 /** Collect every near-miss sample, tagged with its rule ID and analyzer. */
@@ -517,7 +531,7 @@ describe('near-miss executor — every declared near-miss runs through its real 
   // dropping the registry entry must not also drop the only guard on the
   // unresolved-SQL detection path.
   it('unresolved-query: unresolvable SQL emits a coverage diagnostic, not a violation', async () => {
-    const p = await writeTemp('import { UPSERT_SQL } from "./queries";\ndb.prepare(UPSERT_SQL)', 'ts');
+    const p = await writeTemp('import { UPSERT_SQL } from "./queries";\nconst db: D1Database = getDb();\ndb.prepare(UPSERT_SQL)', 'ts');
     const result = await schema.analyze([p], SCHEMA_CODE_CONFIG);
 
     // No finding — the rule is gone from the violation channel.

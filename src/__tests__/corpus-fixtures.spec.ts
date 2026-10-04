@@ -16,7 +16,9 @@
  *   - **crowd-answer-game** (Spec 55) — a Next.js / Cloudflare D1 game project.
  *     Found the `orphaned-nodes` call-graph resolver missing same-file calls
  *     (R1), `unfiltered-query` targeting reads instead of writes (R5), and a
- *     `FOR UPDATE SKIP LOCKED` locking clause being read as extra tables.
+ *     `FOR UPDATE SKIP LOCKED` locking clause being regex-read as extra tables
+ *     (now a mysql-only construct — node-sql-parser's sqlite grammar rejects
+ *     the whole statement, so it is pinned at the unit level under mysql).
  *
  * Each fixture is *copied* to a temp dir before the audit runs (same as the
  * composite harness) so the `/tests/` segment does not trip per-analyzer
@@ -84,15 +86,24 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
   //                  `promiseAllStatements` (Promise.all of statements) must NOT
   //                  fire loop-query (construction, not execution); `eagerRun`
   //                  (eager .run() per row) MUST fire loop-query.
-  //   upsert.ts      R2 — `INSERT … ON CONFLICT DO UPDATE` is a write keyed by
-  //                  its conflict target, NOT an unfiltered write.
+  //   upsert.ts      R2 — `INSERT OR REPLACE INTO` is a write keyed by its
+  //                  conflict target, NOT an unfiltered write. (The original
+  //                  `ON CONFLICT DO UPDATE` form is a real SQLite construct
+  //                  node-sql-parser's sqlite grammar cannot parse, so under
+  //                  §13 it is pinned at the unit level as cannot-fire — see
+  //                  spec-52.test.ts — rather than silently clean here.)
   //   escapes.ts     (dependency-inversion removed in Spec 68 — the file now
   //                  only exercises the unconditional documentation rules.)
   //
+  // The dialect signal is `wrangler.toml`'s `[[d1_databases]]` binding (a D1
+  // binding is SQLite). Without it, `detectDialect` names no dialect and every
+  // schema fact abstains as "dialect undetermined", which silently dropped
+  // `written-never-read` under §13 — the exact movement this fixture now pins.
+  //
   // The two declared findings are the positive control (`loop-query`) and one
-  // accurate cross-cutting fact: `users` is written (INSERT/UPDATE/ON CONFLICT)
-  // but never read, so `written-never-read` fires. Everything else stays silent
-  // — no loop-query on the batched/Promise.all constructions, no unfiltered-query
+  // accurate cross-cutting fact: `users` is written (INSERT/UPDATE/REPLACE) but
+  // never read, so `written-never-read` fires. Everything else stays silent —
+  // no loop-query on the batched/Promise.all constructions, no unfiltered-query
   // on the upsert.
   // ─────────────────────────────────────────────────────────────────────
   describe('d1-workers', () => {
@@ -118,10 +129,14 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
   //   writes.ts      R5 — `purgeOrders` (bare DELETE, no WHERE) MUST fire
   //                  unfiltered-query; `shipOrder` (UPDATE scoped by WHERE) must
   //                  NOT.
-  //   read.ts        extractTables — `SELECT … FOR UPDATE SKIP LOCKED` extracts
-  //                  only `orders` (the locking clause is not a table), so no
-  //                  unknown-table. (Verified meaningful: a read-only control
-  //                  fires read-never-written, proving the SELECT is extracted.)
+  //   read.ts        extractTables — a plain `SELECT … FROM orders` extracts
+  //                  `orders` (no unknown-table). The original `FOR UPDATE SKIP
+  //                  LOCKED` clause is a mysql-only construct under
+  //                  node-sql-parser; a sqlite read of it would parse-fail and
+  //                  lose the `orders` read, so it is pinned at the unit level
+  //                  under mysql instead (UniversalSchemaAnalyzer.spec.ts).
+  //                  (Verified meaningful: `orders` read here is what keeps
+  //                  `written-never-read` silent — writes.ts writes it.)
   //   callgraph.ts   R1 — `normalize`, referenced only through a bare function
   //                  value in an array (`[normalize]`), must NOT be orphaned.
   //                  (Verified meaningful: a truly-unreferenced non-exported
@@ -148,8 +163,9 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
   //    `DELETE FROM users` as a `select` (read), *in addition* to the `delete`
   //    reference from the DELETE pattern. A table that is only ever deleted —
   //    never SELECTed — was misclassified as also-read, suppressing
-  //    `written-never-read`. **Fixed**: `isDeleteFrom` now gates the generic FROM
-  //    pattern so `DELETE FROM` classifies as a write only. The composite
+  //    `written-never-read`. **Fixed**: the typed-relation walk now emits only
+  //    the DELETE's `table` (never the duplicated `from`), so `DELETE FROM`
+  //    classifies as a write only. The composite
   //    data-access fixture (which has `DELETE FROM users` and no SELECT) now
   //    fires `written-never-read`, and the composite spec asserts it. This was a
   //    pre-existing gap in schema table extraction, distinct from the Spec 52 R2

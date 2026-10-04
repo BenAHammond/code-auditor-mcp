@@ -55,6 +55,7 @@ import {
 } from '../../scripts/verify-recall-value-drift-core.mjs';
 import { compareCompleteness } from '../../scripts/verify-extraction-completeness-core.mjs';
 import { compareOracleShortfalls } from '../../scripts/verify-oracle-shortfalls-core.mjs';
+import { planRun, summarizeResults, GATES } from '../../scripts/verify-close.mjs';
 
 const APP_ROOT = process.cwd();
 const DIST_CLI = join(APP_ROOT, 'dist', 'cli.js');
@@ -266,6 +267,107 @@ describe('verify:extraction-completeness — liveness', () => {
     expect(compareCompleteness({ ...baseline, 'new-corpus': 5 }, baseline)).toContain(
       'unexpected corpus new-corpus measured (gap 5)',
     );
+  });
+});
+
+describe('verify:close — run-all planning (the short-circuit fix)', () => {
+  // The pre-fix `verify:close` was a single `&&` conjunction: the first failing
+  // gate aborted the run and every later gate was silently skipped. A stale
+  // `dist/cli.js` made `verify:dist-fresh` exit 1, so `verify:oracle-shortfalls`
+  // (and the other drift gates) never ran and their drift sat concealed. This
+  // suite pins the run-all planner: a dist-fresh failure must skip *only* the
+  // gates that consume `dist/cli.js`, and must still run every `tsx`-over-`src/`
+  // drift gate so its failure is surfaced, never hidden.
+
+  const byName = (name: string) => GATES.find((g) => g.name === name)!;
+
+  it('runs every gate when dist is fresh (no skips)', () => {
+    const plan = planRun(GATES, false);
+    expect(plan.every((p) => p.action === 'run')).toBe(true);
+    expect(plan).toHaveLength(GATES.length);
+  });
+
+  it('always runs verify:dist-fresh itself, fresh or stale', () => {
+    expect(planRun(GATES, false).find((p) => p.name === 'verify:dist-fresh')!.action).toBe('run');
+    expect(planRun(GATES, true).find((p) => p.name === 'verify:dist-fresh')!.action).toBe('run');
+  });
+
+  it('still runs the dist-independent drift gates when dist is stale', () => {
+    const plan = planRun(GATES, true);
+    for (const name of [
+      'verify:disk-space',
+      'verify:types',
+      'bench',
+      'verify:recall-value-drift',
+      'verify:extraction-completeness',
+      'verify:oracle-shortfalls',
+      'verify:clean-install',
+    ]) {
+      expect(plan.find((p) => p.name === name)!.action).toBe('run');
+    }
+  });
+
+  it('skips the dist-consuming gates (loudly) when dist is stale', () => {
+    const plan = planRun(GATES, true);
+    for (const name of ['test', 'test:integration', 'verify:gate-budget', 'verify:self', 'verify:dist']) {
+      const p = plan.find((x) => x.name === name)!;
+      expect(p.action).toBe('skip');
+      expect(p.reason).toBe('dist stale');
+    }
+  });
+
+  it('classifies exactly the drift gates as dist-independent (the concealing set)', () => {
+    // The regression this guard exists for: a drift gate marked dist-dependent
+    // would be silently skipped on a stale dist and pass by not running again.
+    for (const name of ['bench', 'verify:recall-value-drift', 'verify:extraction-completeness', 'verify:oracle-shortfalls']) {
+      expect(byName(name).dist).toBe(false);
+    }
+  });
+});
+
+describe('verify:close — run-all verdict (a skipped gate never reads PASS)', () => {
+  // The plan (`planRun`) decides skip vs run; the verdict (`summarizeResults`)
+  // turns the completed results into pass/fail/inconsistent. The pre-fix runner
+  // asserted "every gate ran and passed" only implicitly — it relied on the
+  // invariant "a skip always follows a dist-fresh failure, which is itself a
+  // failure". That invariant is real but untested, and the PASS banner did not
+  // name `skipped` in its guard. These tests pin the verdict directly: a skip in
+  // the result set must never read `pass`, regardless of whether a failure
+  // happened to co-occur.
+
+  const run = (name: string, status: number | null) => ({ name, action: 'run' as const, status });
+  const skip = (name: string) => ({ name, action: 'skip' as const, status: null, reason: 'dist stale' });
+
+  it('passes only when every gate ran and exited 0', () => {
+    const results = GATES.map((g) => run(g.name, 0));
+    expect(summarizeResults(results).verdict).toBe('pass');
+  });
+
+  it('fails when a gate failed (even with no skip)', () => {
+    const results = [run('verify:disk-space', 0), run('verify:types', 1)];
+    expect(summarizeResults(results).verdict).toBe('fail');
+  });
+
+  it('fails when a gate crashed (status null)', () => {
+    const results = [run('verify:types', null)];
+    expect(summarizeResults(results).verdict).toBe('fail');
+  });
+
+  it('never reads pass when a gate is skipped — even without a co-occurring failure', () => {
+    // The regression this guards: a skip absent a failure is a planning bug, but
+    // it must still be non-pass. The pre-fix runner handled this only through the
+    // `skipped.length` branch it labelled "unreachable in practice".
+    const results = [run('verify:dist-fresh', 0), skip('verify:self')];
+    const s = summarizeResults(results);
+    expect(s.verdict).toBe('inconsistent');
+    expect(s.skipped).toHaveLength(1);
+    expect(s.failed).toHaveLength(0);
+  });
+
+  it('reports a crash in crashed (not failed) — no double-count', () => {
+    const s = summarizeResults([run('verify:types', null)]);
+    expect(s.crashed).toHaveLength(1);
+    expect(s.failed).toHaveLength(0);
   });
 });
 

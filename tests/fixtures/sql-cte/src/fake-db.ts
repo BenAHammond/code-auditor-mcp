@@ -1,26 +1,24 @@
 /**
- * fake-db — Minimal mock database interface for the sql-cte fixture.
+ * fake-db — D1 database handle for the sql-cte fixture.
  *
- * Provides db.exec() so the schema analyzer recognizes db as a DB receiver
- * with exec as a DB call method, extracting tables from SQL strings.
+ * `getDB()` is annotated to return a real `D1Database` handle (Spec 69 §10 S5f,
+ * form-5), and `export const db = getDB()` carries that provenance to the
+ * importing file. `db.exec()` is then a DB call whose SQL string is extracted
+ * for table references.
  */
 
-export interface MockDB {
-  exec(sql: string): void;
+export interface D1Result<T = unknown> {
+  results?: T[];
+  meta?: unknown;
 }
 
-export function getDB(): MockDB {
-  let instance: MockDB | null = null;
+export interface D1Database {
+  exec(sql: string): Promise<D1Result>;
+}
 
-  if (!instance) {
-    instance = {
-      exec(_sql: string): void {
-        // no-op mock
-      },
-    };
-  }
-
-  return instance as MockDB;
+export function getDB(): D1Database {
+  // In-memory stand-in. The resolver reads the declared return type, not this body.
+  return {} as D1Database;
 }
 
 export const db = getDB();

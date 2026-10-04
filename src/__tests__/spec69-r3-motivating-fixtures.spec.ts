@@ -31,15 +31,12 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../languages/index.js';
-import { LanguageRegistry } from '../languages/LanguageRegistry.js';
-import { parseFile } from '../languages/adapterBridge.js';
-import { PRODUCERS } from '../phase/producers.js';
+import { buildDataAccessCalls } from '../phase/runner.js';
 import { dataAccessRules } from '../phase/rules/dataAccess.js';
 import type {
-  ParsedFile,
   ResolvedQuery,
   ThresholdValues,
-  TableCatalog,
+  ResolutionFact,
   Finding,
 } from '../phase/types.js';
 
@@ -49,21 +46,8 @@ beforeAll(async () => {
 });
 
 /** Run the `data-access-calls` producer over a minimal source string. */
-function calls(path: string, source: string): ResolvedQuery[] {
-  const adapter = LanguageRegistry.getInstance().getAdapterForFile(path);
-  const ast = parseFile(path, source)!;
-  const file: ParsedFile = {
-    file: path,
-    format: 'typescript',
-    source,
-    ast,
-    adapter: adapter!,
-  };
-  try {
-    return PRODUCERS['data-access-calls']['typescript'].process(file);
-  } finally {
-    ast.dispose?.();
-  }
+function calls(path: string, source: string): Promise<ResolvedQuery[]> {
+  return buildDataAccessCalls([{ path, content: source }], 'sqlite');
 }
 
 /** Feed produced facts into one data-access rule (the producer → rule glue
@@ -72,13 +56,13 @@ function analyze(
   ruleId: string,
   produced: ResolvedQuery[],
   thresholds: ThresholdValues = {},
-  catalog?: TableCatalog,
+  catalog?: ResolutionFact,
 ): Finding[] {
   const rule = dataAccessRules.find((r) => r.id === ruleId)!;
   const ctx = {
     facts: {
       'data-access-calls': produced,
-      'table-catalog': catalog ?? { tables: [], aliases: {} },
+      'resolution': catalog ?? { tables: [], aliases: {}, classes: [], interfaces: [] },
     },
     formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
     thresholds,
@@ -90,8 +74,8 @@ function analyze(
  *  tenancy tiers (see specs/rule-evidence-corpus/.codeauditor.json). */
 const TENANT = { orgFilterTables: ['orders'] };
 
-describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', () => {
-  describe('conditions array built across statements → missing-org-filter FP', () => {
+describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', async () => {
+  describe('conditions array built across statements → missing-org-filter FP', async () => {
     const source = [
       'export function listOrders(session) {',
       '  const conditions = [];',
@@ -100,8 +84,8 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', (
       '}',
     ].join('\n');
 
-    it('resolves the pushed predicate into the fact, all-paths', () => {
-      const out = calls('/fixture/r3-conditions.ts', source);
+    it('resolves the pushed predicate into the fact, all-paths', async () => {
+      const out = await calls('/fixture/r3-conditions.ts', source);
       expect(out).toHaveLength(1);
       expect(out[0].queryText).toBe('db.select().from(orders).where(and(...conditions))');
       expect(out[0].hasOrganizationFilter).toBe(false);
@@ -112,13 +96,13 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', (
       ]);
     });
 
-    it('the rule stays quiet — the predicate is present and unconditional', () => {
-      const out = analyze('missing-org-filter', calls('/fixture/r3-conditions.ts', source), TENANT);
+    it('the rule stays quiet — the predicate is present and unconditional', async () => {
+      const out = analyze('missing-org-filter', await calls('/fixture/r3-conditions.ts', source), TENANT);
       expect(out).toEqual([]);
     });
   });
 
-  describe('predicate pushed under an `if` → some-paths stays firing (criterion 9)', () => {
+  describe('predicate pushed under an `if` → some-paths stays firing (criterion 9)', async () => {
     const source = [
       'export function listOrdersScoped(userId, organizationId) {',
       "  const conditions = [eq(orders.id, userId), eq(orders.role, 'admin')];",
@@ -129,8 +113,8 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', (
       '}',
     ].join('\n');
 
-    it('resolves the pushed predicate as some-paths, branch named', () => {
-      const out = calls('/fixture/r3-some-paths.ts', source);
+    it('resolves the pushed predicate as some-paths, branch named', async () => {
+      const out = await calls('/fixture/r3-some-paths.ts', source);
       expect(out).toHaveLength(1);
       expect(out[0].resolvedWhere?.elements).toEqual([
         { text: 'eq(orders.id, userId)', allPaths: true },
@@ -143,8 +127,8 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', (
       ]);
     });
 
-    it('still fires critical, message names the absent branch', () => {
-      const out = analyze('missing-org-filter', calls('/fixture/r3-some-paths.ts', source), TENANT);
+    it('still fires critical, message names the absent branch', async () => {
+      const out = analyze('missing-org-filter', await calls('/fixture/r3-some-paths.ts', source), TENANT);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');
       expect(out[0].ruleId).toBe('missing-org-filter');
@@ -153,7 +137,7 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', (
     });
   });
 
-  describe('generic scoping wrapper (withOrgScope) → missing-org-filter + unfiltered-query FP', () => {
+  describe('generic scoping wrapper (withOrgScope) → missing-org-filter + unfiltered-query FP', async () => {
     const source = [
       'function withOrgScope(qb, session) { return qb.where(eq(orders.organizationId, session.orgId)); }',
       'export function listOrders(session) {',
@@ -162,24 +146,35 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', (
       '}',
     ].join('\n');
 
-    it('pins the defect: the producer sees the bare builder, not the wrapped predicate', () => {
-      const out = calls('/fixture/r3-wrapper.ts', source);
-      expect(out).toHaveLength(1);
-      expect(out[0].queryText).toBe('db.select().from(orders)');
-      expect(out[0].hasFilter).toBe(false);
-      expect(out[0].hasOrganizationFilter).toBe(false);
+    it('pins the defect: the producer sees the bare builder; the wrapper body is admitted unproven', async () => {
+      const out = await calls('/fixture/r3-wrapper.ts', source);
+      // Spec 70 R1.2 — unproven receivers are admitted, not dropped. The wrapper's
+      // `qb.where(…)` (receiver `qb` = un-annotated parameter → unproven) is now its
+      // own query alongside the bare builder the producer sees for `listOrders`.
+      expect(out).toHaveLength(2);
+      const builder = out.find((q) => q.queryText === 'db.select().from(orders)');
+      expect(builder).toBeDefined();
+      expect(builder!.hasFilter).toBe(false);
+      expect(builder!.hasOrganizationFilter).toBe(false);
+      // The wrapper's own where-clause still carries the org filter, so it does not
+      // itself feed a missing-org-filter — the over-fire below comes from the bare
+      // builder (which R3 cannot see the wrapper's predicate across functions).
+      const wrapper = out.find((q) => q.queryText.includes('qb.where'));
+      expect(wrapper).toBeDefined();
+      expect(wrapper!.hasOrganizationFilter).toBe(true);
+      expect(wrapper!.handleVerdict?.kind).toBe('unproven');
     });
 
-    it('missing-org-filter over-fires critical — FLIP to quiet when R3 resolves the wrapper', () => {
-      const out = analyze('missing-org-filter', calls('/fixture/r3-wrapper.ts', source), TENANT);
+    it('missing-org-filter over-fires critical — FLIP to quiet when R3 resolves the wrapper', async () => {
+      const out = analyze('missing-org-filter', await calls('/fixture/r3-wrapper.ts', source), TENANT);
       // FLIP (R3): expect(out).toEqual([]);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');
       expect(out[0].ruleId).toBe('missing-org-filter');
     });
 
-    it('unfiltered-query over-fires high — FLIP to quiet when R3 resolves the wrapper', () => {
-      const out = analyze('unfiltered-query', calls('/fixture/r3-wrapper.ts', source), TENANT);
+    it('unfiltered-query over-fires high — FLIP to quiet when R3 resolves the wrapper', async () => {
+      const out = analyze('unfiltered-query', await calls('/fixture/r3-wrapper.ts', source), TENANT);
       // FLIP (R3): expect(out).toEqual([]);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('high');
@@ -187,23 +182,25 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', (
     });
   });
 
-  describe('quote-doubling hoisted into `const safe` → sql-injection-risk over-report', () => {
+  describe('quote-doubling hoisted into `const safe` → sql-injection-risk over-report', async () => {
     const source = [
+      "import { Pool } from 'pg';",
+      'const db = new Pool();',
       'export function search(keyword) {',
       "  const safe = keyword.replace(/'/g, \"''\");",
       "  return db.query(`SELECT * FROM products WHERE name LIKE '%${safe}%'`);",
       '}',
     ].join('\n');
 
-    it('pins the defect: the producer reads `${safe}` as unescaped', () => {
-      const out = calls('/fixture/r3-hoisted.ts', source);
+    it('pins the defect: the producer reads `${safe}` as unescaped', async () => {
+      const out = await calls('/fixture/r3-hoisted.ts', source);
       expect(out).toHaveLength(1);
       expect(out[0].hasSqlInjectionRisk).toBe(true);
       expect(out[0].sqlEscaped).toBe(false);
     });
 
-    it('and the rule over-reports critical — FLIP to high when R3 resolves `safe`', () => {
-      const out = analyze('sql-injection-risk', calls('/fixture/r3-hoisted.ts', source));
+    it('and the rule over-reports critical — FLIP to high when R3 resolves `safe`', async () => {
+      const out = analyze('sql-injection-risk', await calls('/fixture/r3-hoisted.ts', source));
       // FLIP (R3): expect(out[0].severity).toBe('high'); — the escape is present, just hoisted.
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');

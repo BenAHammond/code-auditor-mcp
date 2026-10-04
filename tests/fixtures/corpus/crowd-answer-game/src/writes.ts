@@ -17,12 +17,12 @@ import { getDB } from './db';
 
 /** Bare UPDATE — mutates every row, the foot-gun. Expected: unfiltered-query. */
 export function purgeOrders(): void {
-  const db = getDB();
+  const db: D1Database = getDB();
   db.exec(`UPDATE orders SET purged = 1`);
 }
 
 /** Filtered UPDATE — WHERE scopes the mutation. Expected: no unfiltered-query. */
 export function shipOrder(id: number): void {
-  const db = getDB();
+  const db: D1Database = getDB();
   db.prepare(`UPDATE orders SET status = 'shipped' WHERE id = ?`).bind(id).run();
 }

@@ -149,27 +149,9 @@ describe('registry ↔ ledger membership', () => {
   });
 
   it('every registry id has an authenticity row, modulo the pinned gap (registry → authenticity)', () => {
-    const AUTH_GAP = [
-      // renames — old name's row still present, new name has no row of its own
-      'cross-domain/multi-table-write',
-      'cross-domain/no-validator-reachable',
-      'dynamic-sql-construction',
-      'function-length',
-      'interface-size',
-      'parameter-count',
-      // never-audited — live rules awaiting an authenticity verdict
-      'dry/diverging-clone',
-      'dry/similar-expression',
-      'function-size',
-      'hardcoded-secret',
-      'liskov-substitution',
-      'stale-table-reference',
-      'struct-size',
-      'switch-size',
-      'too-many-queries',
-      'type-mismatch',
-      'unreferenced-module',
-    ].sort();
+    // Closed (Spec 70 Item 5): the 6 renames + 11 never-audited rules each
+    // gained an authenticity row, so every registry id now has one.
+    const AUTH_GAP: string[] = [];
     expect(regNotIn(auth), 'a registry rule lost or gained an authenticity row — update AUTH_GAP').toEqual(AUTH_GAP);
   });
 

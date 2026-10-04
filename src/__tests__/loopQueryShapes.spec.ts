@@ -51,7 +51,7 @@ async function loopQueryViolations(code: string, name: string): Promise<any[]> {
   const sourceCode = await readFile(filePath, 'utf-8');
   const ast = parseFile(filePath, sourceCode)!;
   if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode)) as any[];
+  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
   return vs.filter((v) => v.rule === 'loop-query');
 }
 
@@ -60,7 +60,7 @@ describe('Spec 55 §1.4 — non-test loop-query shapes', () => {
     // endless-guessing/src/cron/sweep.ts:94 — the trip count is a literal
     // constant (hour/day/alltime), but it is still a query-in-loop and R3 does
     // not exempt constant-trip loops.
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 const TARGETS: Array<[string, string]> = [
   ['hour', 'hour:2026-01-01T00'],
   ['day', 'day:2026-01-01'],
@@ -86,7 +86,7 @@ export async function replayFanOut() {
     // endless-guessing/src/objects/Leaderboard.ts:113 — a per-delta write inside
     // the loop. R3 keeps it: the loop still issues a write per iteration, and the
     // "remote batch" nuance is a project decision, not a rule exemption.
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 interface Delta { userId: string; handle: string; score: number; answers: number }
 export function applyDeltas(deltas: Delta[]) {
   const stmts: any[] = [];
@@ -107,7 +107,7 @@ export function applyDeltas(deltas: Delta[]) {
     // endless-guessing/src/worker/routes/auth.ts:466 — a sequential uniqueness
     // probe (`SELECT id … WHERE handle = ?`) inside a `while (true)` loop. It is
     // inherently un-batchable, but it is still a query-in-loop and stays.
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 export async function uniquifyHandle(base: string): Promise<string> {
   let handle = base;
   let i = 0;
@@ -134,7 +134,7 @@ describe('loop-query — iterator-callback subject vs body (Spec 68 §13.1)', ()
   // iterator-callback loop to the case where the query sits *inside the callback
   // argument*, not in the subject the method is invoked on.
   it('does not fire when the query is the subject of .map (rows mapped in memory)', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 export function loadAll() {
   return db.prepare('SELECT * FROM items').all()
     .map((r: any) => ({ id: r.id }));
@@ -144,7 +144,7 @@ export function loadAll() {
   });
 
   it('still fires when the query is inside the .forEach callback (per-iteration)', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 export function processRows(ids: string[]) {
   ids.forEach((id) => {
     db.prepare('SELECT * FROM items WHERE id = ?').bind(id).all();

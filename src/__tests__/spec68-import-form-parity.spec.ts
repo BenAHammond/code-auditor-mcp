@@ -38,9 +38,9 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(() => {
-  db.exec('DELETE FROM function_calls');
-  db.exec('DELETE FROM functions');
-  db.exec('DELETE FROM conventions');
+  db.rawSql.exec('DELETE FROM function_calls');
+  db.rawSql.exec('DELETE FROM functions');
+  db.rawSql.exec('DELETE FROM conventions');
 });
 
 afterAll(async () => {
@@ -60,7 +60,7 @@ function key(f: { file: string; line?: number; column?: number; rule: string; se
 }
 
 function insertFunction(opts: { name: string; filePath: string; line: number }): number {
-  const res = db.run(
+  const res = db.rawSql.run(
     `INSERT INTO functions (name, file_path, line_number, body, language, entity_type, component_type, is_exported)
      VALUES (?, ?, ?, NULL, 'typescript', 'function', NULL, 0)`,
     [opts.name, opts.filePath, opts.line],
@@ -157,6 +157,7 @@ function seed(): {
     complexity: 0,
     body: null,
     functionCalls: [],
+    usedImports: [],
     language: 'typescript',
   }));
 
@@ -196,7 +197,7 @@ describe('Spec 68 import-form parity (new analyze(ctx) === old UniversalConventi
     insertConventions(legacyConventions);
 
     const analyzer = new UniversalConventionsAnalyzer();
-    const legacy = await analyzer.analyze(['a.ts'], { indexHandle: db, readSource: getSource });
+    const legacy = await analyzer.analyze(['a.ts'], { indexHandle: db.indexHandle, readSource: getSource });
 
     const newConventions = mineConventionsFromFunctionIndex(functionIndex, [], importForms, CONFIG);
     const fresh = await analyzeConventions(functionIndex, newConventions, [], importForms);
@@ -231,7 +232,7 @@ describe('Spec 68 import-form parity (new analyze(ctx) === old UniversalConventi
     const legacyConventions = mineConventions(db.rawDb, CONFIG, undefined, getSource, undefined);
     insertConventions(legacyConventions);
     const analyzer = new UniversalConventionsAnalyzer();
-    const legacy = await analyzer.analyze(['a.ts'], { indexHandle: db, readSource: getSource });
+    const legacy = await analyzer.analyze(['a.ts'], { indexHandle: db.indexHandle, readSource: getSource });
 
     const allFacts = namedOnly.map((f) => ({
       file: f.file,
@@ -244,6 +245,7 @@ describe('Spec 68 import-form parity (new analyze(ctx) === old UniversalConventi
       complexity: 0,
       body: null,
       functionCalls: [],
+      usedImports: [],
       language: 'typescript',
     }));
     const allImportForms: ImportFormFact[] = [];

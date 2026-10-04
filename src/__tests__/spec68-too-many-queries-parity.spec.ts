@@ -41,14 +41,19 @@ function key(f: { file: string; line?: number; column?: number; severity: string
 
 /** Run the old `checkQueryPatterns` and the new slice, return the identity multisets. */
 async function parity(source: string, path = 'parity.ts') {
-  const ast = parseFile(path, source);
+  // The query-sites producer gates on a DB-provenanced receiver (Spec 69 §10),
+  // so a bare `db` identifier must be declared with a DB-handle type. Prepend the
+  // declaration so every parity snippet exercises the DB-context path both sides
+  // agree on; `checkQueryPatterns` counts by method name and is unaffected.
+  const full = `const db: D1Database = getDb();\n${source}`;
+  const ast = parseFile(path, full);
   expect(ast, `fixture failed to parse`).not.toBeNull();
-  const oldViolations = checkQueryPatterns(ast!, adapter, source, DEFAULT_SCHEMA_CONFIG);
+  const oldViolations = checkQueryPatterns(ast!, adapter, full, DEFAULT_SCHEMA_CONFIG);
   const old = oldViolations
     .map((v) => key({ file: v.file, line: v.line, column: v.column, severity: v.severity }))
     .sort();
 
-  const fresh = await runQuerySitesSlice([{ path, content: source }]);
+  const fresh = await runQuerySitesSlice([{ path, content: full }], undefined, 'sqlite');
   const nu = fresh
     .map((f) => key(f))
     .sort();
@@ -154,6 +159,7 @@ describe('Spec 68 too-many-queries parity (new analyze(ctx) === old checkQueryPa
     const fresh = await runQuerySitesSlice(
       [{ path: 'parity.ts', content: SIX_QUERIES }],
       { maxQueriesPerFunction: 10 },
+      'sqlite',
     );
     const nu = fresh.map((f) => key(f)).sort();
     expect(nu).toEqual(old);
@@ -165,7 +171,8 @@ describe('Spec 69 R2 — nested-closure double-count is gone', () => {
   // `outer` issues 2 of its own queries; `inner` issues 6. The legacy walk counts
   // all 8 in `outer` (its text encloses `inner`'s) and 6 in `inner`. The located
   // fact attributes each site once to its innermost function.
-  const NESTED = `function outer() {
+  const NESTED = `const db: D1Database = getDb();
+function outer() {
   db.query("SELECT 1");
   db.query("SELECT 2");
   const inner = () => {
@@ -179,7 +186,7 @@ describe('Spec 69 R2 — nested-closure double-count is gone', () => {
 }`;
 
   it('attributes each site to its innermost enclosing function', async () => {
-    const facts = await buildQuerySites([{ path: 'parity.ts', content: NESTED }]);
+    const facts = await buildQuerySites([{ path: 'parity.ts', content: NESTED }], 'sqlite');
     const outer = facts.filter((f) => f.functionName === 'outer');
     const inner = facts.filter((f) => f.functionName === 'inner');
     expect(outer).toHaveLength(2);
@@ -187,11 +194,11 @@ describe('Spec 69 R2 — nested-closure double-count is gone', () => {
   });
 
   it('reports the outer function true count (2), not the shared 8', async () => {
-    const fresh = await runQuerySitesSlice([{ path: 'parity.ts', content: NESTED }]);
+    const fresh = await runQuerySitesSlice([{ path: 'parity.ts', content: NESTED }], undefined, 'sqlite');
     // Only `inner` (6 > 5) fires; `outer` (2 ≤ 5) does not — it no longer inherits
     // the closure's six sites.
     expect(fresh.map((f) => f.symbol).sort()).toEqual(['inner']);
-    expect(fresh[0].line).toBe(4); // the arrow's start line
+    expect(fresh[0].line).toBe(5); // the arrow's start line (after the db declaration)
   });
 
   it('the legacy walk double-counts the same fixture (the defect this removes)', async () => {

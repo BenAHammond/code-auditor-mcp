@@ -49,9 +49,9 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(() => {
-  db.exec('DELETE FROM style_class_usage');
-  db.exec('DELETE FROM style_defined_classes');
-  db.exec('DELETE FROM style_declarations');
+  db.rawSql.exec('DELETE FROM style_class_usage');
+  db.rawSql.exec('DELETE FROM style_defined_classes');
+  db.rawSql.exec('DELETE FROM style_declarations');
   _usageId = 0;
   _definedId = 0;
   resetTailwindExpander();
@@ -63,7 +63,7 @@ afterAll(async () => {
 });
 
 function insertUsage(u: UsageSeed): void {
-  db.run(
+  db.rawSql.run(
     `INSERT INTO style_class_usage (id, class_name, file_path, line, mechanism, unresolvable)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [++_usageId, u.className, u.filePath, u.line, u.mechanism, u.unresolvable ? 1 : 0],
@@ -71,7 +71,7 @@ function insertUsage(u: UsageSeed): void {
 }
 
 function insertDefined(className: string, filePath: string): void {
-  db.run(
+  db.rawSql.run(
     `INSERT INTO style_defined_classes (id, class_name, file_path) VALUES (?, ?, ?)`,
     [++_definedId, className, filePath],
   );
@@ -79,7 +79,7 @@ function insertDefined(className: string, filePath: string): void {
 
 /** One declaration so the legacy `analyze()` does not early-return on an empty index. */
 function insertMinimalDeclaration(): void {
-  db.run(
+  db.rawSql.run(
     `INSERT INTO style_declarations
       (id, property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash)
      VALUES (1, 'color', 'red', NULL, 'css', 'seed.css', 1, NULL, NULL, NULL, 'hash-seed')`,
@@ -101,14 +101,14 @@ async function parity(usages: UsageSeed[], defined: Array<{ className: string; f
   // undefined-class finding (other detectors may fire on the seed declaration, but
   // they are not the rule under test).
   const analyzer = new UniversalStylesAnalyzer();
-  const legacy = await analyzer.analyze(['page.tsx', 'a.css'], { indexHandle: db, tailwindClasses });
+  const legacy = await analyzer.analyze(['page.tsx', 'a.css'], { indexHandle: db.indexHandle, tailwindClasses });
   const old = legacy.violations
     .filter((v: Violation) => v.rule === 'styles/undefined-class')
     .map((v: Violation) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
     .sort();
 
   // Phase: re-read the SAME rows into the camelCase facts and run the rule.
-  const usageRows = db.query('SELECT class_name, file_path, line, mechanism, unresolvable FROM style_class_usage') as Array<{
+  const usageRows = db.rawSql.query('SELECT class_name, file_path, line, mechanism, unresolvable FROM style_class_usage') as Array<{
     class_name: string;
     file_path: string;
     line: number;
@@ -122,7 +122,26 @@ async function parity(usages: UsageSeed[], defined: Array<{ className: string; f
     mechanism: r.mechanism as 'className' | 'class',
     unresolvable: !!r.unresolvable,
   }));
-  const definedClasses = CORPUS_PRODUCERS['defined-classes'].process({}, { indexHandle: db });
+  // Item 4 2b — `defined-classes` is now derived from the `style-declarations`
+  // phase fact (declaration selector `context` → class name, the same regex the
+  // legacy `style_defined_classes` writers used). Seed the fact's declarations
+  // with the class names in their `context`, mirroring what the real producer
+  // emits for a stylesheet, and pass that as the producer's upstream fact.
+  const declarations = defined.map((d) => ({
+    property: 'color',
+    rawValue: 'red',
+    normalizedValue: null,
+    mechanism: 'css',
+    filePath: d.filePath,
+    line: 1,
+    context: `.${d.className}`,
+    variantContext: null,
+    tokenRef: null,
+  }));
+  const definedClasses = CORPUS_PRODUCERS['defined-classes'].process(
+    { 'style-declarations': [{ declarations, tokens: [], classUsage: [] }] },
+    { indexHandle: db.indexHandle },
+  );
 
   const fresh = (await undefinedClassRule.analyze({
     facts: {

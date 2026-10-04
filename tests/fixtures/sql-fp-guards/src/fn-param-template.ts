@@ -6,10 +6,10 @@
  * passes compile-time constants, but the analyzer sees a non-constant
  * reference flowing into SQL.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 export function queryTable(table: string): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   db.prepare(
     `SELECT * FROM ${table} WHERE active = 1`
   ).bind().all();

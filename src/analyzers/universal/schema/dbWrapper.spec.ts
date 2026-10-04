@@ -40,13 +40,14 @@ function analyze(code: string): {
 
   const provenanceContext = buildProvenanceContext(ast, tsAdapter, code, {
     mode: 'hybrid',
-    dbReceiverNames: DEFAULT_SCHEMA_CONFIG.dbReceiverNames,
     dbBindingNames: DEFAULT_SCHEMA_CONFIG.dbBindingNames,
     dbWrapperNames: DEFAULT_SCHEMA_CONFIG.dbWrapperNames,
   });
 
   const refs = findTableReferences(ast, tsAdapter, code, {
-    config: DEFAULT_SCHEMA_CONFIG,
+    // Spec 70 §13 — SQL-content extraction needs a named dialect; without it the
+    // wrapped `d1(…)` / `q(…)` SQL abstains as cannot-fire and the table set is empty.
+    config: { ...DEFAULT_SCHEMA_CONFIG, sqlDialect: 'sqlite' },
     provenanceContext,
   });
 

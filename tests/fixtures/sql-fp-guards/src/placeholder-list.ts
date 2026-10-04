@@ -6,10 +6,10 @@
  * via `.all(...filePaths)`, so the interpolated text is only placeholders,
  * never raw data.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 export function getHashesForFiles(filePaths: string[]): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   const placeholders = filePaths.map(() => '?').join(', ');
   db.prepare(
     `SELECT file_path, name FROM functions WHERE file_path IN (${placeholders})`

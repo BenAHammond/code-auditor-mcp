@@ -10,10 +10,11 @@
  * is written) and asserts the multisets are equal and non-empty. It is the pin
  * that lets §15 delete the reducer without losing the golden reference.
  *
- * The fixture is a two-file cycle (foo ⇄ bar) plus one unexported dead function
- * (`orphan`). That reliably fires all six rules — circular-dependency/break-cycles
- * (the cycle), tight-coupling/reduce-coupling (both files share the `cycle`
- * cluster at cohesion 1.0), orphaned-nodes/review-orphans (the dead function).
+ * The fixture is a mutual call cycle between two packages (modA ⇄ modB) plus one
+ * unexported dead function (`orphan`). That reliably fires all six rules —
+ * circular-dependency/break-cycles (the cross-file cycle), tight-coupling/
+ * reduce-coupling (modA ↔ modB: every edge crosses the package boundary, so
+ * coupling is 1.0), orphaned-nodes/review-orphans (the dead function).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -51,18 +52,19 @@ function key(f: { file: string; line?: number; column?: number; rule: string; se
 
 const FIXTURE: ReadonlyArray<{ path: string; source: string }> = [
   {
-    path: '/fixture/cycle/a.ts',
+    path: '/fixture/modA/a.ts',
     source: [
-      'import { bar } from "./b";',
-      'export function foo() { bar(); }',
+      'import { bar, baz } from "./b";',
+      'export function foo() { bar(); baz(); }',
       'function orphan() { return 1; }',
     ].join('\n'),
   },
   {
-    path: '/fixture/cycle/b.ts',
+    path: '/fixture/modB/b.ts',
     source: [
       'import { foo } from "./a";',
       'export function bar() { foo(); }',
+      'export function baz() { foo(); }',
     ].join('\n'),
   },
 ];
@@ -117,5 +119,21 @@ describe('Spec 68 dependency-graph parity (new analyze(ctx) === old reducer)', (
 
     expect(nu).toEqual(old);
     expect(nu.length).toBeGreaterThan(0);
+  });
+
+  // Spec 68 board §6.1 — the three advisory rules (break-cycles / reduce-coupling /
+  // review-orphans) are emitted from the dependency-health *suggestions*, not the
+  // issues. The multiset assertion above proves parity but not that each advisory
+  // rule actually fires; this pins that liveness explicitly on the cycle+orphan
+  // fixture (modA ⇄ modB mutual cycle → break-cycles + reduce-coupling; the dead
+  // `orphan` function → review-orphans).
+  it('the three advisory rules fire (break-cycles / reduce-coupling / review-orphans)', async () => {
+    const { flat } = buildFacts();
+    const findings = await analyzeDependencyGraph(flat, {});
+    const ids = findings.map((f) => f.ruleId);
+
+    expect(ids).toContain('break-cycles');
+    expect(ids).toContain('reduce-coupling');
+    expect(ids).toContain('review-orphans');
   });
 });

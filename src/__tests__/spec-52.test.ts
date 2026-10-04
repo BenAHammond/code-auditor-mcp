@@ -46,7 +46,7 @@ async function loopQueryCount(fileName: string): Promise<number> {
   const analyzer = new UniversalDataAccessAnalyzer();
   // Spec 55 R3 excludes test files by default; these fixtures are positive
   // loop-query controls under __tests__, so re-enable analysis on them.
-  const violations = await (analyzer as any).analyzeAST(ast, tsAdapter, { skipTestFiles: false }, sourceCode);
+  const violations = await (analyzer as any).analyzeAST(ast, tsAdapter, { skipTestFiles: false, dialect: 'sqlite' }, sourceCode);
   return violations.filter((v: { rule: string }) => v.rule === 'loop-query').length;
 }
 
@@ -257,25 +257,40 @@ describe('Spec-52 R1 — countQueries edge cases', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('Spec-52 R2 — upsert write classification', () => {
-  const FORMS: Array<{ name: string; sql: string }> = [
+  // §13 (Spec 70) — parseSqlTables now parses, and node-sql-parser's sqlite
+  // grammar covers the three *non*-ON-CONFLICT upsert forms. The ON CONFLICT
+  // forms are a postgresql-ism the sqlite grammar cannot parse, so the clause is
+  // truncated at the top-level `ON CONFLICT` and the `INSERT INTO … VALUES`
+  // prefix parsed (Spec 70 disposition) — the write facts are answered, and the
+  // reference carries `conflictClauseTruncated` to record that an upsert action
+  // was present but unread, rather than a silent clean or a blanked write.
+  const SQLITE_FORMS: Array<{ name: string; sql: string }> = [
     { name: 'INSERT OR IGNORE INTO', sql: 'INSERT OR IGNORE INTO feature_flags (key, enabled) VALUES (?, ?)' },
     { name: 'INSERT OR REPLACE INTO', sql: 'INSERT OR REPLACE INTO feature_flags (key, enabled) VALUES (?, ?)' },
     { name: 'REPLACE INTO', sql: 'REPLACE INTO feature_flags (key, enabled) VALUES (?, ?)' },
-    { name: 'INSERT ... ON CONFLICT ... DO UPDATE', sql: 'INSERT INTO feature_flags (key, enabled) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET enabled = excluded.enabled' },
   ];
 
-  for (const form of FORMS) {
+  for (const form of SQLITE_FORMS) {
     it(`${form.name} extracts feature_flags as type 'insert'`, () => {
-      const refs = parseSqlTables(form.sql, { line: 1, column: 1 }, form.sql);
-      const inserts = refs.filter((r) => r.table === 'feature_flags' && r.type === 'insert');
+      const { references } = parseSqlTables(form.sql, { line: 1, column: 1 }, form.sql, new Set(), 'sqlite', null);
+      const inserts = references.filter((r) => r.table === 'feature_flags' && r.type === 'insert');
       expect(inserts.length, `expected "${form.name}" to be an insert write`).toBe(1);
     });
   }
 
+  it('INSERT ... ON CONFLICT ... DO UPDATE truncates the clause and extracts the insert write (flagged)', () => {
+    const sql = 'INSERT INTO feature_flags (key, enabled) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET enabled = excluded.enabled';
+    const { references, unparseable } = parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(), 'sqlite', null);
+    expect(unparseable).toHaveLength(0);
+    const insert = references.filter((r) => r.table === 'feature_flags' && r.type === 'insert');
+    expect(insert).toHaveLength(1);
+    expect(insert[0].conflictClauseTruncated).toBe(true);
+  });
+
   it('REPLACE() string function is NOT read as a REPLACE INTO write', () => {
     const sql = 'SELECT REPLACE(name, "a", "b") AS clean FROM users';
-    const refs = parseSqlTables(sql, { line: 1, column: 1 }, sql);
-    const inserts = refs.filter((r) => r.type === 'insert');
+    const { references } = parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(), 'sqlite', null);
+    const inserts = references.filter((r) => r.type === 'insert');
     expect(inserts.length).toBe(0);
   });
 });
@@ -294,33 +309,36 @@ describe('Spec-52 R2 — upsert classifier edge cases', () => {
 
   for (const form of CASE_INSENSITIVE) {
     it(`${form.name} → type 'insert'`, () => {
-      const refs = parseSqlTables(form.sql, { line: 1, column: 1 }, form.sql);
-      expect(refs.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
+      const { references } = parseSqlTables(form.sql, { line: 1, column: 1 }, form.sql, new Set(), 'sqlite', null);
+      expect(references.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
     });
   }
 
   it('backtick-quoted table in INSERT OR IGNORE → type insert', () => {
     const sql = 'INSERT OR IGNORE INTO `feature_flags` (`key`) VALUES (?)';
-    const refs = parseSqlTables(sql, { line: 1, column: 1 }, sql);
-    expect(refs.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
+    const { references } = parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(), 'sqlite', null);
+    expect(references.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
   });
 
   it('double-quoted table in REPLACE INTO → type insert', () => {
     const sql = 'REPLACE INTO "feature_flags" (key) VALUES (?)';
-    const refs = parseSqlTables(sql, { line: 1, column: 1 }, sql);
-    expect(refs.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
+    const { references } = parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(), 'sqlite', null);
+    expect(references.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
   });
 
-  it('ON CONFLICT ... DO NOTHING is still an insert write', () => {
+  it('ON CONFLICT ... DO NOTHING truncates the clause and extracts the insert write (flagged)', () => {
     const sql = 'INSERT INTO feature_flags (key) VALUES (?) ON CONFLICT (key) DO NOTHING';
-    const refs = parseSqlTables(sql, { line: 1, column: 1 }, sql);
-    expect(refs.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
+    const { references, unparseable } = parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(), 'sqlite', null);
+    expect(unparseable).toHaveLength(0);
+    const insert = references.filter((r) => r.table === 'feature_flags' && r.type === 'insert');
+    expect(insert).toHaveLength(1);
+    expect(insert[0].conflictClauseTruncated).toBe(true);
   });
 
   it('plain INSERT INTO (no upsert) regression → type insert', () => {
     const sql = 'INSERT INTO feature_flags (key) VALUES (?)';
-    const refs = parseSqlTables(sql, { line: 1, column: 1 }, sql);
-    expect(refs.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
+    const { references } = parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(), 'sqlite', null);
+    expect(references.filter((r) => r.table === 'feature_flags' && r.type === 'insert').length).toBe(1);
   });
 });
 
@@ -339,8 +357,8 @@ describe('Spec-52 R4 — interpolated-SQL line anchoring', () => {
       '}',
     ].join('\n');
 
-    const refs = parseSqlTables(SQL, { line: 2, column: 21 }, source);
-    const genQueue = refs.find((r) => r.table === 'generation_queue');
+    const { references } = parseSqlTables(SQL, { line: 2, column: 21 }, source, new Set(), 'sqlite', null);
+    const genQueue = references.find((r) => r.table === 'generation_queue');
     expect(genQueue).toBeDefined();
     expect(genQueue!.location.line).toBe(2);
   });
@@ -355,8 +373,8 @@ describe('Spec-52 R4 — interpolated-SQL line anchoring', () => {
     ].join('\n');
 
     // `generation_queue` sits on the 2nd line of the SQL → source line 3.
-    const refs = parseSqlTables(multiSql, { line: 2, column: 21 }, source);
-    const genQueue = refs.find((r) => r.table === 'generation_queue');
+    const { references } = parseSqlTables(multiSql, { line: 2, column: 21 }, source, new Set(), 'sqlite', null);
+    const genQueue = references.find((r) => r.table === 'generation_queue');
     expect(genQueue).toBeDefined();
     expect(genQueue!.location.line).toBe(3);
   });
@@ -364,7 +382,7 @@ describe('Spec-52 R4 — interpolated-SQL line anchoring', () => {
   it('throws (does not mis-place) when the SQL text is absent from the source', () => {
     const sqlText = 'SELECT * FROM generation_queue WHERE target_slug IN (${placeholders})';
     const source = 'const s = "SELECT 1";';
-    expect(() => parseSqlTables(sqlText, { line: 1, column: 1 }, source)).toThrow(/SQL text not found in source/);
+    expect(() => parseSqlTables(sqlText, { line: 1, column: 1 }, source, new Set(), 'sqlite', null)).toThrow(/SQL text not found in source/);
   });
 });
 

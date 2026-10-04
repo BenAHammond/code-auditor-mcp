@@ -20,7 +20,7 @@ const データベース = drizzle(env.DB as any);
 // Direct query — triggers missing-org-filter, unfiltered-query
 async function 注文を取得(ユーザーID: number) {
   const 注文 = await データベース.query(
-    'SELECT * FROM 注文 WHERE ユーザーID = $1',
+    'SELECT * FROM 注文 WHERE "ユーザーID" = $1',
     [ユーザーID]
   );
   return 注文;

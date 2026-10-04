@@ -5,12 +5,12 @@
  * Ternary choosing between two compile-time constants is safe, but
  * the analyzer can't evaluate the branch.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 const USE_PROD = true;
 
 export function queryConditional(): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   const table = USE_PROD ? 'users' : 'users_staging';
   db.prepare(
     `SELECT * FROM ${table} LIMIT 10`

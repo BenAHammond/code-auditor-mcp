@@ -39,11 +39,11 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(() => {
-  db.exec('DELETE FROM schema_usage');
-  db.exec('DELETE FROM graph_cache');
-  db.exec('DELETE FROM functions');
-  db.exec('DELETE FROM hotspot_scores');
-  db.exec('DELETE FROM coverage_data');
+  db.rawSql.exec('DELETE FROM schema_usage');
+  db.rawSql.exec('DELETE FROM graph_cache');
+  db.rawSql.exec('DELETE FROM functions');
+  db.rawSql.exec('DELETE FROM hotspot_scores');
+  db.rawSql.exec('DELETE FROM coverage_data');
 });
 
 afterAll(async () => {
@@ -63,7 +63,7 @@ interface Seed {
 }
 
 function insertUsage(s: Seed): void {
-  db.run(
+  db.rawSql.run(
     `INSERT INTO schema_usage
       (table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, origin)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -91,12 +91,12 @@ async function parity(seeds: Seed[]): Promise<Record<string, string[]>> {
 
   const analyzer = new CrossDomainAnalyzer();
   const legacy = await analyzer.analyze(['a.ts'], {
-    indexHandle: db,
+    indexHandle: db.indexHandle,
     schemaLifecycle: { enableTransactionBoundaryRisk: false },
   });
 
   // Re-read the SAME rows (the legacy path's only input) and convert to facts.
-  const rows = db.query(
+  const rows = db.rawSql.query(
     'SELECT table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, origin FROM schema_usage',
   ) as Array<{
     table_name: string;
@@ -250,7 +250,7 @@ function insertFunction(
   usedImports: string | null = null,
   isExported: number = 0,
 ): void {
-  db.run(
+  db.rawSql.run(
     'INSERT INTO functions (id, name, file_path, used_imports, is_exported) VALUES (?, ?, ?, ?, ?)',
     [id, name, filePath, usedImports, isExported],
   );
@@ -258,7 +258,7 @@ function insertFunction(
 
 /** Insert one `graph_cache` `call` edge (node_key → neighbor_key, both id strings). */
 function insertCallEdge(fromId: number, toId: number): void {
-  db.run(
+  db.rawSql.run(
     "INSERT INTO graph_cache (graph_type, node_key, neighbor_key, weight) VALUES ('call', ?, ?, 1.0)",
     [String(fromId), String(toId)],
   );
@@ -268,8 +268,8 @@ function insertCallEdge(fromId: number, toId: number): void {
  *  rule reads — the same two tables the legacy `resolveCallGraphContext` +
  *  `expandWrittenTables` queried. */
 function readCallGraph(): CallGraphFact {
-  const funcs = db.query('SELECT id, name, file_path, line_number, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; line_number: number | null; used_imports: string | null; is_exported: number }>;
-  const edges = db.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
+  const funcs = db.rawSql.query('SELECT id, name, file_path, line_number, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; line_number: number | null; used_imports: string | null; is_exported: number }>;
+  const edges = db.rawSql.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
   const callEdges: Array<{ fromId: number; toId: number }> = [];
   for (const e of edges) {
     const fromId = parseInt(e.node_key, 10);
@@ -282,7 +282,11 @@ function readCallGraph(): CallGraphFact {
       name: f.name,
       filePath: f.file_path,
       lineNumber: f.line_number ?? null,
-      usedImports: f.used_imports ?? null,
+      // Item 4 2b — the call-graph fact now carries `usedImports` as an array
+      // (re-derived from `function-index`), not the raw JSON column string. Parse
+      // the seeded `used_imports` JSON string so the fact shape matches the new
+      // `CallGraphFact` type (the rule's provenance test is `array.includes(pkg)`).
+      usedImports: f.used_imports ? (JSON.parse(f.used_imports) as string[]) : [],
       isExported: f.is_exported === 1,
     })),
     callEdges,
@@ -296,7 +300,7 @@ async function parityMultiTableWrite(seeds: Seed[], txnTableMax: number): Promis
 
   const analyzer = new CrossDomainAnalyzer();
   const legacy = await analyzer.analyze(['a.ts'], {
-    indexHandle: db,
+    indexHandle: db.indexHandle,
     schemaLifecycle: {
       enableWrittenNeverRead: false,
       enableReadNeverWritten: false,
@@ -305,7 +309,7 @@ async function parityMultiTableWrite(seeds: Seed[], txnTableMax: number): Promis
     },
   });
 
-  const rows = db.query(
+  const rows = db.rawSql.query(
     'SELECT table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, origin FROM schema_usage',
   ) as Array<{
     table_name: string;
@@ -492,7 +496,7 @@ async function parityNoValidatorReachable(
 
   const analyzer = new CrossDomainAnalyzer();
   const legacy = await analyzer.analyze(['a.ts'], {
-    indexHandle: db,
+    indexHandle: db.indexHandle,
     schemaLifecycle: {
       enableWrittenNeverRead: false,
       enableReadNeverWritten: false,
@@ -501,7 +505,7 @@ async function parityNoValidatorReachable(
     validatorBypass: vb,
   });
 
-  const rows = db.query(
+  const rows = db.rawSql.query(
     'SELECT table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line, origin FROM schema_usage',
   ) as Array<{
     table_name: string;
@@ -664,7 +668,7 @@ function insertFunctionWithLine(
   usedImports: string | null = null,
   isExported: number = 0,
 ): void {
-  db.run(
+  db.rawSql.run(
     'INSERT INTO functions (id, name, file_path, line_number, used_imports, is_exported) VALUES (?, ?, ?, ?, ?, ?)',
     [id, name, filePath, lineNumber, usedImports, isExported],
   );
@@ -673,7 +677,7 @@ function insertFunctionWithLine(
 /** Insert one `hotspot_scores` row (the `target` is the legacy join key
  *  `file_path || ':' || name`). */
 function insertHotspot(target: string, type: string, score: number): void {
-  db.run('INSERT INTO hotspot_scores (target, type, score) VALUES (?, ?, ?)', [target, type, score]);
+  db.rawSql.run('INSERT INTO hotspot_scores (target, type, score) VALUES (?, ?, ?)', [target, type, score]);
 }
 
 /** Insert one `coverage_data` row (line_number required by the UNIQUE key). */
@@ -686,7 +690,7 @@ function insertCoverage(
   source: string | null = null,
   importedAt: string | null = null,
 ): void {
-  db.run(
+  db.rawSql.run(
     'INSERT INTO coverage_data (function_name, file_path, line_number, basis, covered, source, imported_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     [functionName, filePath, lineNumber, basis, covered, source, importedAt],
   );
@@ -694,21 +698,21 @@ function insertCoverage(
 
 /** Re-read the `hotspot_scores` rows into the `hotspot` fact the rule reads. */
 function readHotspot(): HotspotFact[] {
-  const rows = db.query('SELECT target, type, score FROM hotspot_scores') as Array<{ target: string; type: string; score: number }>;
+  const rows = db.rawSql.query('SELECT target, type, score FROM hotspot_scores') as Array<{ target: string; type: string; score: number }>;
   return rows.map((r) => ({ target: r.target, type: r.type, score: r.score }));
 }
 
 /** Re-read the `coverage_data` rows (plus the measured-count/source metadata the
  *  legacy `detectUncoveredRisk` read) into the `coverage` fact the rule reads. */
 function readCoverage(): CoverageFact {
-  const measuredRow = db.query("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")[0] as { cnt: number } | undefined;
-  const sourceRow = db.query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1")[0] as { source: string | null; imported_at: string | null } | undefined;
-  const entries = db.query('SELECT function_name, file_path, covered FROM coverage_data') as Array<{ function_name: string; file_path: string; covered: number }>;
+  const measuredRow = db.rawSql.query("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")[0] as { cnt: number } | undefined;
+  const sourceRow = db.rawSql.query("SELECT source, imported_at FROM coverage_data WHERE basis = 'measured' LIMIT 1")[0] as { source: string | null; imported_at: string | null } | undefined;
+  const entries = db.rawSql.query('SELECT function_name, file_path, covered FROM coverage_data') as Array<{ function_name: string; file_path: string; covered: number }>;
   return {
     measuredCount: measuredRow?.cnt ?? 0,
     source: sourceRow?.source ?? null,
     importedAt: sourceRow?.imported_at ?? null,
-    lastFullSync: db.getMeta('last_full_sync_timestamp'),
+    lastFullSync: db.meta.getMeta('last_full_sync_timestamp'),
     entries: entries.map((e) => ({ functionName: e.function_name, filePath: e.file_path, covered: e.covered === 1 })),
   };
 }
@@ -722,7 +726,7 @@ async function parityUncoveredRisk(
 ): Promise<string[]> {
   const analyzer = new CrossDomainAnalyzer();
   const legacy = await analyzer.analyze(['a.ts'], {
-    indexHandle: db,
+    indexHandle: db.indexHandle,
     schemaLifecycle: {
       enableWrittenNeverRead: false,
       enableReadNeverWritten: false,

@@ -3,8 +3,8 @@
  * SQL-name resolution it feeds.
  *
  * The producer extracts `const <id> = pgTable|mysqlTable|sqliteTable('<table>',
- * …)` bindings; the `table-catalog` corpus reducer folds them into an alias map
- * (proven in `spec68-table-catalog.spec.ts`). This test proves the chain that
+ * …)` bindings; the `resolution` corpus reducer folds them into an alias map
+ * (proven in `spec68-resolution.spec.ts`). This test proves the chain that
  * the alias map exists to close: `missing-org-filter` reads a query whose
  * `.from(sampleOwnership)` extracted the *identifier* (`sampleOwnership`), and
  * must resolve it to the SQL name (`sample_ownership`) so the DDL-declared
@@ -15,12 +15,17 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../languages/index.js';
 import { PRODUCERS } from '../phase/producers.js';
 import { dataAccessRules } from '../phase/rules/dataAccess.js';
-import type { ParsedFile, SchemaObject, ResolvedQuery, TableCatalog, Finding } from '../phase/types.js';
+import type { ParsedFile, SchemaObject, ResolvedQuery, ResolutionFact, ResolutionColumn, Finding } from '../phase/types.js';
 
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
 });
+
+/** A constraint-free column; `unique` is the only flag these fixtures toggle. */
+function col(name: string, unique = false): ResolutionColumn {
+  return { name, primaryKey: false, unique, notNull: false, foreignKey: null };
+}
 
 function objects(path: string, source: string): SchemaObject[] {
   const file: ParsedFile = { file: path, format: 'typescript', source };
@@ -36,7 +41,7 @@ describe('Spec 68 schema-objects producer', () => {
     ].join('\n'));
 
     expect(out).toEqual([
-      { file: '/fixture/schema.ts', identifier: 'sampleOwnership', table: 'sample_ownership', uniqueColumns: [] },
+      { file: '/fixture/schema.ts', identifier: 'sampleOwnership', table: 'sample_ownership', uniqueColumns: [], primaryKeyColumns: [] },
     ]);
   });
 
@@ -81,6 +86,7 @@ describe('Spec 68 schema-objects producer', () => {
         identifier: 'apiKey',
         table: 'api_key',
         uniqueColumns: ['prefix', 'hashedToken', 'hashed_token'],
+        primaryKeyColumns: ['id'],
       },
     ]);
   });
@@ -92,10 +98,10 @@ describe('Spec 68 schema-objects producer', () => {
 
 describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', () => {
   /** Drive `missing-org-filter` directly with a catalog carrying the alias map. */
-  function analyzeOrg(calls: ResolvedQuery[], catalog: TableCatalog): Finding[] {
+  function analyzeOrg(calls: ResolvedQuery[], catalog: ResolutionFact): Finding[] {
     const rule = dataAccessRules.find((r) => r.id === 'missing-org-filter')!;
     const ctx = {
-      facts: { 'data-access-calls': calls, 'table-catalog': catalog },
+      facts: { 'data-access-calls': calls, 'resolution': catalog },
       formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
       thresholds: {},
     };
@@ -113,6 +119,13 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
       queryText: `SELECT * FROM ${tables[0]}`,
       hasOrganizationFilter: false,
       hasFilter: false,
+      // Spec 70 R2 — AST-derived SQL facts, defaulted to `cannot-fire`.
+      isWrite: false,
+      isMassWrite: false,
+      isUpsert: false,
+      isRawInsert: false,
+      insertColumns: null,
+      sqlWhereColumns: null,
       hasParameterizedQuery: false,
       hasSqlInjectionRisk: false,
       sqlEscaped: false,
@@ -120,9 +133,11 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
     };
   }
 
-  const catalog: TableCatalog = {
-    tables: [{ name: 'sample_ownership', source: '/fixture/schema.sql', columns: ['organization_id'], uniqueColumns: [] }],
+  const catalog: ResolutionFact = {
+    tables: [{ name: 'sample_ownership', source: '/fixture/schema.sql', columns: [col('organization_id')] }],
     aliases: { sampleOwnership: 'sample_ownership' },
+    classes: [],
+    interfaces: [],
   };
 
   it('fires on a tenant table queried through its ORM identifier', () => {
@@ -134,20 +149,24 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
   });
 
   it('stays quiet when the same query carries an organization predicate', () => {
-    // §69 Fix 1 — the rule re-derives the predicate from `queryText` + thresholds,
-    // not the producer's `hasOrganizationFilter` fact field (baked with the default
-    // config). The predicate must live in the text to stay quiet.
+    // Spec 70 R2 — the raw-SQL comparison arm (`WHERE organization_id = $1`) is
+    // now derived from the parsed AST and threaded as `sqlWhereColumns` (site #5),
+    // not read out of `queryText`. The producer supplies it when the corpus named
+    // a dialect; this fixture supplies the fact directly.
     const scoped = {
       ...call(['sampleOwnership']),
       queryText: 'SELECT * FROM sample_ownership WHERE organization_id = $1',
+      sqlWhereColumns: ['organization_id'],
     };
     expect(analyzeOrg([scoped], catalog)).toEqual([]);
   });
 
   it('stays quiet on a non-tenant table (no tenant column)', () => {
-    const nonTenant: TableCatalog = {
-      tables: [{ name: 'sample_ownership', source: '/fixture/schema.sql', columns: ['id'], uniqueColumns: [] }],
+    const nonTenant: ResolutionFact = {
+      tables: [{ name: 'sample_ownership', source: '/fixture/schema.sql', columns: [col('id')] }],
       aliases: { sampleOwnership: 'sample_ownership' },
+      classes: [],
+      interfaces: [],
     };
     expect(analyzeOrg([call(['sampleOwnership'])], nonTenant)).toEqual([]);
   });
@@ -155,9 +174,11 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
   it('stays quiet when the filter is an equality lookup on a UNIQUE column (bootstrap lookup)', () => {
     // `eq(apiKey.prefix, …)` binds a UNIQUE column → at most one row, so tenant
     // scoping is structurally unnecessary. The catalog carries the Drizzle name.
-    const uniqueCatalog: TableCatalog = {
-      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: ['workspace_id'], uniqueColumns: ['prefix'] }],
+    const uniqueCatalog: ResolutionFact = {
+      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: [col('workspace_id'), col('prefix', true)] }],
       aliases: { apiKey: 'api_key' },
+      classes: [],
+      interfaces: [],
     };
     const bootstrap = {
       ...call(['apiKey']),
@@ -172,9 +193,11 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
     // neither tenant nor key. (`workspaceId` would be the tenant column here, so
     // it is *correctly* quiet after §69 Fix 1; this test needs a non-tenant
     // non-unique column to keep firing.)
-    const idOnlyCatalog: TableCatalog = {
-      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: ['workspace_id'], uniqueColumns: [] }],
+    const idOnlyCatalog: ResolutionFact = {
+      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: [col('workspace_id')] }],
       aliases: { apiKey: 'api_key' },
+      classes: [],
+      interfaces: [],
     };
     const byName = {
       ...call(['apiKey']),
@@ -187,9 +210,11 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
     // `eq(apiKey.id, …)` selects at most one row — but by a caller-supplied
     // surrogate id, which is precisely the IDOR case. The natural-UNIQUE quiet
     // must not extend to a primary key (Thing 1 correction).
-    const pkCatalog: TableCatalog = {
-      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: ['workspace_id'], uniqueColumns: [] }],
+    const pkCatalog: ResolutionFact = {
+      tables: [{ name: 'api_key', source: '/fixture/api_key.ts', columns: [col('workspace_id')] }],
       aliases: { apiKey: 'api_key' },
+      classes: [],
+      interfaces: [],
     };
     const byId = {
       ...call(['apiKey']),
@@ -202,12 +227,14 @@ describe('Spec 68 missing-org-filter resolves ORM identifiers (Drizzle chain)', 
     // The openstatus `monitors.go` three-table join shape: a UNIQUE column in a
     // JOIN … ON equality scopes how rows match, not which rows return, so it is
     // not a bootstrap lookup. The raw-SQL matcher must read WHERE clauses only.
-    const joinCatalog: TableCatalog = {
+    const joinCatalog: ResolutionFact = {
       tables: [
-        { name: 'monitor', source: '/fixture/monitor.ts', columns: ['workspace_id'], uniqueColumns: ['slug'] },
-        { name: 'private_location', source: '/fixture/pl.ts', columns: ['workspace_id'], uniqueColumns: ['token'] },
+        { name: 'monitor', source: '/fixture/monitor.ts', columns: [col('workspace_id'), col('slug', true)] },
+        { name: 'private_location', source: '/fixture/pl.ts', columns: [col('workspace_id'), col('token', true)] },
       ],
       aliases: {},
+      classes: [],
+      interfaces: [],
     };
     const joined = {
       ...call(['monitor', 'private_location']),

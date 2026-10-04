@@ -60,11 +60,11 @@ describe('audit pagination (cached auditId workflow)', () => {
       violations,
     };
 
-    const auditId = await db.storeAuditResults(runResult, projectRoot);
+    const auditId = await db.auditResults.storeAuditResults(runResult, projectRoot);
     expect(auditId).toMatch(/^audit_/);
 
     const page = async (offset: number, limit: number) => {
-      const cached = await db.getAuditResults(auditId);
+      const cached = await db.auditResults.getAuditResults(auditId);
       expect(cached).not.toBeNull();
       const all = getAllViolationsFromStored(cached!);
       const slice = all.slice(offset, offset + limit);

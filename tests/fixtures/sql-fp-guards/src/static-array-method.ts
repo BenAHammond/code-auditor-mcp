@@ -5,12 +5,12 @@
  * Static array transformed via .map().join() is safe, but the analyzer
  * can't resolve the result as a compile-time constant.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 const COLUMNS = ['id', 'name', 'email'] as const;
 
 export function queryWithColumns(): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   const cols = COLUMNS.map(c => `\`${c}\``).join(', ');
   db.prepare(
     `SELECT ${cols} FROM users`

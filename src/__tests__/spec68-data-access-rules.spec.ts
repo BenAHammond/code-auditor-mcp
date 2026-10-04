@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import type { ResolvedQuery, ThresholdValues, Finding, TableCatalog } from '../phase/types.js';
+import type { ResolvedQuery, ThresholdValues, Finding, ResolutionFact } from '../phase/types.js';
 import { dataAccessRules } from '../phase/rules/dataAccess.js';
 
 /** A minimal ResolvedQuery with the irrelevant fields defaulted. */
@@ -29,6 +29,14 @@ function q(overrides: Partial<ResolvedQuery> = {}): ResolvedQuery {
     queryText: '',
     hasOrganizationFilter: false,
     hasFilter: false,
+    // Spec 70 R2 — AST-derived SQL facts, defaulted to the producer's
+    // `cannot-fire` values (absent = false/empty/null).
+    isWrite: false,
+    isMassWrite: false,
+    isUpsert: false,
+    isRawInsert: false,
+    insertColumns: null,
+    sqlWhereColumns: null,
     hasParameterizedQuery: false,
     hasSqlInjectionRisk: false,
     sqlEscaped: false,
@@ -36,12 +44,12 @@ function q(overrides: Partial<ResolvedQuery> = {}): ResolvedQuery {
   };
 }
 
-function analyze(ruleId: string, calls: ResolvedQuery[], thresholds: ThresholdValues = {}, catalog?: TableCatalog): Finding[] {
+function analyze(ruleId: string, calls: ResolvedQuery[], thresholds: ThresholdValues = {}, catalog?: ResolutionFact): Finding[] {
   const rule = dataAccessRules.find((r) => r.id === ruleId)!;
   const ctx = {
     facts: {
       'data-access-calls': calls,
-      'table-catalog': catalog ?? { tables: [], aliases: {} },
+      'resolution': catalog ?? { tables: [], aliases: {}, classes: [], interfaces: [] },
     },
     formats: ['typescript', 'tsx', 'javascript'] as const,
     thresholds,
@@ -93,7 +101,7 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
   describe('unfiltered-query', () => {
     it('flags a filterless UPDATE as an unfiltered write', () => {
       const out = analyze('unfiltered-query', [
-        q({ queryText: 'UPDATE users SET active = 0', tables: ['users'], hasFilter: false, method: 'db.run' }),
+        q({ queryText: 'UPDATE users SET active = 0', tables: ['users'], hasFilter: false, isMassWrite: true, isWrite: true, method: 'db.run' }),
       ]);
       expect(out).toHaveLength(1);
       expect(out[0].message).toContain('Unfiltered write');
@@ -101,7 +109,7 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
 
     it('stays quiet on an UPDATE carrying a WHERE clause', () => {
       const out = analyze('unfiltered-query', [
-        q({ queryText: 'UPDATE users SET active = 0 WHERE id = ?', tables: ['users'], hasFilter: true }),
+        q({ queryText: 'UPDATE users SET active = 0 WHERE id = ?', tables: ['users'], hasFilter: true, isMassWrite: true, isWrite: true }),
       ]);
       expect(out).toEqual([]);
     });
@@ -117,7 +125,7 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
       const goFile = { file: '/fixture/app.go' };
 
       const update = analyze('unfiltered-query', [
-        q({ queryText: 'UPDATE users SET active = 0', tables: ['users'], hasFilter: false, method: 'db.run', ...goFile }),
+        q({ queryText: 'UPDATE users SET active = 0', tables: ['users'], hasFilter: false, isMassWrite: true, isWrite: true, method: 'db.run', ...goFile }),
       ]);
       expect(update).toHaveLength(1);
       expect(update[0].message).toContain('Unfiltered write');
@@ -152,9 +160,11 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
     });
 
     it('flags a filterless read of a DDL-only tenant table (Tier 3) — §69 Fix 4', () => {
-      const catalog: TableCatalog = {
-        tables: [{ name: 'orders', source: '/fixture/schema.sql', columns: ['organization_id'], uniqueColumns: [] }],
+      const catalog: ResolutionFact = {
+        tables: [{ name: 'orders', source: '/fixture/schema.sql', columns: [{ name: 'organization_id', primaryKey: false, unique: false, notNull: false, foreignKey: null }] }],
         aliases: {},
+        classes: [],
+        interfaces: [],
       };
       const out = analyze(
         'unfiltered-query',
@@ -176,14 +186,14 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
   });
 
   describe('missing-org-filter (INSERT column-list — Spec 68 §9)', () => {
-    /** `missing-org-filter` additionally reads the `table-catalog` fact; Tier 1
+    /** `missing-org-filter` additionally reads the `resolution` fact; Tier 1
      *  tenancy comes from the `orgFilterTables` threshold, so the catalog is empty. */
     function analyzeOrg(ruleId: string, calls: ResolvedQuery[], thresholds: ThresholdValues = {}): Finding[] {
       const rule = dataAccessRules.find((r) => r.id === ruleId)!;
       const ctx = {
         facts: {
           'data-access-calls': calls,
-          'table-catalog': { tables: [] as Array<{ name: string; source: string; columns: string[] }>, aliases: {} },
+          'resolution': { tables: [], aliases: {}, classes: [], interfaces: [] },
         },
         formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
         thresholds,
@@ -195,14 +205,14 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
 
     it('raw-SQL INSERT that sets the tenant column in its column list is quiet', () => {
       const out = analyzeOrg('missing-org-filter', [
-        q({ queryText: 'INSERT INTO users (organization_id, name) VALUES ($1, $2)', tables: ['users'], method: 'db.run' }),
+        q({ queryText: 'INSERT INTO users (organization_id, name) VALUES ($1, $2)', tables: ['users'], isRawInsert: true, insertColumns: ['organization_id', 'name'], method: 'db.run' }),
       ], tenant);
       expect(out).toEqual([]);
     });
 
     it('raw-SQL INSERT that omits the tenant column fires (row would be unscoped)', () => {
       const out = analyzeOrg('missing-org-filter', [
-        q({ queryText: 'INSERT INTO users (name, email) VALUES ($1, $2)', tables: ['users'], method: 'db.run' }),
+        q({ queryText: 'INSERT INTO users (name, email) VALUES ($1, $2)', tables: ['users'], isRawInsert: true, insertColumns: ['name', 'email'], method: 'db.run' }),
       ], tenant);
       expect(out).toHaveLength(1);
       expect(out[0].message).toContain('does not set the organization/tenant column');
@@ -211,14 +221,14 @@ describe('Spec 68 data-access rules (analyze over ResolvedQuery)', () => {
 
     it('a positional INSERT with no column list is quiet (every column is set)', () => {
       const out = analyzeOrg('missing-org-filter', [
-        q({ queryText: 'INSERT INTO users VALUES ($1, $2, $3)', tables: ['users'], method: 'db.run' }),
+        q({ queryText: 'INSERT INTO users VALUES ($1, $2, $3)', tables: ['users'], isRawInsert: true, insertColumns: null, method: 'db.run' }),
       ], tenant);
       expect(out).toEqual([]);
     });
 
     it('a Go raw-SQL INSERT omitting the tenant column fires — format-agnostic (§9)', () => {
       const out = analyzeOrg('missing-org-filter', [
-        q({ queryText: 'INSERT INTO users (name, email) VALUES ($1, $2)', tables: ['users'], method: 'db.Exec', file: '/fixture/app.go' }),
+        q({ queryText: 'INSERT INTO users (name, email) VALUES ($1, $2)', tables: ['users'], isRawInsert: true, insertColumns: ['name', 'email'], method: 'db.Exec', file: '/fixture/app.go' }),
       ], tenant);
       expect(out).toHaveLength(1);
       expect(out[0].message).toContain('does not set the organization/tenant column');

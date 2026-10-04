@@ -50,7 +50,8 @@ async function f(collection: any) {
 
 /** Control: a genuine raw-SQL entry point must still be flagged. */
 const RAW_CONTROL = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 async function f(modeArg: string) {
   await db.raw(\`SELECT * FROM t WHERE mode = '\${modeArg}'\`);
 }

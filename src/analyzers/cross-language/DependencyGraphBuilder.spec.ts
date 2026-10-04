@@ -232,9 +232,31 @@ describe('DependencyGraphBuilder SCC — a singleton child beside a cycle', () =
 });
 
 describe('DependencyGraphBuilder tight-coupling', () => {
-  it('flags a 3-node mutually-calling cluster', async () => {
+  it('flags two clusters whose mutual edges dominate their internal edges', async () => {
+    // modA and modB are two distinct packages; every edge crosses the boundary
+    // (4 cross, 0 internal) → coupling 1.0, above the 0.7 threshold.
+    const entities = [
+      entity('a1', 'alpha', { file: 'src/modA/a1.ts' }),
+      entity('a2', 'beta', { file: 'src/modA/a2.ts' }),
+      entity('b1', 'gamma', { file: 'src/modB/b1.ts' }),
+      entity('b2', 'delta', { file: 'src/modB/b2.ts' }),
+    ];
+    const references = [ref('a1', 'b1'), ref('a1', 'b2'), ref('b1', 'a1'), ref('b2', 'a2')];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    const issue = health.issues.find(i => i.type === 'tight-coupling');
+    expect(issue).toBeDefined();
+    expect(issue!.affectedNodes.sort()).toEqual(['a1', 'a2', 'b1', 'b2']);
+    expect(issue!.description).toContain('modA ↔ modB');
+  });
+
+  it('does not flag a single cohesive cluster (no cluster pair)', async () => {
     // All three nodes live in one package (cluster "modA") and only call each
-    // other → cohesion 1.0, above the 0.7 threshold.
+    // other → this is cohesion (good design), not coupling. The old metric
+    // flagged it; the pairwise metric has no pair to measure, so it must not.
     const entities = [
       entity('a', 'alpha', { file: 'src/modA/a.ts' }),
       entity('b', 'beta', { file: 'src/modA/b.ts' }),
@@ -246,18 +268,38 @@ describe('DependencyGraphBuilder tight-coupling', () => {
     const graph = await builder.buildGraph(entities, references);
     const health = await builder.analyzeDependencyHealth(graph);
 
-    const issue = health.issues.find(i => i.type === 'tight-coupling');
-    expect(issue).toBeDefined();
-    expect(issue!.affectedNodes).toEqual(['a', 'b', 'c']);
+    expect(health.issues.find(i => i.type === 'tight-coupling')).toBeUndefined();
   });
 
-  it('does not flag a 2-node cluster (below the minimum size of 3)', async () => {
-    // Coupling over a tiny cluster is meaningless; the guard is `length < 3`.
+  it('does not flag a pair with fewer than 3 cross edges (a lone dependency)', async () => {
+    // Two clusters with only two mutual edges (a single back-and-forth call) is
+    // a dependency, not tight coupling; the guard is `cross < 3`.
     const entities = [
       entity('a', 'alpha', { file: 'src/modA/a.ts' }),
       entity('b', 'beta', { file: 'src/modA/b.ts' }),
+      entity('c', 'gamma', { file: 'src/modB/c.ts' }),
+      entity('d', 'delta', { file: 'src/modB/d.ts' }),
     ];
-    const references = [ref('a', 'b'), ref('b', 'a')];
+    const references = [ref('a', 'c'), ref('c', 'a')];
+
+    const builder = new DependencyGraphBuilder({ includeTestFiles: false });
+    const graph = await builder.buildGraph(entities, references);
+    const health = await builder.analyzeDependencyHealth(graph);
+
+    expect(health.issues.find(i => i.type === 'tight-coupling')).toBeUndefined();
+  });
+
+  it('does not flag a one-directional dependency (shared utility, not coupling)', async () => {
+    // Three functions in modA all call `getDB` in modB, but modB never calls back
+    // into modA — a popular dependency, not mutual coupling. Coupling requires
+    // edges in both directions.
+    const entities = [
+      entity('a1', 'alpha', { file: 'src/modA/a1.ts' }),
+      entity('a2', 'beta', { file: 'src/modA/a2.ts' }),
+      entity('a3', 'gamma', { file: 'src/modA/a3.ts' }),
+      entity('db', 'getDB', { file: 'src/modB/db.ts' }),
+    ];
+    const references = [ref('a1', 'db'), ref('a2', 'db'), ref('a3', 'db')];
 
     const builder = new DependencyGraphBuilder({ includeTestFiles: false });
     const graph = await builder.buildGraph(entities, references);

@@ -1,34 +1,33 @@
 /**
- * Shared mock DB interface for cross-domain fixture.
+ * D1 database handle for the cross-domain fixture.
  *
- * Provides .exec() and .prepare()/.bind()/.run()/get() patterns that the
- * schema analyzer recognizes as DB operations (dbReceiverNames includes 'db').
+ * `getDB()` is annotated to return a real `D1Database` handle (Spec 69 §10 S5f,
+ * form-5), and `export const db = getDB()` carries that provenance to the
+ * importing files (`transfer.ts`, `audit-log.ts`, …). A mock with no provenanced
+ * client anywhere in its chain would be honestly not-a-handle — the resolver
+ * does not learn to accept mocks, so the fixture models a real handle instead.
  */
 
-export interface PreparedStatement {
-  bind(...params: any[]): PreparedStatement;
-  run(): void;
-  get(): any;
-  all(): any[];
+export interface D1Result<T = unknown> {
+  results?: T[];
+  meta?: unknown;
 }
 
-export interface MockDB {
-  exec(sql: string): void;
-  prepare(sql: string): PreparedStatement;
+export interface D1PreparedStatement {
+  bind(...params: unknown[]): D1PreparedStatement;
+  run(): Promise<D1Result>;
+  get(): unknown;
+  all(): Promise<D1Result>;
 }
 
-export function getDB(): MockDB {
-  const stmt = {
-    bind(..._params: any[]): PreparedStatement { return stmt; },
-    run(): void {},
-    get(): any { return null; },
-    all(): any[] { return []; },
-  };
+export interface D1Database {
+  exec(sql: string): Promise<D1Result>;
+  prepare(sql: string): D1PreparedStatement;
+}
 
-  return {
-    exec(_sql: string): void {},
-    prepare(_sql: string): PreparedStatement { return stmt; },
-  };
+export function getDB(): D1Database {
+  // In-memory stand-in. The resolver reads the declared return type, not this body.
+  return {} as D1Database;
 }
 
 export const db = getDB();

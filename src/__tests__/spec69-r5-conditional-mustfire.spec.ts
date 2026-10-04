@@ -36,15 +36,12 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../languages/index.js';
-import { LanguageRegistry } from '../languages/LanguageRegistry.js';
-import { parseFile } from '../languages/adapterBridge.js';
-import { PRODUCERS } from '../phase/producers.js';
+import { buildDataAccessCalls } from '../phase/runner.js';
 import { dataAccessRules } from '../phase/rules/dataAccess.js';
 import type {
-  ParsedFile,
   ResolvedQuery,
   ThresholdValues,
-  TableCatalog,
+  ResolutionFact,
   Finding,
 } from '../phase/types.js';
 
@@ -53,34 +50,21 @@ beforeAll(async () => {
   await initParsers();
 });
 
-function calls(path: string, source: string): ResolvedQuery[] {
-  const adapter = LanguageRegistry.getInstance().getAdapterForFile(path);
-  const ast = parseFile(path, source)!;
-  const file: ParsedFile = {
-    file: path,
-    format: 'typescript',
-    source,
-    ast,
-    adapter: adapter!,
-  };
-  try {
-    return PRODUCERS['data-access-calls']['typescript'].process(file);
-  } finally {
-    ast.dispose?.();
-  }
+function calls(path: string, source: string): Promise<ResolvedQuery[]> {
+  return buildDataAccessCalls([{ path, content: source }], 'sqlite');
 }
 
 function analyze(
   ruleId: string,
   produced: ResolvedQuery[],
   thresholds: ThresholdValues = {},
-  catalog?: TableCatalog,
+  catalog?: ResolutionFact,
 ): Finding[] {
   const rule = dataAccessRules.find((r) => r.id === ruleId)!;
   const ctx = {
     facts: {
       'data-access-calls': produced,
-      'table-catalog': catalog ?? { tables: [], aliases: {} },
+      'resolution': catalog ?? { tables: [], aliases: {}, classes: [], interfaces: [] },
     },
     formats: ['typescript', 'tsx', 'javascript', 'go'] as const,
     thresholds,
@@ -93,8 +77,8 @@ const TENANT = {
   orgFilterTables: ['user_organizations', 'raw_certifier_data', 'sample_ownership'],
 };
 
-describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#318)', () => {
-  describe('1. isOrganizationAdmin — `if (organizationId) conditions.push(eq(org…))`', () => {
+describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#318)', async () => {
+  describe('1. isOrganizationAdmin — `if (organizationId) conditions.push(eq(org…))`', async () => {
     const source = [
       'export async function isOrganizationAdmin(userId, organizationId) {',
       "  const conditions = [eq(user_organizations.userId, userId), eq(user_organizations.role, 'admin')];",
@@ -105,8 +89,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       '}',
     ].join('\n');
 
-    it('resolves the org predicate as some-paths, branch named', () => {
-      const out = calls('/fixture/r5-is-org-admin.ts', source);
+    it('resolves the org predicate as some-paths, branch named', async () => {
+      const out = await calls('/fixture/r5-is-org-admin.ts', source);
       const org = out[0].resolvedWhere?.elements.find((e) =>
         e.text.includes('organizationId'),
       );
@@ -117,8 +101,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       });
     });
 
-    it('still fires critical, message names the absent branch', () => {
-      const out = analyze('missing-org-filter', calls('/fixture/r5-is-org-admin.ts', source), TENANT);
+    it('still fires critical, message names the absent branch', async () => {
+      const out = analyze('missing-org-filter', await calls('/fixture/r5-is-org-admin.ts', source), TENANT);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');
       expect(out[0].message).toContain('organizationId');
@@ -126,7 +110,7 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
     });
   });
 
-  describe('2. getUploadStatus — `if (organizationIds && organizationIds.length > 0) conditions.push(inArray(org…))`', () => {
+  describe('2. getUploadStatus — `if (organizationIds && organizationIds.length > 0) conditions.push(inArray(org…))`', async () => {
     const source = [
       'export function getUploadStatus(uploadId, userId, organizationIds) {',
       '  const conditions = [eq(raw_certifier_data.id, uploadId), eq(raw_certifier_data.userId, userId)];',
@@ -137,8 +121,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       '}',
     ].join('\n');
 
-    it('resolves the inArray predicate as some-paths, compound branch named', () => {
-      const out = calls('/fixture/r5-upload-status.ts', source);
+    it('resolves the inArray predicate as some-paths, compound branch named', async () => {
+      const out = await calls('/fixture/r5-upload-status.ts', source);
       const org = out[0].resolvedWhere?.elements.find((e) =>
         e.text.includes('organizationId'),
       );
@@ -149,8 +133,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       });
     });
 
-    it('still fires critical, message names the compound branch', () => {
-      const out = analyze('missing-org-filter', calls('/fixture/r5-upload-status.ts', source), TENANT);
+    it('still fires critical, message names the compound branch', async () => {
+      const out = analyze('missing-org-filter', await calls('/fixture/r5-upload-status.ts', source), TENANT);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');
       expect(out[0].message).toContain('organizationIds && organizationIds.length > 0');
@@ -158,7 +142,7 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
     });
   });
 
-  describe("3. admin data page — `if (organizationId && organizationId !== 'all') conditions.push(eq(org…))`", () => {
+  describe("3. admin data page — `if (organizationId && organizationId !== 'all') conditions.push(eq(org…))`", async () => {
     const source = [
       'export function adminData(organizationId) {',
       '  const conditions = [];',
@@ -169,8 +153,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       '}',
     ].join('\n');
 
-    it('resolves the pushed predicate as some-paths, compound branch named', () => {
-      const out = calls('/fixture/r5-admin-data.ts', source);
+    it('resolves the pushed predicate as some-paths, compound branch named', async () => {
+      const out = await calls('/fixture/r5-admin-data.ts', source);
       expect(out[0].resolvedWhere?.elements).toEqual([
         {
           text: 'eq(raw_certifier_data.organizationId, organizationId)',
@@ -180,8 +164,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       ]);
     });
 
-    it('still fires critical, message names the absent branch', () => {
-      const out = analyze('missing-org-filter', calls('/fixture/r5-admin-data.ts', source), TENANT);
+    it('still fires critical, message names the absent branch', async () => {
+      const out = analyze('missing-org-filter', await calls('/fixture/r5-admin-data.ts', source), TENANT);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');
       expect(out[0].message).toContain("organizationId && organizationId !== 'all'");
@@ -189,7 +173,7 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
     });
   });
 
-  describe('4. sample-ownership stats — ternary `organizationId ? statsQuery.where(eq(org…)) : …`', () => {
+  describe('4. sample-ownership stats — ternary `organizationId ? statsQuery.where(eq(org…)) : …`', async () => {
     const source = [
       'export function sampleStats(organizationId) {',
       '  const statsQuery = db.select().from(sample_ownership);',
@@ -199,8 +183,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       '}',
     ].join('\n');
 
-    it('the producer sees the bare builder, not the ternary predicate', () => {
-      const out = calls('/fixture/r5-sample-ownership.ts', source);
+    it('the producer sees the bare builder, not the ternary predicate', async () => {
+      const out = await calls('/fixture/r5-sample-ownership.ts', source);
       expect(out).toHaveLength(1);
       expect(out[0].hasFilter).toBe(false);
       // The ternary predicate is not a `and(...conditions)` spread, so R3 leaves
@@ -208,15 +192,15 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       expect(out[0].resolvedWhere).toBeUndefined();
     });
 
-    it('still fires critical — a future change must not resolve the ternary to quiet', () => {
-      const out = analyze('missing-org-filter', calls('/fixture/r5-sample-ownership.ts', source), TENANT);
+    it('still fires critical — a future change must not resolve the ternary to quiet', async () => {
+      const out = analyze('missing-org-filter', await calls('/fixture/r5-sample-ownership.ts', source), TENANT);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');
       expect(out[0].ruleId).toBe('missing-org-filter');
     });
   });
 
-  describe('5. admin data base — `query = cond ? baseQuery.where(and(...conditions)) : baseQuery`', () => {
+  describe('5. admin data base — `query = cond ? baseQuery.where(and(...conditions)) : baseQuery`', async () => {
     const source = [
       'export function adminDataBase(organizationId) {',
       '  const conditions = [];',
@@ -229,8 +213,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       '}',
     ].join('\n');
 
-    it('the producer sees the bare builder, not the reassigned predicate', () => {
-      const out = calls('/fixture/r5-admin-data-base.ts', source);
+    it('the producer sees the bare builder, not the reassigned predicate', async () => {
+      const out = await calls('/fixture/r5-admin-data-base.ts', source);
       // The `.where` is applied to `baseQuery` by reassignment in a later
       // statement; `baseQuery`'s own chain carries no predicate, and R3's spread
       // resolution does not cross statements to the reassignment.
@@ -239,8 +223,8 @@ describe('Spec 69 R5 — five conditional tenant-predicate shapes stay firing (#
       expect(out[0].resolvedWhere).toBeUndefined();
     });
 
-    it('still fires critical — a future change must not resolve the reassignment to quiet', () => {
-      const out = analyze('missing-org-filter', calls('/fixture/r5-admin-data-base.ts', source), TENANT);
+    it('still fires critical — a future change must not resolve the reassignment to quiet', async () => {
+      const out = analyze('missing-org-filter', await calls('/fixture/r5-admin-data-base.ts', source), TENANT);
       expect(out).toHaveLength(1);
       expect(out[0].severity).toBe('critical');
       expect(out[0].ruleId).toBe('missing-org-filter');

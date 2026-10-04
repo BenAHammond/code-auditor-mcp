@@ -5,13 +5,13 @@
  * String concatenation with string literals is safe but the analyzer
  * can't resolve the whole expression as a constant.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 const TABLE = 'users';
 const COLUMN = 'id';
 
 export function queryByColumn(): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   db.prepare(
     `SELECT * FROM ` + TABLE + ` WHERE ` + COLUMN + ` = ?`
   ).bind('abc').all();

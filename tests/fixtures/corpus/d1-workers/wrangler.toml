@@ -1,0 +1,14 @@
+# D1/Workers corpus reduction manifest. The `[[d1_databases]]` binding is the
+# dialect signal `detectDialect` reads: a D1 binding is SQLite, so the schema
+# facts in statements.ts / upsert.ts parse under the sqlite dialect instead of
+# abstaining as "dialect undetermined". A real D1/Workers project declares its
+# binding here — the fixture was missing it, which is why
+# `written-never-read` went silent under §13 (no dialect → no schema facts).
+name = "d1-workers"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "app"
+database_id = "00000000-0000-0000-0000-000000000000"

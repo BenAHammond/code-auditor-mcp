@@ -3,7 +3,11 @@
  * Real N+1: INSERT ... RETURNING per iteration in a for loop.
  * The violation SHOULD fire: each iteration performs a DB write.
  */
-import { sql } from './db';
+import Database from 'better-sqlite3';
+
+// Spec 70 R4 — handle proven by the manifest-package import; the INSERT argument
+// is dynamic (interpolated) so R3 cannot prove the handle.
+const db = new Database(':memory:');
 
 interface UserRecord {
   id: string;
@@ -16,9 +20,9 @@ async function syncUsers(users: Array<{ email: string; name: string }>): Promise
 
   for (const user of users) {
     // Each iteration performs INSERT ... RETURNING — real N+1
-    const [record] = await sql<[UserRecord]>(
+    const [record] = await db.prepare(
       `INSERT INTO users (email, name) VALUES ('${user.email}', '${user.name}') RETURNING id, email, created`
-    );
+    ).all();
     results.push(record);
   }
 

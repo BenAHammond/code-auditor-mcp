@@ -43,7 +43,7 @@ interface DeclFields {
 
 function insertDecl(fields: DeclFields): number {
   const id = ++_declId;
-  db.run(`INSERT INTO style_declarations
+  db.rawSql.run(`INSERT INTO style_declarations
     (id, property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [id,
     fields.property ?? 'color',
@@ -61,7 +61,7 @@ function insertDecl(fields: DeclFields): number {
   // `style_defined_classes` table exactly as it does in production.
   if (fields.context) {
     for (const m of fields.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-      db.run('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
+      db.rawSql.run('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
         [m[1], fields.file_path ?? 'src/test.css']);
     }
   }
@@ -70,7 +70,7 @@ function insertDecl(fields: DeclFields): number {
 
 function insertToken(name: string, value: string, mechanism = 'css-custom-property'): number {
   const id = ++_tokenId;
-  db.run(`INSERT INTO style_tokens
+  db.rawSql.run(`INSERT INTO style_tokens
     (id, name, value, file_path, mechanism)
     VALUES (?, ?, ?, ?, ?)`, [id,
     name,
@@ -88,7 +88,7 @@ function insertClassUsage(
   unresolvable: 0 | 1 = 0,
 ): number {
   const id = ++_classId;
-  db.run(`INSERT INTO style_class_usage
+  db.rawSql.run(`INSERT INTO style_class_usage
     (id, class_name, file_path, line, mechanism, unresolvable)
     VALUES (?, ?, ?, ?, ?, ?)`, [id,
     className,
@@ -106,7 +106,7 @@ async function runAnalyzer(
 ): Promise<any[]> {
   const analyzer = new UniversalStylesAnalyzer();
   // Always inject indexHandle from the in-memory DB unless already specified
-  const merged = { indexHandle: db, ...config };
+  const merged = { indexHandle: db.indexHandle, ...config };
   const result = await analyzer.analyze(files, merged);
   // If there were errors, surface them in test output
   if (result.errors.length > 0) {
@@ -121,7 +121,7 @@ async function runAnalyzerFull(
   files: string[] = [],
 ): Promise<any> {
   const analyzer = new UniversalStylesAnalyzer();
-  const merged = { indexHandle: db, ...config };
+  const merged = { indexHandle: db.indexHandle, ...config };
   return analyzer.analyze(files, merged);
 }
 
@@ -149,10 +149,10 @@ beforeAll(async () => {
 
 beforeEach(() => {
   // Clear style tables
-  db.exec('DELETE FROM style_declarations');
-  db.exec('DELETE FROM style_tokens');
-  db.exec('DELETE FROM style_class_usage');
-  db.exec('DELETE FROM style_defined_classes');
+  db.rawSql.exec('DELETE FROM style_declarations');
+  db.rawSql.exec('DELETE FROM style_tokens');
+  db.rawSql.exec('DELETE FROM style_class_usage');
+  db.rawSql.exec('DELETE FROM style_defined_classes');
   _declId = 0;
   _tokenId = 0;
   _classId = 0;
@@ -964,7 +964,7 @@ describe('Detector 4 — Token Bypass', () => {
     // The Tailwind loader seeds `built-in defaults` tokens when the project has
     // no Tailwind config. Those are not the project's tokens — a plain-CSS
     // project must not have raw `#fff` flagged as "bypassing colors.white".
-    db.run(`INSERT INTO style_tokens (id, name, value, file_path, mechanism)
+    db.rawSql.run(`INSERT INTO style_tokens (id, name, value, file_path, mechanism)
       VALUES (9999, 'colors.white', '#ffffff', 'built-in defaults', 'tailwind-theme')`);
     insertDecl({
       property: 'background',
@@ -1494,7 +1494,7 @@ describe('Edge cases', () => {
 
   it('correctly reports filesProcessed and executionTime in result', async () => {
     const analyzer = new UniversalStylesAnalyzer();
-    const result = await analyzer.analyze(['src/fake.ts'], { indexHandle: db });
+    const result = await analyzer.analyze(['src/fake.ts'], { indexHandle: db.indexHandle });
 
     // No declarations in the DB → reports input file count (ran correctly, found nothing)
     expect(result.status.status === 'visitor-ran' ? result.status.filesProcessed : 0).toBe(1);

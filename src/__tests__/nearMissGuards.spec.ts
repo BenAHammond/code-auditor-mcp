@@ -89,7 +89,8 @@ describe('FP 2 — COUNT/WHERE inside SQL is not a receiver', () => {
     // `raw` from the callee instead, so the call is still recognized as a DB
     // call and the interpolation is still flagged.
     const code = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 
 export async function countById(userId: string) {
   const rows = await db.raw(\`SELECT COUNT(*) FROM users WHERE id = \${userId}\`);
@@ -106,7 +107,8 @@ export async function countById(userId: string) {
 
   it('a parameterized COUNT/WHERE query is not flagged at all', async () => {
     const code = `
-import { db } from './db';
+import { Pool } from 'pg';
+const db = new Pool();
 
 export async function countParameterized(userId: string) {
   const rows = await db.query("SELECT COUNT(*) FROM users WHERE id = ?", [userId]);
@@ -230,7 +232,8 @@ export function LegacySave() {
 describe('FP 5 — escapeSql(x) is not raw interpolation', () => {
   it('flags zero sql-injection-risk for interpolation wrapped in a sanitizer', async () => {
     const code = `
-import { db } from './db';
+import { Pool } from 'pg';
+const db = new Pool();
 
 function escapeSql(value: string): string {
   return value.replace(/'/g, "''");
@@ -248,7 +251,8 @@ export async function safeLookup(name: string) {
 
   it('still flags the same interpolation without the sanitizer (control)', async () => {
     const code = `
-import { db } from './db';
+import { Pool } from 'pg';
+const db = new Pool();
 
 export async function unsafeLookup(name: string) {
   const rows = await db.query(\`SELECT * FROM users WHERE name = '\${name}'\`);

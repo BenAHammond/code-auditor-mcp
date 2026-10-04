@@ -22,8 +22,10 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../languages/index.js';
 import { PRODUCERS, noOracleProcessors } from '../phase/producers.js';
-import { oracleShortfall, countOracle, noOracle } from '../phase/oracles.js';
+import { oracleShortfall, countOracle, noOracle, countDdlOps, countExportSymbols } from '../phase/oracles.js';
 import { runPhaseModelOverFiles } from '../phase/phaseModel.js';
+import { parseOne } from '../phase/runner.js';
+import { collectExports } from '../analyzers/receiverResolution.js';
 import type { ParsedFile } from '../phase/types.js';
 
 beforeAll(async () => {
@@ -109,6 +111,89 @@ describe('Spec 69 R1 criterion 2 — per-file shortfall recording', () => {
     // (methods ride on their class symbol, so the emitted count is lower).
     expect(sf!.expected).toBe(3);
     expect(sf!.actual).toBe(1);
+  });
+});
+
+describe('countDdlOps — the oracle counts op-producing statements, not column changes', () => {
+  const file = (source: string): ParsedFile => ({ file: '/x.sql', format: 'sql', source } as ParsedFile);
+
+  it('counts CREATE / DROP / ALTER-RENAME headers', () => {
+    const src = [
+      'CREATE TABLE a (id INT);',
+      'DROP TABLE b;',
+      'ALTER TABLE c RENAME TO d;',
+      'CREATE VIRTUAL TABLE e USING fts5(name);',
+    ].join('\n');
+    expect(countDdlOps(file(src))).toBe(4);
+  });
+
+  it('does not count ALTER TABLE … ADD/DROP/ALTER COLUMN or ADD CONSTRAINT', () => {
+    // These are column/constraint changes recorded in `tableColumns`, not ops.
+    const src = [
+      'ALTER TABLE a ADD COLUMN x INT;',
+      'ALTER TABLE a DROP COLUMN x;',
+      'ALTER TABLE a ALTER COLUMN x TYPE TEXT;',
+      'ALTER TABLE a ADD CONSTRAINT fk FOREIGN KEY (x) REFERENCES b(id);',
+    ].join('\n');
+    expect(countDdlOps(file(src))).toBe(0);
+  });
+
+  it('does not count ALTER TABLE … RENAME COLUMN (a column change)', () => {
+    expect(countDdlOps(file('ALTER TABLE a RENAME COLUMN x TO y;'))).toBe(0);
+  });
+
+  it('distinguishes a table RENAME TO from a column RENAME COLUMN in one program', () => {
+    const src = [
+      'ALTER TABLE a RENAME COLUMN x TO y;',
+      'ALTER TABLE b RENAME TO c;',
+    ].join('\n');
+    expect(countDdlOps(file(src))).toBe(1);
+  });
+});
+
+describe('countExportSymbols — mirrors collectExports (no false shortfalls)', () => {
+  const parse = async (src: string): Promise<ParsedFile> => {
+    const parsed = await parseOne({ path: '/x.ts', content: src });
+    expect(parsed, 'test source should parse').not.toBeNull();
+    return parsed as unknown as ParsedFile;
+  };
+
+  it('counts declaration-wrapped exports', async () => {
+    const f = await parse('export const a = 1;\nexport function b() {}\nexport class C {}');
+    expect(countExportSymbols(f)).toBe(3);
+  });
+
+  it('counts multi-name named re-exports and aliases', async () => {
+    const f = await parse("export { a, b, c };\nexport { d as e } from './x';");
+    expect(countExportSymbols(f)).toBe(4);
+  });
+
+  it('does not count the empty export {}', async () => {
+    const f = await parse('export {};');
+    expect(countExportSymbols(f)).toBe(0);
+  });
+
+  it('counts star re-exports and default identifier exports', async () => {
+    const f = await parse("export * from './x';\nexport default foo;");
+    expect(countExportSymbols(f)).toBe(2);
+  });
+
+  it('does not count an anonymous default export', async () => {
+    const f = await parse('export default function() {};');
+    expect(countExportSymbols(f)).toBe(0);
+  });
+
+  it('agrees with collectExports on a mixed file', async () => {
+    const src = [
+      'export const a = 1;',
+      'export { b, c as d };',
+      'export default function() {};',
+      'export * from "./x";',
+      'export {};',
+      'export class Service {}',
+    ].join('\n');
+    const f = await parse(src);
+    expect(countExportSymbols(f)).toBe(collectExports(f.ast!, f.adapter!, f.source).length);
   });
 });
 

@@ -7,11 +7,11 @@
  * moved to a Stage-4 reducer in Spec 62 Amendment B (B1), so its old path is
  * `createOrgFilterReducer().reduce(allFacts, context)`. This test runs BOTH
  * paths — the reducer over reshaped facts and the new `analyze(ctx)` over the
- * same `data-access-calls` + `table-catalog` facts — and asserts the multisets
+ * same `data-access-calls` + `resolution` facts — and asserts the multisets
  * of identity tuples (file, line, column, severity) are equal and non-empty.
  *
  * The producer half is pinned by construction: `buildDataAccessCalls` runs the
- * same `extractDatabaseCalls` the legacy pipeline ran, and `buildTableCatalog`
+ * same `extractDatabaseCalls` the legacy pipeline ran, and `buildResolution`
  * reduces the DDL fixture through the corpus processor. Feeding the reducer the
  * SAME extracted facts (reshaped into its `Record<file, {calls}>` +
  * `schema.tableColumns` input shape) isolates the *rule* half — the firing
@@ -28,10 +28,10 @@ import { initializeLanguages, initParsers } from '../languages/index.js';
 import { createOrgFilterReducer } from '../pipelineAdapters.js';
 import {
   buildDataAccessCalls,
-  buildTableCatalog,
+  buildResolution,
   analyzeDataAccessCalls,
 } from '../phase/runner.js';
-import type { ResolvedQuery, TableCatalog } from '../phase/types.js';
+import type { ResolvedQuery, ResolutionFact } from '../phase/types.js';
 
 beforeAll(async () => {
   initializeLanguages();
@@ -47,7 +47,7 @@ function key(f: { file: string; line?: number; column?: number; severity: string
  *  exact near-miss the legacy reducer fired on (an IDOR surface: scoped by id,
  *  not by tenant). */
 const PK_SCOPED_QUERY =
-  'import { db } from "./db";\n' +
+  'const db: D1Database = getDb();\n' +
   'export function getProject(id: number) {\n' +
   '  return db.query("SELECT * FROM projects WHERE id = ?", [id]);\n' +
   '}\n';
@@ -67,10 +67,10 @@ function toReducerDataAccess(calls: ResolvedQuery[]): Record<string, { calls: Re
   return daFacts;
 }
 
-/** Reshape the `table-catalog` into the reducer's `schema.tableColumns` input. */
-function toReducerTableColumns(catalog: TableCatalog): Record<string, string[]> {
+/** Reshape the `resolution` into the reducer's `schema.tableColumns` input. */
+function toReducerTableColumns(catalog: ResolutionFact): Record<string, string[]> {
   const tableColumns: Record<string, string[]> = {};
-  for (const table of catalog.tables) tableColumns[table.name] = [...table.columns];
+  for (const table of catalog.tables) tableColumns[table.name] = table.columns.map((c) => c.name);
   return tableColumns;
 }
 
@@ -85,8 +85,8 @@ async function parity(opts: {
   if (opts.ddl) files.push({ path: 'migrations/001_projects.ts', content: opts.ddl });
   if (opts.query) files.push({ path: 'parity.ts', content: opts.query });
 
-  const calls = await buildDataAccessCalls(files);
-  const catalog = await buildTableCatalog(files);
+  const calls = await buildDataAccessCalls(files, 'sqlite');
+  const catalog = await buildResolution(files, 'sqlite');
 
   // Old path — the Stage-4 reducer, fed the same facts reshaped into its shape.
   const reducer = createOrgFilterReducer();
@@ -132,12 +132,18 @@ describe('Spec 68 missing-org-filter parity (new analyze(ctx) === old Stage-4 re
 
   it('a query with an explicit org predicate does not fire', async () => {
     const orgFiltered =
-      'import { db } from "./db";\n' +
+      'const db: D1Database = getDb();\n' +
       'export function getProject(orgId: string, id: number) {\n' +
       '  return db.query("SELECT * FROM projects WHERE org_id = ? AND id = ?", [orgId, id]);\n' +
       '}\n';
     const { old, nu } = await parity({ query: orgFiltered, ddl: DDL });
-    expect(nu).toEqual(old);
+    // The migrated rule reads the AST WHERE columns (`sqlWhereColumns`) and sees
+    // the `org_id` predicate, so it stays quiet. The legacy reducer reads
+    // `hasOrganizationFilter` — an ORM-shape regex (Spec 70 R2 site #5) that has
+    // no raw-SQL arm and cannot see a `WHERE org_id = ?` predicate — so it fires a
+    // false positive on a query that IS tenant-scoped. That divergence is the
+    // point of R2: the AST path is correct where the regex path was blind.
     expect(nu).toEqual([]);
+    expect(old).not.toEqual([]);
   });
 });

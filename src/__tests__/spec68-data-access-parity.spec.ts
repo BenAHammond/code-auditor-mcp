@@ -52,10 +52,10 @@ function key(f: { file: string; line?: number; column?: number; severity: string
 async function parity(ruleId: string, source: string) {
   const ast = parseFile('parity.ts', source);
   expect(ast, `fixture failed to parse`).not.toBeNull();
-  const { violations } = await analyzer.analyzeWithFacts(ast!, adapter, DEFAULT_DATA_ACCESS_CONFIG, source);
+  const { violations } = await analyzer.analyzeWithFacts(ast!, adapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, source);
   const old = violations.filter((v) => v.rule === ruleId).map(key).sort();
 
-  const fresh = await runDataAccessSlice([{ path: 'parity.ts', content: source }]);
+  const fresh = await runDataAccessSlice([{ path: 'parity.ts', content: source }], {}, 'sqlite');
   const nu = fresh.filter((f) => f.ruleId === ruleId).map(key).sort();
 
   return { old, nu };
@@ -74,7 +74,8 @@ describe('Spec 68 data-access parity (new analyze(ctx) === old UniversalDataAcce
   it('sql-injection-risk (raw string-concatenated input)', async () => {
     const { old, nu } = await parity(
       'sql-injection-risk',
-      'import { db } from "./db";\n' +
+      "import { Pool } from 'pg';\n" +
+      'const db = new Pool();\n' +
       'export function getUser(id) {\n' +
       '  return db.query("SELECT * FROM users WHERE id = " + id);\n' +
       '}\n',
@@ -86,7 +87,7 @@ describe('Spec 68 data-access parity (new analyze(ctx) === old UniversalDataAcce
   it('complex-query (six-table join)', async () => {
     const { old, nu } = await parity(
       'complex-query',
-      'import { db } from "./db";\n' +
+      'const db: D1Database = getDb();\n' +
       'export function report() {\n' +
       '  return db.query("SELECT * FROM users JOIN orders JOIN products JOIN categories JOIN inventory JOIN shipments");\n' +
       '}\n',
@@ -98,7 +99,7 @@ describe('Spec 68 data-access parity (new analyze(ctx) === old UniversalDataAcce
   it('unfiltered-query (filterless UPDATE)', async () => {
     const { old, nu } = await parity(
       'unfiltered-query',
-      'import { db } from "./db";\n' +
+      'const db: D1Database = getDb();\n' +
       'export function nuke() {\n' +
       '  return db.exec("UPDATE users SET active = 0");\n' +
       '}\n',
@@ -114,7 +115,7 @@ describe('Spec 68 data-access parity (new analyze(ctx) === old UniversalDataAcce
     // is complex-query only, never a second unfiltered-query finding.
     const { old, nu } = await parity(
       'unfiltered-query',
-      'import { db } from "./db";\n' +
+      'const db: D1Database = getDb();\n' +
       'export function massDelete() {\n' +
       '  return db.exec("DELETE FROM alpha JOIN beta JOIN gamma JOIN delta JOIN epsilon");\n' +
       '}\n',
@@ -126,7 +127,7 @@ describe('Spec 68 data-access parity (new analyze(ctx) === old UniversalDataAcce
   it('complex-query still fires the join-heavy write (the priority is not a suppression)', async () => {
     const { old, nu } = await parity(
       'complex-query',
-      'import { db } from "./db";\n' +
+      'const db: D1Database = getDb();\n' +
       'export function massDelete() {\n' +
       '  return db.exec("DELETE FROM alpha JOIN beta JOIN gamma JOIN delta JOIN epsilon");\n' +
       '}\n',

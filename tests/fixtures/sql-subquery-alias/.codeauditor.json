@@ -1,6 +1,7 @@
 {
   "$schema": "https://code-auditor.vercel.app/schemas/config.json",
   "projectType": "nextjs",
+  "databaseType": "sqlite",
   "rules": {},
   "analyzerConfigs": {
     "schema": {

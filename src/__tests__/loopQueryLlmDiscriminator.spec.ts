@@ -48,13 +48,13 @@ async function loopQueryViolations(code: string, name: string): Promise<any[]> {
   const sourceCode = await readFile(filePath, 'utf-8');
   const ast = parseFile(filePath, sourceCode)!;
   if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode)) as any[];
+  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
   return vs.filter((v) => v.rule === 'loop-query');
 }
 
 describe('loop-query LLM-pipeline discriminator', () => {
   it('suppresses a loop that passes a model client to a per-item extractor (syncBuildsForHeroes shape)', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function syncBuilds(targets: string[]) {
   const model = gatewayDeepseekModel('deepseek-v4-flash');
@@ -71,7 +71,7 @@ async function syncBuilds(targets: string[]) {
   });
 
   it('suppresses a loop whose body calls an LLM action helper by name (aiEmbed shape)', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function reembed(rows: Array<{ id: string; body: string }>) {
   for (const row of rows) {
@@ -86,7 +86,7 @@ async function reembed(rows: Array<{ id: string; body: string }>) {
   });
 
   it('suppresses a loop whose body invokes a member model call (model.chat shape)', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function summarize(items: string[]) {
   const model = new ChatModel();
@@ -100,7 +100,7 @@ async function summarize(items: string[]) {
   });
 
   it('still fires a batchable N+1 with no LLM call (plain query-in-loop)', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function getUserOrders(ids: string[]) {
   for (const id of ids) {
@@ -115,7 +115,7 @@ async function getUserOrders(ids: string[]) {
   it('still fires a query-in-loop behind a generic (non-LLM) helper name', async () => {
     // `extractRows` contains "extract", which is deliberately NOT an LLM signal —
     // a real N+1 must not be suppressed because its helper name looks extraction-ish.
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function migrate(ids: string[]) {
   for (const id of ids) {
@@ -130,7 +130,7 @@ async function migrate(ids: string[]) {
 
 describe('loop-query per-loop dedup (defect #51)', () => {
   it('collapses multiple queries in one loop to a single finding', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function getUserOrders(ids: string[]) {
   for (const id of ids) {
@@ -144,7 +144,7 @@ async function getUserOrders(ids: string[]) {
   });
 
   it('still reports each distinct loop (two separate loops → two findings)', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 
 async function run(ids: string[]) {
   for (const id of ids) {

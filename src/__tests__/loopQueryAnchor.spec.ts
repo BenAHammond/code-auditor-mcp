@@ -44,7 +44,7 @@ async function loopQuery(code: string, name: string): Promise<any[]> {
   const sourceCode = await readFile(filePath, 'utf-8');
   const ast = parseFile(filePath, sourceCode)!;
   if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode)) as any[];
+  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
   return vs.filter((v) => v.rule === 'loop-query');
 }
 
@@ -55,7 +55,7 @@ function colOf(line: string, token: string): number {
 
 describe('loop-query anchor — points at the query receiver, not await', () => {
   it('fluent chain: await db.prepare(…).bind(…).all<T>(…) anchors on db', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 export async function load(ids: string[]) {
   for (const id of ids) {
     const row = await db.prepare("SELECT * FROM t WHERE id = ?").bind(id).all<{ id: string }>();
@@ -72,7 +72,7 @@ export async function load(ids: string[]) {
   });
 
   it('single call: await db.all<T>(…) anchors on db', async () => {
-    const code = `import { db } from './db';
+    const code = `const db: D1Database = getDb();
 export async function load(ids: string[]) {
   for (const id of ids) {
     const rows = await db.all<{ id: string }>("SELECT * FROM t WHERE id = ?", [id]);

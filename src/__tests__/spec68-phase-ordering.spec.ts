@@ -71,7 +71,7 @@ describe('Spec 68 §16.5 — phase ordering (seeded slow processor)', () => {
   });
 
   it('analysis follows corpus-processor completion, not just per-file completion', async () => {
-    // `table-catalog` is a corpus producer reduced from `ddl-declarations` after
+    // `resolution` is a corpus producer reduced from `ddl-declarations` after
     // every file's producers have run. The ordering seam must show the corpus
     // level (and the per-file level) complete before `analyze`.
     const events: string[] = [];

@@ -50,13 +50,15 @@ function key(f: { file: string; line?: number; column?: number; rule: string; se
 async function parity(source: string) {
   const ast = parseFile('parity.ts', source);
   expect(ast, 'fixture failed to parse').not.toBeNull();
-  const { violations } = await analyzer.analyzeWithFacts(ast!, adapter, DEFAULT_DATA_ACCESS_CONFIG, source);
+  const { violations } = await analyzer.analyzeWithFacts(
+    ast!, adapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, source,
+  );
   const old = violations
     .filter((v) => v.rule === 'loop-query')
     .map((v) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
     .sort();
 
-  const fresh = await runLoopQueriesSlice([{ path: 'parity.ts', content: source }]);
+  const fresh = await runLoopQueriesSlice([{ path: 'parity.ts', content: source }], undefined, 'sqlite');
   const nu = fresh
     .filter((f) => f.ruleId === 'loop-query')
     .map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))
@@ -72,7 +74,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
 
   it('a plain N+1 fires once, anchored at the query receiver, with the loop line', async () => {
     const source = [
-      "import { db } from './db';",
+      "const db: D1Database = getDb();",
       '',
       'export function load(ids) {',
       '  for (const id of ids) {',
@@ -96,7 +98,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
 
   it('a loop issuing two queries still fires once (one finding per loop)', async () => {
     const source = [
-      "import { db } from './db';",
+      "const db: D1Database = getDb();",
       '',
       'export function load(ids) {',
       '  for (const id of ids) {',
@@ -112,7 +114,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
 
   it('two separate loops fire twice', async () => {
     const source = [
-      "import { db } from './db';",
+      "const db: D1Database = getDb();",
       '',
       'export function load(ids) {',
       '  for (const id of ids) {',
@@ -130,7 +132,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
 
   it('a nested loop attributes depth into the message', async () => {
     const source = [
-      "import { db } from './db';",
+      "const db: D1Database = getDb();",
       '',
       'export function load(groups) {',
       '  for (const g of groups) {',
@@ -149,7 +151,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
 
   it('a loop with no DB call does not fire (and neither path emits)', async () => {
     const source = [
-      "import { db } from './db';",
+      "const db: D1Database = getDb();",
       '',
       'export function sum(ids) {',
       '  let total = 0;',

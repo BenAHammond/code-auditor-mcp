@@ -1,11 +1,11 @@
 /**
  * Spec 68 §3.2 — the schema slice, end to end: parse → `schema-usage` +
- * `table-catalog` → schema rules → findings.
+ * `resolution` → schema rules → findings.
  *
  * This proves the corpus-processor path once: `unknown-table` reads a fact
- * (`table-catalog`) that is itself *derived* from `ddl-declarations` (DDL), so the
+ * (`resolution`) that is itself *derived* from `ddl-declarations` (DDL), so the
  * slice runs the full §5 chain — per-file schema-usage and ddl-declarations
- * extraction, the table-catalog reduction, then the rule over both facts. A
+ * extraction, the resolution reduction, then the rule over both facts. A
  * `ghost_table` reference against a catalog that only declares `users` fires
  * `unknown-table`; a reference to the declared table does not.
  */
@@ -24,7 +24,7 @@ function ts(source: string): InputFile {
   return { path: '/fixture/sample.ts', content: source };
 }
 
-describe('Spec 68 §3.2 schema slice (parse → schema-usage + table-catalog → rules)', () => {
+describe('Spec 68 §3.2 schema slice (parse → schema-usage + resolution → rules)', () => {
   it('fires unknown-table for a reference absent from the declared catalog', async () => {
     const source = [
       'const migration = `CREATE TABLE users (id INTEGER PRIMARY KEY);`;',
@@ -32,7 +32,7 @@ describe('Spec 68 §3.2 schema slice (parse → schema-usage + table-catalog →
       "  return sql`SELECT * FROM ghost_table`;",
       '}',
     ].join('\n');
-    const findings = await runSchemaSlice([ts(source)]);
+    const findings = await runSchemaSlice([ts(source)], {}, 'sqlite');
     expect(findings.map((f) => f.ruleId)).toContain('unknown-table');
     const finding = findings.find((f) => f.ruleId === 'unknown-table')!;
     expect(finding.severity).toBe('critical');
@@ -46,7 +46,7 @@ describe('Spec 68 §3.2 schema slice (parse → schema-usage + table-catalog →
       '  return sql`SELECT * FROM users`;',
       '}',
     ].join('\n');
-    const findings = await runSchemaSlice([ts(source)]);
+    const findings = await runSchemaSlice([ts(source)], {}, 'sqlite');
     expect(findings.map((f) => f.ruleId)).toEqual([]);
   });
 });

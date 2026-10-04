@@ -5,12 +5,12 @@
  * Config input sanitized via .replace(/'/g, "''") is safe, but the analyzer
  * sees a non-constant value flowing into SQL and flags it.
  */
-import { getDB } from './fake-db';
+import Database from 'better-sqlite3';
 
 const CONFIG = { tableName: "users" };
 
 export function queryFromConfig(): void {
-  const db = getDB();
+  const db = new Database(':memory:');
   const safeName = CONFIG.tableName.replace(/'/g, "''");
   db.prepare(
     `SELECT * FROM ${safeName} WHERE active = 1`

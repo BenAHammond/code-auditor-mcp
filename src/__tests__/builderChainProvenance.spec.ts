@@ -1,82 +1,69 @@
 /**
- * Spec 63 — fluent/builder-chain provenance.
+ * Spec 63 — fluent/builder-chain root resolution (re-anchored on the seam).
  *
  * ORM builder chains (`db.selectFrom('users').selectAll().execute()` for kysely,
  * `db.select().from(users).where(...)` for drizzle) interleave `call_expression`
- * and `member_expression` nodes. The provenance seam's `findRootReceiver` (via
- * `resolveReceiverText`) stopped at the first `call_expression` receiver —
- * returning `null` for `a.b().c().d()` — so every fluent ORM chain lost DB
- * provenance the moment a method call appeared mid-chain.
+ * and `member_expression` nodes. The root-receiver walk must descend *through*
+ * `call_expression` receivers into the call's callee, so a fluent chain still
+ * resolves to its leftmost identifier (`db`) rather than stopping mid-chain.
  *
- * The fix descends through `call_expression` receivers into the call's *callee*,
- * so the root receiver is reached through the chain. These tests pin that at the
- * `isDBProvenanced` level: a DB-rooted fluent chain resolves, a non-DB fluent
- * chain does not (no false positive).
+ * The original test pinned this at the now-deleted `isDBProvenanced` /
+ * `findRootReceiver` (a dead parallel of the resolution seam). Spec 70 R3 deleted
+ * that method-name handle test, so the regression now pins the same walk at
+ * `resolveReceiverRoot` — the seam `identifyHandle`'s declaration-resolution
+ * source actually reads. A DB-rooted fluent chain resolves; a non-DB fluent chain
+ * resolves to its own root (no false provenance).
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initParsers, initializeLanguages, LanguageRegistry } from '../languages/index.js';
 import { parseFile } from '../languages/adapterBridge.js';
-import type { LanguageAdapter, AST, ASTNode } from '../languages/types.js';
-import {
-  buildProvenanceContext,
-  isDBProvenanced,
-  DB_CALL_METHODS,
-} from '../analyzers/provenance.js';
-import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import type { LanguageAdapter, ASTNode } from '../languages/types.js';
+import { resolveReceiverRoot } from '../analyzers/receiverRoot.js';
+import { getCallExpressionCallee } from '../analyzers/provenance.js';
 
 let tsAdapter: LanguageAdapter;
-let tmpDir: string;
 
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
   tsAdapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
   if (!tsAdapter) throw new Error('TypeScript adapter not registered');
-  tmpDir = await mkdtemp(join(tmpdir(), 'ca-builder-chain-'));
 }, 30_000);
 
-function collectCalls(node: ASTNode, out: ASTNode[]): void {
-  if (node.type === 'call_expression') out.push(node);
-  for (const child of node.children ?? []) collectCalls(child, out);
+/** Root of the outermost *method* call's callee in `src`. */
+function rootOf(src: string): string | null {
+  const adapter = LanguageRegistry.getInstance().getAdapterForFile('/fixture/chain.ts')!;
+  const ast = parseFile('/fixture/chain.ts', src)!;
+  try {
+    const calls = adapter.findNodes(ast, { custom: (n: ASTNode) => n.type === 'call_expression' });
+    // A fluent chain is the outermost call whose callee is a `member_expression`
+    // (a `.method(...)`). Factory calls like `drizzle(...)` or `createClient(...)`
+    // have an identifier callee and are skipped; pre-order lists the chain's outer
+    // `.where(...)` before its inner `.select()`/`.from()` members, so `[0]` here is
+    // the full chain. Its callee carries every intermediate `call_expression`, so
+    // resolving it exercises the descend-through-call_expression walk.
+    const outer = calls.find((c) => getCallExpressionCallee(c, adapter)?.type === 'member_expression');
+    if (!outer) return null;
+    const callee = getCallExpressionCallee(outer, adapter)!;
+    return resolveReceiverRoot(callee, adapter, src);
+  } finally {
+    ast.dispose?.();
+  }
 }
 
-async function provenancedLines(code: string, name: string): Promise<number[]> {
-  const filePath = join(tmpDir, `${name}.ts`);
-  await writeFile(filePath, code, 'utf-8');
-  const sourceCode = await readFile(filePath, 'utf-8');
-  const ast: AST = parseFile(filePath, sourceCode)!;
-  const context = buildProvenanceContext(ast, tsAdapter, sourceCode, { mode: 'hybrid' });
-  const calls: ASTNode[] = [];
-  collectCalls(ast.root, calls);
-  return calls
-    .filter((c) =>
-      isDBProvenanced(c, {
-        adapter: tsAdapter,
-        sourceCode,
-        context,
-        methods: DB_CALL_METHODS,
-      }),
-    )
-    .map((c) => c.location.start.line);
-}
-
-describe('builder-chain provenance — fluent ORM chains resolve their root receiver', () => {
-  it('resolves a kysely fluent chain (db.selectFrom().where().selectAll().execute())', async () => {
+describe('builder-chain root resolution — fluent ORM chains resolve their root receiver', () => {
+  it('resolves a kysely fluent chain (db.selectFrom().where().selectAll().execute())', () => {
     const code = `import { Kysely } from 'kysely';
 const db = new Kysely<{ users: { id: number } }>({} as any);
 export function getUser(id: string) {
   return db.selectFrom('users').where('id', '=', id).selectAll().execute();
 }
 `;
-    const lines = await provenancedLines(code, 'kysely');
-    // The terminal .execute() call (line 4) must be DB-provenanced through the chain.
-    expect(lines).toContain(4);
+    expect(rootOf(code)).toBe('db');
   });
 
-  it('resolves a drizzle fluent chain (db.select().from().where())', async () => {
+  it('resolves a drizzle fluent chain (db.select().from().where())', () => {
     const code = `import { drizzle } from 'drizzle-orm/libsql';
 import { createClient } from '@libsql/client';
 const db = drizzle(createClient({ url: 'file:app.db' }));
@@ -84,17 +71,15 @@ export function getUser(id: string) {
   return db.select().from('users' as any).where((s) => s\`id = \${id}\`);
 }
 `;
-    const lines = await provenancedLines(code, 'drizzle');
-    expect(lines).toContain(5);
+    expect(rootOf(code)).toBe('db');
   });
 
-  it('does NOT resolve a non-DB fluent chain (no false positive)', async () => {
+  it('resolves a non-DB fluent chain to its own root (no false provenance)', () => {
     const code = `const client = { items: () => ({ all: () => [] }) };
 export function run() {
   return client.items().all();
 }
 `;
-    const lines = await provenancedLines(code, 'nondb');
-    expect(lines).toHaveLength(0);
+    expect(rootOf(code)).toBe('client');
   });
 });

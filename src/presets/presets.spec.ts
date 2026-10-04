@@ -8,16 +8,12 @@ const ROOT = '/repo';
  *  stay within ("sets the config keys that stack needs and nothing else"). */
 const ALLOWED_KEYS: Record<string, Set<string>> = {
   'data-access': new Set([
-    'dbReceiverNames',
-    'dbCallMethods',
     'dbBindingNames',
     'dbWrapperNames',
     'detection',
     'sanitizerNames',
   ]),
   schema: new Set([
-    'dbReceiverNames',
-    'dbCallMethods',
     'dbBindingNames',
     'dbWrapperNames',
     'sqlTagNames',
@@ -67,8 +63,9 @@ describe('PRESETS registry (Spec 38 R4)', () => {
     expect(knexSources.every((s) => s.kind === 'callee' && s.arg === 0)).toBe(true);
 
     // Prisma tables come from schema.prisma models (auto-discovered), not
-    // tableSources — the preset only needs to recognise the receiver.
-    expect(PRESETS.prisma.config.schema.dbReceiverNames).toContain('prisma');
+    // tableSources — the preset carries no name list (Spec 69 §10): `prisma` is
+    // provenanced by the `@prisma/client` package import, not by a receiver name.
+    expect(Object.keys(PRESETS.prisma.config.schema)).toEqual([]);
 
     // D1 tables come from schema.sql / migration files (fileGateGlobs).
     expect(PRESETS.d1.config.schema.fileGateGlobs).toBeDefined();
@@ -82,24 +79,18 @@ describe('mergePresets — composition (Spec 38 R4)', () => {
     // Both namespaces survive.
     expect(Object.keys(merged).sort()).toEqual(['data-access', 'schema']);
 
-    // Drizzle contributes the ORM table sources; plain-pg contributes the
-    // pool/client receivers. They land in the same namespace without one
-    // wiping the other.
+    // Drizzle contributes the ORM table sources; plain-pg contributes the SQL
+    // tag names. They land in the same namespace without one wiping the other.
     expect(merged.schema.tableSources).toEqual(PRESETS.drizzle.config.schema.tableSources);
-    expect(merged.schema.dbReceiverNames).toEqual(['pool', 'client', 'db', 'database']);
-
-    // Data-access receivers are a superset covering both stacks.
-    const receivers = merged['data-access'].dbReceiverNames as string[];
-    expect(receivers).toContain('db');
-    expect(receivers).toContain('pool');
+    expect(merged.schema.sqlTagNames).toEqual(['sql', 'db']);
   });
 
   it('later preset wins on key collision, and unknown ids are skipped', () => {
-    const merged = mergePresets(['d1', 'prisma', 'does-not-exist']);
-    // prisma (later) wins dbReceiverNames over d1.
-    expect(merged.schema.dbReceiverNames).toEqual(['prisma', 'db']);
-    // d1-only key still present.
-    expect(merged.schema.fileGateGlobs).toBeDefined();
+    const merged = mergePresets(['drizzle', 'knex', 'does-not-exist']);
+    // knex (later) wins tableSources over drizzle.
+    expect(merged.schema.tableSources).toEqual(PRESETS.knex.config.schema.tableSources);
+    // drizzle-only key still present.
+    expect(merged.schema.sqlTagNames).toEqual(['sql', 'db']);
   });
 });
 
@@ -121,14 +112,14 @@ describe('computeEffectiveConfig — preset layer (Spec 38 R4)', () => {
     const result = computeEffectiveConfig({
       filePath: `${ROOT}/src/a.ts`,
       projectRoot: ROOT,
-      analyzerConfigs: { schema: { dbReceiverNames: ['custom'] } },
+      analyzerConfigs: { schema: { dbBindingNames: ['custom'] } },
       presets: [PRESETS.drizzle],
     });
 
     const schema = result.analyzers.find((a) => a.namespace === 'schema')!;
-    const receivers = schema.keys.find((k) => k.key === 'schema.dbReceiverNames')!;
-    expect(receivers.value).toEqual(['custom']);
-    expect(receivers.source).toBe('project-config');
+    const methods = schema.keys.find((k) => k.key === 'schema.dbBindingNames')!;
+    expect(methods.value).toEqual(['custom']);
+    expect(methods.source).toBe('project-config');
   });
 
   it('no preset leaves every key attributed to `default`', () => {

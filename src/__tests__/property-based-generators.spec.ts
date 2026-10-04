@@ -27,7 +27,6 @@ import { UniversalSOLIDAnalyzer, DEFAULT_SOLID_CONFIG } from '../analyzers/unive
 import {
   UniversalDataAccessAnalyzer,
   DEFAULT_DATA_ACCESS_CONFIG,
-  hasWriteVerb,
 } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import { createAuditRunner } from '../auditRunner.js';
 
@@ -56,7 +55,7 @@ async function solidByRule(code: string, name: string, rule: string): Promise<an
 async function dataAccessByRule(code: string, name: string, rule: string): Promise<any[]> {
   const ast = parseFile(`${name}.ts`, code)!;
   if (!ast) throw new Error(`parse failed for ${name}`);
-  const vs = await (dataAccess as any).analyzeAST(ast, adapter, DEFAULT_DATA_ACCESS_CONFIG, code);
+  const vs = await (dataAccess as any).analyzeAST(ast, adapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, code);
   return vs.filter((v: any) => v.rule === rule);
 }
 
@@ -111,10 +110,10 @@ describe('R3 property — solid/class-size (threshold 20)', () => {
 
 describe('R3 property — loop-query', () => {
   const loopBodies = [
-    'for (let i = 0; i < 10; i++) { db.query("SELECT * FROM t WHERE id = ?", [i]); }',
-    'for (const id of ids) { db.query("SELECT * FROM t WHERE id = ?", [id]); }',
-    'for (const k in obj) { db.query("SELECT * FROM t WHERE k = ?", [k]); }',
-    'while (cond) { db.query("SELECT * FROM t WHERE x = ?", [x]); }',
+    'const db: D1Database = getDb();\nfor (let i = 0; i < 10; i++) { db.query("SELECT * FROM t WHERE id = ?", [i]); }',
+    'const db: D1Database = getDb();\nfor (const id of ids) { db.query("SELECT * FROM t WHERE id = ?", [id]); }',
+    'const db: D1Database = getDb();\nfor (const k in obj) { db.query("SELECT * FROM t WHERE k = ?", [k]); }',
+    'const db: D1Database = getDb();\nwhile (cond) { db.query("SELECT * FROM t WHERE x = ?", [x]); }',
   ];
 
   it('a DB query inside a loop fires, under every wrap', async () => {
@@ -130,43 +129,9 @@ describe('R3 property — loop-query', () => {
   });
 
   it('the same query outside a loop does not fire (negative control)', async () => {
-    const code = 'function f(id) { return db.query("SELECT * FROM t WHERE id = ?", [id]); }';
+    const code = 'function f(id) { const db: D1Database = getDb(); return db.query("SELECT * FROM t WHERE id = ?", [id]); }';
     const vs = await dataAccessByRule(code, 'neg', 'loop-query');
     expect(vs).toHaveLength(0);
-  });
-});
-
-describe('R3 property — upsert-write (write-verb classifier)', () => {
-  // Each case's expected classification is independent by inspection (a DML
-  // verb, or an upsert clause, is a write; a SELECT or a `REPLACE()` string
-  // function is not). The classifier must be case-insensitive and respect word
-  // boundaries — `INSERTX`/`XUPDATE` are not `INSERT`/`UPDATE`.
-  const cases: Array<{ sql: string; write: boolean }> = [
-    { sql: 'INSERT INTO t (id) VALUES (1)', write: true },
-    { sql: 'DELETE FROM t WHERE id = 1', write: true },
-    { sql: 'UPDATE t SET x = 1', write: true },
-    { sql: 'REPLACE INTO t (id) VALUES (1)', write: true },
-    { sql: 'INSERT INTO t (id) VALUES (1) ON CONFLICT (id) DO UPDATE SET id = 1', write: true },
-    { sql: 'INSERT INTO t (id) VALUES (1) ON DUPLICATE KEY UPDATE id = 1', write: true },
-    { sql: 'SELECT * FROM t', write: false },
-    { sql: 'SELECT id FROM t WHERE id = 1', write: false },
-    { sql: 'REPLACE(name, "a", "b")', write: false },
-    { sql: 'INSERTX INTO t', write: false },
-    { sql: 'xUPDATE t', write: false },
-  ];
-
-  it('classifies DML verbs as writes and lookalikes as reads, under case mutation', async () => {
-    await fc.assert(
-      fc.asyncProperty(
-        fc.constantFrom(...cases),
-        fc.constantFrom<'as-is' | 'upper' | 'lower'>('as-is', 'upper', 'lower'),
-        async (c, tr) => {
-          const sql = tr === 'upper' ? c.sql.toUpperCase() : tr === 'lower' ? c.sql.toLowerCase() : c.sql;
-          expect(hasWriteVerb(sql)).toBe(c.write);
-        },
-      ),
-      { numRuns: 60 },
-    );
   });
 });
 

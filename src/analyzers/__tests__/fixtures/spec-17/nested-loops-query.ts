@@ -8,9 +8,7 @@
  * - The location is the query-call line, never line 1
  */
 
-export function checkPermissions(db: {
-  query(sql: string, params: unknown[]): unknown[];
-}): void {
+export function checkPermissions(db: D1Database): void {
   const users = ["admin", "editor"];
   const resources = ["page:home", "page:settings", "api:users"];
 

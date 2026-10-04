@@ -1,10 +1,10 @@
 {
-  "note": "Residual receiver-name blind spot in the data-access-calls producer (Spec 68 Thing 2, #312) after the query-builder shape test. Each value is the count of builder-chain call sites (trailing callee method .from/.select/.insert/.update/.delete/.where) the shape-test-augmented extractor still does not admit. The residual is true negatives (Map/Set/cookies/crypto/Stripe receivers sharing a verb) plus a small real miss (a builder whose companion verb lives in a prior statement). Pin it so the next unseen idiom, or an extractor regression, moves a number instead of a quiet report.",
-  "composition": "recall-protocol's 98 is NOT ninety-eight unseen queries. It is ~90% genuine non-queries — Map/Set/Headers/cookies .delete, createHash()/createHmac() .update, Stripe/Slack/tRPC/Hono receivers, this.cache.delete — plus a small real miss (a variable-split builder whose companion verb lives in a prior statement, e.g. baseQuery.where(...)). hhra-org 24 and openstatus 67 are the same mix; blitz 4 likewise. These are residual-true-negatives, not silent findings.",
+  "note": "Residual receiver-name blind spot in the data-access-calls producer (Spec 68 Thing 2, #312) after the query-builder shape test. Each value is the count of builder-chain call sites (trailing callee method .from/.select/.insert/.update/.delete/.where) the shape-test-augmented extractor still does not admit. Re-pinned after Spec 70 R4 changed admission: a receiver whose bare-specifier import is not in the database-packages manifest now reports `unproven` (cannot-fire) and is ADMITTED rather than silently dropped, so the residual shrank from {24,4,67,98} to {11,2,20,55}. What remains is the `not-handle` residue only — receivers that resolve in-repo or to non-DB values. Pin it so the next unseen idiom, or an extractor regression, moves a number instead of a quiet report.",
+  "composition": "The residual is now ~100% genuine non-queries that resolve to `not-handle`: local Map/Set/Headers/timers/URLSearchParams .delete, this.*.delete on in-repo fields, page.request.delete, and createHash()/createHmac() factory returns. The crypto/Stripe/R2/HTTP .update/.delete/.select sites that were previously silent now admit as `unproven` (cannot-fire) under Spec 70 R4 — visible, never silently clean. There is no remaining real-miss (variable-split builder) in the residual: those admit as `unproven` too. hhra-org 11, openstatus 20 and recall-protocol 55 are the same mix; blitz 2 likewise. These are residual-true-negatives, not silent findings.",
   "corpora": {
-    "hhra-org": 24,
-    "blitz": 4,
-    "openstatus": 67,
-    "recall-protocol": 98
+    "hhra-org": 11,
+    "blitz": 2,
+    "openstatus": 20,
+    "recall-protocol": 55
   }
 }

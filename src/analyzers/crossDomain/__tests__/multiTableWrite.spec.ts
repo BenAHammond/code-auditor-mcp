@@ -27,7 +27,7 @@ async function freshDb(): Promise<CodeIndexDB> {
 
 function seedUsage(db: CodeIndexDB, rows: Array<{ table: string; fn: string; type: string }>): void {
   for (const r of rows) {
-    db.run(
+    db.rawSql.run(
       `INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
        VALUES (?, ?, ?, ?, ?)`,
       [r.table, '/test/project/src/app.ts', r.fn, r.type, 1],
@@ -57,7 +57,7 @@ describe('cross-domain/multi-table-write (write-count, honest name)', () => {
     ]);
 
     const result = await analyzer.analyze(['/test/project/src/app.ts'], {
-      indexHandle: db,
+      indexHandle: db.indexHandle,
       projectRoot: '/test/project',
     });
 
@@ -74,7 +74,7 @@ describe('cross-domain/multi-table-write (write-count, honest name)', () => {
     ]);
 
     const result = await analyzer.analyze(['/test/project/src/app.ts'], {
-      indexHandle: db,
+      indexHandle: db.indexHandle,
       projectRoot: '/test/project',
     });
 

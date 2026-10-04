@@ -11,7 +11,7 @@
  * Every producer is run against a fixture of each format it declares; the
  * returned value must not throw, must not be `undefined`, and must match its
  * declared `FactShapes[K]` at the top level (an array for the array facts, a
- * `{ tables: [...] }` object for `table-catalog`, a `{ dropped: {...} }` object
+ * `{ tables: [...] }` object for `resolution`, a `{ dropped: {...} }` object
  * for `migration-history`) and round-trip through JSON. A producer that throws,
  * returns undefined, or returns the wrong shape fails. It was written
  * red-first: before any producer was migrated in §3.2, all eight threw
@@ -19,7 +19,7 @@
  * are live, so the meter reads live continuously — the reversal deleted the
  * stubs, so there is no end-of-work moment where it flips green once.
  *
- * The corpus producer `table-catalog` is not a per-file producer: it is run
+ * The corpus producer `resolution` is not a per-file producer: it is run
  * against complete (empty) upstream facts, not a parsed file.
  */
 
@@ -110,18 +110,20 @@ const FIXTURES: Record<Format, Fixture> = {
 };
 
 /**
- * The fact kinds whose top-level shape is an object, not an array: the five
- * corpus-derived facts each reduce to a single per-corpus value (`table-catalog`
- * → `{ tables }`, `migration-history` → `{ dropped }`, `reachability` →
- * `{ importersOf, packageEntryPoints }`, `call-graph` →
- * `{ functions, callEdges }`, `coverage` → `{ measuredCount, entries }`).
+ * The fact kinds whose top-level shape is an object, not an array: the corpus-
+ * derived facts each reduce to a single per-corpus value (`resolution` →
+ * `{ tables }`, `migration-history` → `{ dropped }`, `reachability` →
+ * `{ importersOf, packageEntryPoints }`, `call-graph` → `{ functions, callEdges }`,
+ * `coverage` → `{ measuredCount, entries }`, `receiver-provenance` →
+ * `{ files, unresolvedImports }`).
  */
 const OBJECT_FACTS: ReadonlySet<FactKind> = new Set<FactKind>([
-  'table-catalog',
+  'resolution',
   'migration-history',
   'reachability',
   'call-graph',
   'coverage',
+  'receiver-provenance',
 ]);
 
 beforeAll(async () => {
@@ -169,8 +171,8 @@ function assertShape(kind: FactKind, value: unknown): void {
   expect(value, `producer for ${kind} returned undefined`).not.toBeUndefined();
   if (OBJECT_FACTS.has(kind)) {
     expect(value, `producer for ${kind} must return an object`).toBeTypeOf('object');
-    if (kind === 'table-catalog') {
-      const catalog = value as FactShapes['table-catalog'];
+    if (kind === 'resolution') {
+      const catalog = value as FactShapes['resolution'];
       expect(Array.isArray(catalog.tables), `producer for ${kind} must expose .tables array`).toBe(true);
       expect(catalog.aliases, `producer for ${kind} must expose .aliases object`).toBeTypeOf('object');
     } else if (kind === 'migration-history') {
@@ -184,6 +186,10 @@ function assertShape(kind: FactKind, value: unknown): void {
       const coverage = value as FactShapes['coverage'];
       expect(typeof coverage.measuredCount, `producer for ${kind} must expose a numeric .measuredCount`).toBe('number');
       expect(Array.isArray(coverage.entries), `producer for ${kind} must expose .entries array`).toBe(true);
+    } else if (kind === 'receiver-provenance') {
+      const rp = value as FactShapes['receiver-provenance'];
+      expect(Array.isArray(rp.files), `producer for ${kind} must expose .files array`).toBe(true);
+      expect(Array.isArray(rp.unresolvedImports), `producer for ${kind} must expose .unresolvedImports array`).toBe(true);
     }
   } else {
     expect(Array.isArray(value), `producer for ${kind} must return an array`).toBe(true);
@@ -230,7 +236,13 @@ describe('Spec 68 §16 guard 1 — producer liveness (Amendment 1)', () => {
   for (const [id, producer] of Object.entries(CORPUS_PRODUCERS)) {
     it(`corpus producer "${id}" produces a live ${producer.produces} from empty upstream facts`, () => {
       const upstream = {} as Record<string, unknown>;
-      for (const need of producer.needs) upstream[need] = [];
+      for (const need of producer.needs) {
+        // An upstream fact's empty value matches its top-level shape: an array
+        // fact is `[]`, an object fact is its empty object. `receiver-provenance`
+        // is the one object fact another corpus producer consumes as a `need`
+        // (`query-sites`), so it must feed `{ files, unresolvedImports }`, not `[]`.
+        upstream[need] = need === 'receiver-provenance' ? { files: [], unresolvedImports: [] } : [];
+      }
       const value = (producer as { process(f: Record<string, unknown>): unknown }).process(upstream);
       assertShape(producer.produces, value);
     });

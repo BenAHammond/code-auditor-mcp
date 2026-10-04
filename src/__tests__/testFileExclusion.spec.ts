@@ -41,11 +41,11 @@ async function dataAccessViolationsAt(code: string, filePath: string): Promise<a
   const sourceCode = await readFile(filePath, 'utf-8');
   const ast = parseFile(filePath, sourceCode)!;
   if (!ast) throw new Error(`Failed to parse ${filePath}`);
-  return (await (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode)) as any[];
+  return (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
 }
 
 /** A loop that eagerly queries on every iteration — a genuine N+1 in production code. */
-const LOOP_QUERY = `import { db } from './db';
+const LOOP_QUERY = `const db: D1Database = getDb();
 export function sweep(ids: string[]) {
   for (const id of ids) {
     db.prepare("SELECT * FROM items WHERE id = ?").bind(id).all();
@@ -54,7 +54,7 @@ export function sweep(ids: string[]) {
 `;
 
 /** An unfiltered UPDATE — a mass-mutation foot-gun, fires unfiltered-query. */
-const UNFILTERED = `import { db } from './db';
+const UNFILTERED = `const db: D1Database = getDb();
 export function nuke() {
   return db.exec("UPDATE users SET active = 0");
 }

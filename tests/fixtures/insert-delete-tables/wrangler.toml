@@ -1,0 +1,13 @@
+name = "insert-delete-tables"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# Spec 70 R1 — the fixture's dialect is declared via its D1 binding, so
+# `detectDialect` resolves sqlite and R3 (a SQL argument that parses as a
+# statement) proves `db` a handle. Under criterion 9 the `getDB(): D1Database`
+# return-type annotation is no longer a handle test, so without this binding the
+# fixture would have no detectable dialect and the SQL would be unparseable.
+[[d1_databases]]
+binding = "DB"
+database_name = "app"
+database_id = "00000000-0000-0000-0000-000000000000"

@@ -20,7 +20,7 @@ import { getDB } from './db';
 
 /** Prepare into a batch — one round-trip, not N+1. Expected: no loop-query. */
 export function accumulateBatch(rows: { id: number; name: string }[]): void {
-  const db = getDB();
+  const db: D1Database = getDB();
   const stmts: unknown[] = [];
   for (const row of rows) {
     stmts.push(db.prepare(`INSERT INTO users (id, name) VALUES (?, ?)`).bind(row.id, row.name));
@@ -30,7 +30,7 @@ export function accumulateBatch(rows: { id: number; name: string }[]): void {
 
 /** Promise.all of prepared statements — a combinator, not eager execution. */
 export async function promiseAllStatements(rows: { id: number; name: string }[]): Promise<void> {
-  const db = getDB();
+  const db: D1Database = getDB();
   await Promise.all(
     rows.map((row) => db.prepare(`INSERT INTO users (id, name) VALUES (?, ?)`).bind(row.id, row.name)),
   );
@@ -38,7 +38,7 @@ export async function promiseAllStatements(rows: { id: number; name: string }[])
 
 /** Genuine N+1 — eager `.run()` executes inside the loop. Expected: loop-query. */
 export function eagerRun(ids: number[]): void {
-  const db = getDB();
+  const db: D1Database = getDB();
   for (const id of ids) {
     db.prepare(`UPDATE users SET name = 'eager' WHERE id = ?`).bind(id).run();
   }

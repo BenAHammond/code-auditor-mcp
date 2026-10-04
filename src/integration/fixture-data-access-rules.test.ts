@@ -15,10 +15,16 @@
  * under `tests/` (Spec 55 R3 excludes them by default).
  *   rm -rf node_modules/.cache/code-auditor && node dist/cli.js audit --path <fixture> -f json -o <out>
  *
- * Total violations: 9
+ * Total violations: 10
  *   - complex-query: 1 (line 12 in complex-query.ts — 9 tables)
  *   - loop-query: 2 (loop-query.ts:18 direct, loop-query.ts:30 helper-in-loop)
- *   - missing-org-filter: 4 (complex-query.ts:32, loop-query.ts:18/24, missing-org-filter.ts:12)
+ *   - missing-org-filter: 5 (complex-query.ts:12 AND :32, loop-query.ts:18/24,
+ *     missing-org-filter.ts:12). The :12 entry is the join-heavy query itself:
+ *     `complex-query` (perf) and `missing-org-filter` (security) are independent
+ *     concerns, so a 9-table join that reads `users`+`projects` with no
+ *     org predicate fires BOTH — the perf/security priority that lets
+ *     `complex-query` win over `unfiltered-query` does not extend to the
+ *     tenant-isolation rule.
  *   - unfiltered-query: 2 (unfiltered-query.ts:16 — the unfiltered UPDATE write;
  *     missing-org-filter.ts:12 — the A1.4 tenant-scoped *read* case, a filterless
  *     full-table SELECT of `projects`)
@@ -85,7 +91,7 @@ describe('data-access-rules fixture', () => {
 
   it('total violations match baseline', () => {
     const violations = runAndGetViolations(testDir);
-    expect(violations.length).toBe(9);
+    expect(violations.length).toBe(10);
   });
 
   // ══════════════════════════════════════════════════════════════════
@@ -234,9 +240,9 @@ describe('data-access-rules fixture', () => {
       expect(poolViolations.length).toBe(0);
     });
 
-    it('baseline total is unchanged by non-db-receiver.ts (9 violations)', () => {
+    it('baseline total is unchanged by non-db-receiver.ts (10 violations)', () => {
       const violations = runAndGetViolations(testDir);
-      expect(violations.length).toBe(9);
+      expect(violations.length).toBe(10);
     });
   });
 });

@@ -8,9 +8,7 @@
  * - The message cites the enclosing loop span line
  */
 
-export function processUsers(db: {
-  query(sql: string, params: unknown[]): unknown[];
-}): void {
+export function processUsers(db: D1Database): void {
   const users = ["alice", "bob", "charlie"];
 
   for (const user of users) {

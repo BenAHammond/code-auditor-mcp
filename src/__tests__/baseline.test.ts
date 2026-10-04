@@ -1115,13 +1115,16 @@ describe('Spec-18 — CLI end-to-end', () => {
     expect(newViolations.length).toBe(0);
   });
 
-  it('R6.7b — changed --json carries the unresolved-query coverage diagnostic (file+line) without gating', async () => {
-    // Spec 58 follow-up: `unresolved-query` moved from a high-severity finding to a
-    // coverage diagnostic. This pins the agent-facing surface — `changed --json` (the
-    // hook gate) must carry the diagnostic with file + line, and the diagnostic itself
-    // must never gate (it is a coverage diagnostic, not a violation). The prior
-    // assertions only checked `Array.isArray(diagnostics)`; this one asserts the
-    // coverage diagnostic actually flows through with its anchor.
+  it('R6.7b — changed --json carries a cannot-fire diagnostic for a db: any receiver (file+line) without gating', async () => {
+    // Spec 69 §10 S5e: `db: any` is the definition of inconclusive — a parameter
+    // annotated `any` has no determinable DB-handle type, so the receiver's
+    // disposition is `unproven` and the query-shaped call reports `cannot-fire`
+    // (never a silent `clean`). This pins the agent-facing surface — `changed
+    // --json` (the hook gate) must carry the diagnostic with file + line, and the
+    // diagnostic itself must never gate (it is a coverage diagnostic, not a
+    // violation). The prior assertions pinned the deleted `unresolved-query`
+    // diagnostic keyed to an identifier; the corrected signal keys to the
+    // receiver's root resolution.
     await writeFile(join(testDir, 'src', 'queries.ts'), 'export const UPSERT_SQL = `INSERT INTO metrics (hour_key, a) VALUES (?, ?)`;\n');
     await writeFile(
       join(testDir, 'src', 'lib.ts'),
@@ -1138,19 +1141,21 @@ describe('Spec-18 — CLI end-to-end', () => {
     expect(Array.isArray(parsed.violations)).toBe(true);
     expect(Array.isArray(parsed.diagnostics)).toBe(true);
 
-    const unresolved = parsed.diagnostics.filter((d: any) => d.kind === 'unresolved-query');
-    expect(unresolved.length).toBeGreaterThanOrEqual(1);
-    expect(unresolved[0].file).toContain('lib.ts');
-    expect(typeof unresolved[0].line).toBe('number');
-    expect(unresolved[0].details).toMatchObject({ identifier: 'UPSERT_SQL' });
+    const cannotFire = parsed.diagnostics.filter(
+      (d: any) => d.kind === 'cannot-fire' && d.details?.receiver === 'db',
+    );
+    expect(cannotFire.length).toBeGreaterThanOrEqual(1);
+    expect(cannotFire[0].file).toContain('lib.ts');
+    expect(typeof cannotFire[0].line).toBe('number');
+    expect(cannotFire.some((d: any) => d.details?.method === 'prepare')).toBe(true);
 
-    // The unresolved-query diagnostic must never gate: it is emitted in the
+    // The cannot-fire diagnostic must never gate: it is emitted in the
     // `diagnostics` channel, never in `violations`. (The standalone `lib.ts` may
     // additionally carry real corpus-level findings — §15 removed the
     // `GLOBAL_ONLY_ANALYZERS` split, so dependency-graph rules now run in the
     // `changed` scope — but that is orthogonal to what this test pins.)
-    const unresolvedAsViolation = parsed.violations.some((v: any) => v.rule === 'unresolved-query');
-    expect(unresolvedAsViolation).toBe(false);
+    const cannotFireAsViolation = parsed.violations.some((v: any) => v.rule === 'cannot-fire');
+    expect(cannotFireAsViolation).toBe(false);
   });
 
   it('R6.8 — CLI: --fail-on-regression exits 2 when debt increases', async () => {

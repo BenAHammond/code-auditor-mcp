@@ -51,7 +51,7 @@ function seedSchemaUsage(db: CodeIndexDB, rows: SeedUsage[]): void {
     // pass an explicit coordinate to stay distinct.
     const startLine = r.function_start_line ?? (r.function_name ? 1 : null);
     const startColumn = r.function_start_column ?? 0;
-    db.run(
+    db.rawSql.run(
       `INSERT INTO schema_usage (table_name, file_path, function_name, function_start_line, function_start_column, usage_type, line)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [r.table_name, r.file_path, r.function_name, startLine, startColumn, r.usage_type, r.line],
@@ -61,7 +61,7 @@ function seedSchemaUsage(db: CodeIndexDB, rows: SeedUsage[]): void {
 
 /** Directly insert function rows via raw SQL. Return the assigned ID. */
 function seedFunction(db: CodeIndexDB, name: string, filePath: string, line: number): number {
-  const info = db.run(
+  const info = db.rawSql.run(
     `INSERT INTO functions (name, file_path, line_number, entity_type, language)
      VALUES (?, ?, ?, 'function', 'typescript')`, [name, filePath, line]);
   return Number(info.lastInsertRowid);
@@ -81,7 +81,7 @@ function seedFunctionEx(
   opts: SeedFuncOpts = {},
 ): number {
   const { isExported = false, usedImports } = opts;
-  const info = db.run(`INSERT INTO functions (name, file_path, line_number, entity_type, language,
+  const info = db.rawSql.run(`INSERT INTO functions (name, file_path, line_number, entity_type, language,
        is_exported, used_imports)
      VALUES (?, ?, ?, 'function', 'typescript', ?, ?)`, [name,
     filePath,
@@ -94,7 +94,7 @@ function seedFunctionEx(
 
 /** Directly insert a graph_cache call edge via raw SQL. */
 function seedCallEdge(db: CodeIndexDB, callerFuncId: number, calleeFuncId: number): void {
-  db.run(`INSERT INTO graph_cache (graph_type, node_key, neighbor_key, weight)
+  db.rawSql.run(`INSERT INTO graph_cache (graph_type, node_key, neighbor_key, weight)
      VALUES (?, ?, ?, ?)`, ['call', String(callerFuncId), String(calleeFuncId), 1.0]);
 }
 
@@ -139,7 +139,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/app.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -173,7 +173,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/app.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -210,7 +210,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/worker.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -247,7 +247,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/cache.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -286,7 +286,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       // Run for project A only
       const result = await analyzer.analyze(
         ['/project-a/src/app.ts'],
-        { indexHandle: db, projectRoot: '/project-a' },
+        { indexHandle: db.indexHandle, projectRoot: '/project-a' },
       );
 
       const violations = result.violations.filter(
@@ -315,7 +315,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/reports.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -349,7 +349,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/catalog.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -379,7 +379,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/dash.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -406,7 +406,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       // Default threshold is 4
       const result = await analyzer.analyze(
         [`${projectRoot}/src/migrate.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -429,7 +429,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/user.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -451,7 +451,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       // With txnTableMax=3, 3 tables should flag. With default 4, it wouldn't.
       const result = await analyzer.analyze(
         [`${projectRoot}/src/batch.ts`],
-        { indexHandle: db, projectRoot, schemaLifecycle: { txnTableMax: 3 } },
+        { indexHandle: db.indexHandle, projectRoot, schemaLifecycle: { txnTableMax: 3 } },
       );
 
       const violations = result.violations.filter(
@@ -485,7 +485,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       // txnTableMax=4 should flag
       const result = await analyzer.analyze(
         [`${projectRoot}/src/main.ts`],
-        { indexHandle: db, projectRoot, schemaLifecycle: { txnTableMax: 4 } },
+        { indexHandle: db.indexHandle, projectRoot, schemaLifecycle: { txnTableMax: 4 } },
       );
 
       const violations = result.violations.filter(
@@ -517,7 +517,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       // Distinct tables: users, orders, logs = 3. Threshold 3 should flag.
       const result = await analyzer.analyze(
         [`${projectRoot}/src/coord.ts`],
-        { indexHandle: db, projectRoot, schemaLifecycle: { txnTableMax: 3 } },
+        { indexHandle: db.indexHandle, projectRoot, schemaLifecycle: { txnTableMax: 3 } },
       );
 
       const violations = result.violations.filter(
@@ -539,7 +539,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       // 2 tables < 4 threshold, no callees → no violation
       const result = await analyzer.analyze(
         [`${projectRoot}/src/simple.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -576,7 +576,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         { table_name: 'd', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 7 },
       ]);
 
-      const result = await analyzer.analyze([filePath], { indexHandle: db, projectRoot: dir });
+      const result = await analyzer.analyze([filePath], { indexHandle: db.indexHandle, projectRoot: dir });
 
       const violations = result.violations.filter(
         v => v.rule === 'cross-domain/multi-table-write',
@@ -610,7 +610,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         { table_name: 'd', file_path: filePath, function_name: 'flush', usage_type: 'insert', line: 6 },
       ]);
 
-      const result = await analyzer.analyze([filePath], { indexHandle: db, projectRoot: dir });
+      const result = await analyzer.analyze([filePath], { indexHandle: db.indexHandle, projectRoot: dir });
 
       const violations = result.violations.filter(
         v => v.rule === 'cross-domain/multi-table-write',
@@ -633,7 +633,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/app.ts`],
-        { indexHandle: db, projectRoot, schemaLifecycle: { enableWrittenNeverRead: false } },
+        { indexHandle: db.indexHandle, projectRoot, schemaLifecycle: { enableWrittenNeverRead: false } },
       );
 
       expect(result.errors).toHaveLength(0);
@@ -648,7 +648,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/app.ts`],
-        { indexHandle: db, projectRoot, schemaLifecycle: { enableReadNeverWritten: false } },
+        { indexHandle: db.indexHandle, projectRoot, schemaLifecycle: { enableReadNeverWritten: false } },
       );
 
       expect(result.errors).toHaveLength(0);
@@ -667,7 +667,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/tx.ts`],
-        { indexHandle: db, projectRoot, schemaLifecycle: { enableTransactionBoundaryRisk: false } },
+        { indexHandle: db.indexHandle, projectRoot, schemaLifecycle: { enableTransactionBoundaryRisk: false } },
       );
 
       expect(result.errors).toHaveLength(0);
@@ -686,7 +686,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
     it('returns empty results when DB is empty', async () => {
       const result = await analyzer.analyze(
         ['/some/file.ts'],
-        { indexHandle: db, projectRoot: '/some' },
+        { indexHandle: db.indexHandle, projectRoot: '/some' },
       );
 
       expect(result.violations).toHaveLength(0);
@@ -699,7 +699,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       // DB is initialized (from beforeEach) but no schema_usage rows exist
       const result = await analyzer.analyze(
         [`${projectRoot}/src/app.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       expect(result.violations).toHaveLength(0);
@@ -715,7 +715,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       const result = await analyzer.analyze(
         [`${projectRoot}/src/writer.ts`],
-        { indexHandle: db, projectRoot },
+        { indexHandle: db.indexHandle, projectRoot },
       );
 
       const violations = result.violations.filter(
@@ -743,7 +743,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       return analyzer.analyze(
         [`${projectRoot}/src/handlers/create.ts`],
         {
-          indexHandle: db,
+          indexHandle: db.indexHandle,
           projectRoot,
           schemaLifecycle: {
             enableWrittenNeverRead: false,
@@ -772,7 +772,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       it('detects validators via user-configured names', async () => {
         // Writer writes to a table
         const wId = seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // Validator configured by user
@@ -798,7 +798,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       it('detects validators via provenanced imports (VALIDATOR_PACKAGES)', async () => {
         // Writer
         const wId = seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // Validator: exported function from file that imports zod
@@ -825,7 +825,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       it('falls back to heuristic name matching (validate*) when provenance is silent', async () => {
         // Writer
         const wId = seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // Validator: exported function named validate* (no validator package imports)
@@ -851,7 +851,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       it('falls back to heuristic name matching (assert*)', async () => {
         const wId = seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         const vId = seedFunctionEx(db, 'assertValid', `${writerDir}/assertValid.ts`, 3, {
@@ -876,12 +876,12 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       it('heuristic runs when user validators list is empty (not suppressed)', async () => {
         // Writer
         const wId = seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // Second writer that reaches the heuristic validator → establishes modeShare
         const w2Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 15);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 15)`, [`${writerDir}/saveOrder.ts`]);
 
         // Exported function matching heuristic pattern — WILL be picked up
@@ -911,7 +911,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       it('does NOT use heuristic when provenance finds validators', async () => {
         // Writer 1: reaches heuristic validator but NOT provenance validator
         const wId = seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // Provenance validator (zod import → priority 1b)
@@ -931,7 +931,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Writer 2: reaches provenance validator → establishes modeShare
         const w2Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 15);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 15)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w2Id, zvId);
 
@@ -955,7 +955,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       it('detects user-configured validators by path#functionName', async () => {
         const wId = seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // Validator with specific path#name
@@ -985,7 +985,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       beforeEach(() => {
         // Seed a writer that we'll connect/disconnect from validators
         seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // Validator (provenanced)
@@ -1000,7 +1000,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Writer 2: reaches validator (establishes modeShare)
         const w2Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 15);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 15)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w2Id, 2); // saveOrder → validateOrder (ID 2)
 
@@ -1025,7 +1025,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         const vId = 2; // validateOrder inserted second
 
         // Make the writer function exported with zod import → it IS a validator
-        db.run(`UPDATE functions SET is_exported = 1, used_imports = ? WHERE id = ?`, [JSON.stringify(['zod']), wId]);
+        db.rawSql.run(`UPDATE functions SET is_exported = 1, used_imports = ? WHERE id = ?`, [JSON.stringify(['zod']), wId]);
 
         seedCallEdge(db, wId, vId);
 
@@ -1125,7 +1125,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Second writer that reaches validator at depth 1 → establishes modeShare
         const w2Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 15);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 15)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w2Id, vId); // saveOrder → validator at depth 1
 
@@ -1177,7 +1177,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         for (let i = 1; i <= 2; i++) {
           const fnName = `save${i}`;
           const fnId = seedFunctionEx(db, fnName, `${writerDir}/save${i}.ts`, i * 10);
-          db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+          db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
              VALUES (?, ?, ?, 'insert', ?)`, [`t${i}`, `${writerDir}/save${i}.ts`, fnName, i * 10]);
         }
 
@@ -1204,19 +1204,19 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         // 3 writers: 2 reach validator, 1 doesn't → ratio 0.67 ≥ 0.5 modeShare
         // Writer 1: reaches validator
         const w1Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 10)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w1Id, 4); // saveOrder → validator
 
         // Writer 2: reaches validator
         const w2Id = seedFunctionEx(db, 'updateOrder', `${writerDir}/updateOrder.ts`, 20);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'updateOrder', 'update', 20)`, [`${writerDir}/updateOrder.ts`]);
         seedCallEdge(db, w2Id, 4); // updateOrder → validator
 
         // Writer 3: does NOT reach validator (no call edge)
         seedFunctionEx(db, 'deleteOrder', `${writerDir}/deleteOrder.ts`, 30);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'deleteOrder', 'delete', 30)`, [`${writerDir}/deleteOrder.ts`]);
 
         // Validator
@@ -1243,18 +1243,18 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         // 3 writers: 1 reaches validator, 2 don't → ratio 0.33 < 0.5 modeShare
         // Writer 1: reaches validator
         const w1Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 10)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w1Id, 4);
 
         // Writer 2: no reach
         seedFunctionEx(db, 'updateOrder', `${writerDir}/updateOrder.ts`, 20);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'updateOrder', 'update', 20)`, [`${writerDir}/updateOrder.ts`]);
 
         // Writer 3: no reach
         seedFunctionEx(db, 'deleteOrder', `${writerDir}/deleteOrder.ts`, 30);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'deleteOrder', 'delete', 30)`, [`${writerDir}/deleteOrder.ts`]);
 
         // Validator
@@ -1281,16 +1281,16 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Writers in writerDir: 2 writers, neither reaches validator
         seedFunctionEx(db, 'saveA', `${writerDir}/saveA.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('a', ?, 'saveA', 'insert', 10)`, [`${writerDir}/saveA.ts`]);
 
         seedFunctionEx(db, 'saveB', `${writerDir}/saveB.ts`, 20);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('b', ?, 'saveB', 'insert', 20)`, [`${writerDir}/saveB.ts`]);
 
         // Writer in otherDir: 1 writer, reaches validator
         const w3Id = seedFunctionEx(db, 'saveC', `${otherDir}/saveC.ts`, 30);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('c', ?, 'saveC', 'insert', 30)`, [`${otherDir}/saveC.ts`]);
         seedCallEdge(db, w3Id, 4); // saveC → validator
 
@@ -1322,11 +1322,11 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
     describe('config behavior', () => {
       it('skips detection when no validatorBypass config is provided', async () => {
         seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // No validatorBypass in config → detection skipped entirely
-        const result = await runAnalyze(db, { indexHandle: db, projectRoot });
+        const result = await runAnalyze(db, { indexHandle: db.indexHandle, projectRoot });
 
         const bypass = result.violations.filter(v => v.rule === 'cross-domain/no-validator-reachable');
         expect(bypass).toHaveLength(0);
@@ -1335,7 +1335,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       it('skips detection when no validators are found', async () => {
         // Writer without any validators in the DB
         seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         const result = await runAnalyze(db, {
@@ -1373,7 +1373,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
         const wId = 1;
         // Writer
         seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
 
         // Intermediate
@@ -1389,7 +1389,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Second writer that reaches validator directly at depth 1
         const w2Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 15);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 15)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w2Id, vId);
 
@@ -1412,9 +1412,9 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
       it('deduplicates writers that appear in multiple schema_usage rows', async () => {
         // Same function writes to two tables — should only be checked once
         const wId = seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 10);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 10)`, [`${writerDir}/createOrder.ts`]);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('order_items', ?, 'createOrder', 'insert', 12)`, [`${writerDir}/createOrder.ts`]);
 
         // Validator (not reachable from createOrder)
@@ -1425,7 +1425,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Second writer that reaches validator → establishes modeShare
         const w2Id = seedFunctionEx(db, 'saveItems', `${writerDir}/saveItems.ts`, 20);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('items', ?, 'saveItems', 'insert', 20)`, [`${writerDir}/saveItems.ts`]);
         seedCallEdge(db, w2Id, vId);
 
@@ -1449,7 +1449,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
     describe('violation structure', () => {
       it('emits violations at severe severity', async () => {
         seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 42);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 42)`, [`${writerDir}/createOrder.ts`]);
 
         const vId = seedFunctionEx(db, 'validateOrder', `${writerDir}/validateOrder.ts`, 5, {
@@ -1459,7 +1459,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Second writer that reaches validator → establishes modeShare
         const w2Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 51);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 51)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w2Id, vId);
 
@@ -1479,7 +1479,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       it('includes rule, analyzer, and functionName in violation', async () => {
         seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 42);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 42)`, [`${writerDir}/createOrder.ts`]);
 
         const vId = seedFunctionEx(db, 'validateOrder', `${writerDir}/validateOrder.ts`, 5, {
@@ -1489,7 +1489,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Second writer that reaches validator → establishes modeShare
         const w2Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 51);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 51)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w2Id, vId);
 
@@ -1512,7 +1512,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
       it('message reports validator reachability, not a validation verdict', async () => {
         seedFunctionEx(db, 'createOrder', `${writerDir}/createOrder.ts`, 42);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'createOrder', 'insert', 42)`, [`${writerDir}/createOrder.ts`]);
 
         const vId = seedFunctionEx(db, 'validateOrder', `${writerDir}/validateOrder.ts`, 5, {
@@ -1522,7 +1522,7 @@ describe('CrossDomainAnalyzer — R1 Schema Lifecycle', () => {
 
         // Also add a second writer that reaches validator so modeShare is met
         const w2Id = seedFunctionEx(db, 'saveOrder', `${writerDir}/saveOrder.ts`, 51);
-        db.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
+        db.rawSql.run(`INSERT INTO schema_usage (table_name, file_path, function_name, usage_type, line)
            VALUES ('orders', ?, 'saveOrder', 'insert', 51)`, [`${writerDir}/saveOrder.ts`]);
         seedCallEdge(db, w2Id, vId);
 

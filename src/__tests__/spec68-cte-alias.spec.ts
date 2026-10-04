@@ -17,7 +17,7 @@ import { describe, it, expect } from 'vitest';
 import { parseSqlTables } from '../analyzers/universal/schema/codeAnalysis.js';
 
 function tables(sql: string, allTables: string[] = []): string[] {
-  return parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(allTables)).map(
+  return parseSqlTables(sql, { line: 1, column: 1 }, sql, new Set(allTables), 'sqlite', null).references.map(
     (r) => r.table,
   );
 }

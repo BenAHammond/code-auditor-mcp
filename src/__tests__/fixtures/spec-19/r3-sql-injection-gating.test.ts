@@ -52,10 +52,11 @@ export { checkElementVisible };
  * (db.query). Should still trigger sql-injection-risk.
  */
 const DB_QUERY_TEMPLATE = `
-import { query } from './db';
+import { Pool } from 'pg';
+const db = new Pool();
 
 async function searchUsers(name: string) {
-  const rows = await query(\`SELECT * FROM users WHERE name = '\${name}'\`);
+  const rows = await db.query(\`SELECT * FROM users WHERE name = '\${name}'\`);
   return rows;
 }
 `;
@@ -66,7 +67,7 @@ async function searchUsers(name: string) {
  * because the $1 placeholder is the remediation, not the problem.
  */
 const PARAMETERIZED_WITH_DYNAMIC_TABLE = `
-import { query } from './db';
+const query: D1Database = getDb();
 
 const TableName = {
   PROD: 'analytics_prod',
@@ -91,10 +92,11 @@ export { getAnalytics };
  * (Spec 54 assigns sql-injection-risk to critical — exploitable now).
  */
 const NON_PARAMETERIZED_INJECTION = `
-import { query } from './db';
+import { Pool } from 'pg';
+const db = new Pool();
 
 async function searchUsers(keyword: string) {
-  const rows = await query(\`SELECT * FROM users WHERE name LIKE '%\${keyword}%'\`);
+  const rows = await db.query(\`SELECT * FROM users WHERE name LIKE '%\${keyword}%'\`);
   return rows;
 }
 `;
@@ -106,10 +108,11 @@ async function searchUsers(keyword: string) {
  * live `critical` vulnerability.
  */
 const ESCAPED_INTERPOLATION = `
-import { query } from './db';
+import { Pool } from 'pg';
+const db = new Pool();
 
 async function filterByMode(opts: { gameMode: string }) {
-  const rows = await query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace(/'/g, "''")}'\`);
+  const rows = await db.query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace(/'/g, "''")}'\`);
   return rows;
 }
 `;
@@ -120,10 +123,11 @@ async function filterByMode(opts: { gameMode: string }) {
  * interpolation is still raw and must stay `critical` (not downgrade to high).
  */
 const GENERIC_REPLACE_INTERPOLATION = `
-import { query } from './db';
+import { Pool } from 'pg';
+const db = new Pool();
 
 async function filterByMode(opts: { gameMode: string }) {
-  const rows = await query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace('x', 'y')}'\`);
+  const rows = await db.query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace('x', 'y')}'\`);
   return rows;
 }
 `;
@@ -135,10 +139,11 @@ async function filterByMode(opts: { gameMode: string }) {
  * stay `critical`.
  */
 const REPLACE_WITH_QUOTES_INTERPOLATION = `
-import { query } from './db';
+import { Pool } from 'pg';
+const db = new Pool();
 
 async function filterByMode(opts: { gameMode: string }) {
-  const rows = await query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace(/x/g, "''")}'\`);
+  const rows = await db.query(\`SELECT * FROM games WHERE mode = '\${opts.gameMode.replace(/x/g, "''")}'\`);
   return rows;
 }
 `;
@@ -155,7 +160,7 @@ async function filterByMode(opts: { gameMode: string }) {
  * Expected: 0 violations (documented false negative).
  */
 const VARIABLE_ASSIGNMENT_TEMPLATE = `
-import { query } from './db';
+const query: D1Database = getDb();
 
 async function buildAndRun(filter: string) {
   const sql = \`SELECT * FROM orders WHERE status = '\${filter}'\`;

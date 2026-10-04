@@ -3,7 +3,7 @@
  * findings exactly.
  *
  * A rule is "migrated" only when the new `analyze(ctx)` over the `schema-usage`
- * (and, for `unknown-table`, `table-catalog`) facts produces the *same* findings
+ * (and, for `unknown-table`, `resolution`) facts produces the *same* findings
  * the pre-migration `UniversalSchemaAnalyzer.analyzeAST` produced on a fixture —
  * same file, line, column, rule, severity. Not a "similar count": the full
  * multiset of identity tuples. This test runs BOTH paths per rule (the old
@@ -22,7 +22,7 @@
  *
  * `unknown-table` also exercises the corpus boundary: the old analyzer derives
  * its known-table set from `config.schemas`, while the new model derives it from
- * a DDL fixture file reduced through the `table-catalog` corpus producer. The
+ * a DDL fixture file reduced through the `resolution` corpus producer. The
  * `CREATE TABLE users` DDL here is the new pipeline's `{ users }`, matching the
  * old analyzer's `schemas: [{ name: 'users', … }]`. The DDL fixture is supplied
  * in both shapes — a code migration (`migration.ts` tagged template) and a raw
@@ -58,7 +58,7 @@ function key(f: { file: string; line?: number; column?: number; severity: string
 interface ParityOpts {
   /** Known-table set the OLD analyzer reads from config.schemas. */
   schemas?: { name: string; tables: { name: string; columns: string[] }[] }[];
-  /** DDL fixture the NEW model reduces into `table-catalog`. */
+  /** DDL fixture the NEW model reduces into `resolution`. */
   ddl?: { path: string; content: string };
 }
 
@@ -67,7 +67,10 @@ async function parity(ruleId: string, usageSource: string, opts: ParityOpts = {}
   const ast = parseFile('parity.ts', usageSource);
   expect(ast, `fixture failed to parse`).not.toBeNull();
 
-  const config = { ...DEFAULT_SCHEMA_CONFIG, schemas: opts.schemas ?? [] };
+  // Spec 70 §13 — both the old `analyzeAST` path and the new slice now gate
+  // SQL-content extraction on a named dialect; without `sqlDialect` the old path
+  // abstains and the parity pin goes empty. Pin sqlite so both halves parse.
+  const config = { ...DEFAULT_SCHEMA_CONFIG, sqlDialect: 'sqlite', schemas: opts.schemas ?? [] };
   const oldRaw = await (analyzer as unknown as {
     analyzeAST(a: unknown, ad: LanguageAdapter, c: unknown, s: string): Promise<Violation[]>;
   }).analyzeAST(ast, adapter, config, usageSource);
@@ -76,7 +79,7 @@ async function parity(ruleId: string, usageSource: string, opts: ParityOpts = {}
   const files = [];
   if (opts.ddl) files.push({ path: opts.ddl.path, content: opts.ddl.content });
   files.push({ path: 'parity.ts', content: usageSource });
-  const fresh = await runSchemaSlice(files);
+  const fresh = await runSchemaSlice(files, {}, 'sqlite');
   const nu = fresh.filter((f) => f.ruleId === ruleId).map(key).sort();
 
   return { old, nu };
@@ -126,7 +129,7 @@ describe('Spec 68 schema parity (new analyze(ctx) === old UniversalSchemaAnalyze
   it('unknown-table (string-arg db.query against a raw .sql migration catalog)', async () => {
     const { old, nu } = await parity(
       'unknown-table',
-      'export function getProducts(db: { query(sql: string): unknown }) {\n' +
+      'export function getProducts(db: D1Database) {\n' +
       '  return db.query("SELECT * FROM products");\n' +
       '}\n',
       {
@@ -141,7 +144,7 @@ describe('Spec 68 schema parity (new analyze(ctx) === old UniversalSchemaAnalyze
   it('table-naming-convention (string-arg db.query)', async () => {
     const { old, nu } = await parity(
       'table-naming-convention',
-      'export function getProfiles(db: { query(sql: string): unknown }) {\n' +
+      'export function getProfiles(db: D1Database) {\n' +
       '  return db.query("SELECT * FROM UserProfiles");\n' +
       '}\n',
       { schemas: [] },

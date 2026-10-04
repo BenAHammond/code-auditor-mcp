@@ -119,6 +119,8 @@ const COVERAGE_DIAGNOSTIC_KINDS = new Set([
   'undefined-class-not-found',
   'undefined-class-disabled',
   'config-key-rejected',
+  'cannot-fire',
+  'manifest-stale',
 ]);
 
 /** Ledger rule IDs that resolved to a diagnostic (off the ladder, no severity).

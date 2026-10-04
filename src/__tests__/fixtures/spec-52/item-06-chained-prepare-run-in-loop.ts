@@ -14,7 +14,7 @@ interface SyncJob {
   slug: string;
 }
 
-export async function syncBuildsForHeroes(db: any, jobs: SyncJob[]): Promise<void> {
+export async function syncBuildsForHeroes(db: D1Database, jobs: SyncJob[]): Promise<void> {
   for (const job of jobs) {
     await db
       .prepare(

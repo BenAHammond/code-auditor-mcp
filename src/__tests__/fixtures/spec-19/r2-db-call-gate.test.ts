@@ -36,6 +36,8 @@ export function searchIndex(items: Array<{ id: number; name: string }>, targetId
 
 /** .find() in a loop — IS a DB pattern (find is a known DB method), should trigger */
 const FIND_IN_LOOP = `
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 export async function findInLoop(ids: number[]): Promise<any[]> {
   const results = [];
   for (const id of ids) {
@@ -48,6 +50,8 @@ export async function findInLoop(ids: number[]): Promise<any[]> {
 
 /** .select() in forEach — IS a DB call inside loop, should trigger */
 const SELECT_IN_FOREACH = `
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 export async function selectInLoop(ids: number[]): Promise<any[]> {
   const results = [];
   for (const id of ids) {
@@ -71,10 +75,12 @@ export function transformData(records: Array<{ id: string; name: string }>): Arr
 
 /** query() inside a loop — bare function call, should trigger (execute/query are in BARE_DB_FUNCTIONS) */
 const QUERY_IN_LOOP = `
+import { Pool } from 'pg';
+const db = new Pool();
 export async function queryLoop(ids: number[]): Promise<any[]> {
   const results = [];
   for (const id of ids) {
-    const row = await query('SELECT * FROM users WHERE id = ?', id);
+    const row = await db.query('SELECT * FROM users WHERE id = ?', id);
     results.push(row);
   }
   return results;

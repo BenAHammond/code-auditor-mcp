@@ -183,7 +183,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
 
       // First pass indexes both same-named declarations (two rows at distinct lines).
       await db.detectChangedFunctions([filePath]);
-      const lines = (await db.getAllFunctions())
+      const lines = (await db.functionIndex.getAllFunctions())
         .map((f) => f.lineNumber)
         .sort((a, b) => a - b);
       expect(lines).toHaveLength(2);
@@ -209,7 +209,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       );
 
       await db.detectChangedFunctions([filePath]);
-      const lines = (await db.getAllFunctions())
+      const lines = (await db.functionIndex.getAllFunctions())
         .map((f) => f.lineNumber)
         .sort((a, b) => a - b);
       expect(lines).toHaveLength(2);
@@ -240,7 +240,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
 
       await db.detectChangedFunctions([filePath]);
 
-      const addFn = (await db.getAllFunctions()).find((f) => f.name === 'add');
+      const addFn = (await db.functionIndex.getAllFunctions()).find((f) => f.name === 'add');
       expect(addFn).toBeDefined();
       expect(addFn?.language).toBe('go');
     });
@@ -258,7 +258,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
 
       await db.detectChangedFunctions([filePath]);
 
-      const allFuncs = await db.getAllFunctions();
+      const allFuncs = await db.functionIndex.getAllFunctions();
       expect(allFuncs.length).toBeGreaterThanOrEqual(2);
 
       for (const func of allFuncs) {
@@ -275,7 +275,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       await db.detectChangedFunctions([path1]);
       await db.detectChangedFunctions([path2]);
 
-      const allFuncs = await db.getAllFunctions();
+      const allFuncs = await db.functionIndex.getAllFunctions();
       const addFn = allFuncs.find((f) => f.name === 'add');
       const mulFn = allFuncs.find((f) => f.name === 'multiply');
 
@@ -289,7 +289,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       await db.detectChangedFunctions([path1]);
       await db.detectChangedFunctions([path2]);
 
-      const allFuncs = await db.getAllFunctions();
+      const allFuncs = await db.functionIndex.getAllFunctions();
       const hiFn = allFuncs.find((f) => f.name === 'hi');
       const heyFn = allFuncs.find((f) => f.name === 'hey');
 
@@ -303,7 +303,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
     it('clears a pre-bump index on open instead of silently consuming it', async () => {
       const filePath = await writeTestFile(dir, 'src/math.ts', addFunc('add'));
       await db.detectChangedFunctions([filePath]);
-      expect((await db.getAllFunctions()).length).toBe(1);
+      expect((await db.functionIndex.getAllFunctions()).length).toBe(1);
 
       // The corruption this migration risks only surfaces when the FTS mirror
       // holds real rows. Confirm `functions_fts` was actually populated (via the
@@ -331,7 +331,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       db = new CodeIndexDB(join(dir, 'index.db'));
       await db.initialize();
 
-      expect((await db.getAllFunctions()).length).toBe(0);
+      expect((await db.functionIndex.getAllFunctions()).length).toBe(0);
 
       // The rebuild must leave the database *sound*, not just empty. Corruption
       // that a subsequent row count happens not to read still fails here.
@@ -343,7 +343,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       const version = (db as any).db
         .prepare(`SELECT value FROM meta WHERE key = 'schema_version'`)
         .get() as { value: string };
-      expect(version.value).toBe('18');
+      expect(version.value).toBe('19');
     });
   });
 
@@ -401,9 +401,9 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
         metadata: { scope: 'scoped' },
       };
 
-      const auditId = await db.storeAuditResults(auditResult, dir);
+      const auditId = await db.auditResults.storeAuditResults(auditResult, dir);
 
-      const retrieved = await db.getAuditResults(auditId);
+      const retrieved = await db.auditResults.getAuditResults(auditId);
       expect(retrieved).not.toBeNull();
       expect(retrieved.metadata.scope).toBe('scoped');
     });
@@ -417,16 +417,16 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
         metadata: { scope: 'full' },
       };
 
-      const auditId = await db.storeAuditResults(auditResult, dir);
+      const auditId = await db.auditResults.storeAuditResults(auditResult, dir);
 
-      const retrieved = await db.getAuditResults(auditId);
+      const retrieved = await db.auditResults.getAuditResults(auditId);
       expect(retrieved).not.toBeNull();
       expect(retrieved.metadata.scope).toBe('full');
     });
 
     it('getMostRecentAuditResults filters by scope correctly', async () => {
       // Store scoped first (older)
-      await db.storeAuditResults(
+      await db.auditResults.storeAuditResults(
         {
           summary: { criticalIssues: 0 },
           analyzerResults: {},
@@ -438,7 +438,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       );
 
       // Store full second (more recent)
-      await db.storeAuditResults(
+      await db.auditResults.storeAuditResults(
         {
           summary: { criticalIssues: 1 },
           analyzerResults: {},
@@ -450,21 +450,21 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       );
 
       // getMostRecentAuditResults with 'full' → full audit
-      const fullResult = await db.getMostRecentAuditResults(dir, 'full');
+      const fullResult = await db.auditResults.getMostRecentAuditResults(dir, 'full');
       expect(fullResult).not.toBeNull();
       if (fullResult) {
         expect(fullResult.metadata.scope).toBe('full');
       }
 
       // getMostRecentAuditResults with 'scoped' → scoped audit
-      const scopedResult = await db.getMostRecentAuditResults(dir, 'scoped');
+      const scopedResult = await db.auditResults.getMostRecentAuditResults(dir, 'scoped');
       expect(scopedResult).not.toBeNull();
       if (scopedResult) {
         expect(scopedResult.metadata.scope).toBe('scoped');
       }
 
       // No filter → most recent (which is full)
-      const mostRecent = await db.getMostRecentAuditResults(dir);
+      const mostRecent = await db.auditResults.getMostRecentAuditResults(dir);
       expect(mostRecent).not.toBeNull();
       if (mostRecent) {
         expect(mostRecent.metadata.scope).toBe('full');
@@ -473,7 +473,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
 
     it('full audit results survive unchanged after scoped run', async () => {
       // Store a full audit
-      const fullId = await db.storeAuditResults(
+      const fullId = await db.auditResults.storeAuditResults(
         {
           summary: { criticalIssues: 3, severe: 5, high: 10 },
           analyzerResults: { solids: { violations: [{ msg: 'hi' }] } },
@@ -485,7 +485,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       );
 
       // Store a scoped audit (more recent)
-      await db.storeAuditResults(
+      await db.auditResults.storeAuditResults(
         {
           summary: { criticalIssues: 1 },
           analyzerResults: { dry: { violations: [] } },
@@ -497,7 +497,7 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       );
 
       // Retrieve full audit by ID — unchanged
-      const full = await db.getAuditResults(fullId);
+      const full = await db.auditResults.getAuditResults(fullId);
       expect(full).not.toBeNull();
       expect(full.summary.criticalIssues).toBe(3);
       expect(full.summary.severe).toBe(5);

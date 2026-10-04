@@ -33,7 +33,8 @@ const fixtureDir = join(tmpdir(), 'spec33-item5-' + Date.now());
 
 /** DDL via template-literal concat — the knex +1 (cli-test-utils.js:80 shape). */
 const DDL_TEMPLATE_CONCAT = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 
 async function migrate(ddl: string) {
   await db.exec(\`create TABLE if not exists \${ddl};\`);
@@ -42,7 +43,8 @@ async function migrate(ddl: string) {
 
 /** DDL via binary `+` concat. */
 const DDL_DROP_CONCAT = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 
 async function dropTable(name: string) {
   await db.exec('DROP TABLE ' + name);
@@ -51,7 +53,8 @@ async function dropTable(name: string) {
 
 /** `+=` reassigned local interpolated into a template — FN before the fix. */
 const AUGMENTED_ASSIGNMENT_TABLE = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 
 async function listArchived() {
   let table = 'users';
@@ -63,7 +66,7 @@ async function listArchived() {
 
 /** `const` local interpolated into a template — compile-time constant, not an injection. */
 const CONST_STATIC_TABLE = `
-import { db } from './db';
+const db: D1Database = getDb();
 
 async function listUsers() {
   const table = 'users';
@@ -74,7 +77,8 @@ async function listUsers() {
 
 /** Plain `=` reassignment (existing behavior control). */
 const PLAIN_REASSIGNED_TABLE = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 
 async function listArchived() {
   let table = 'users';
@@ -86,7 +90,8 @@ async function listArchived() {
 
 /** Inline `+` concat in a DB-provenanced call (existing behavior control). */
 const INLINE_PLUS_CONCAT = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 
 async function search(user: string) {
   const rows = await db.raw('SELECT * FROM users WHERE name = ' + user);

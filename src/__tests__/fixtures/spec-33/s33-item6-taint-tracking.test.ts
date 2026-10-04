@@ -27,7 +27,8 @@ const fixtureDir = join(tmpdir(), 'spec33-item6-' + Date.now());
 /** Manual quote-escaping — `.replace(/'/g, "''")` is NOT sanitization; it must
  *  stay flagged as a potential injection (single-quote doubling only). */
 const QUOTE_ESCAPE_SANITIZER = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 async function f(name: string) {
   await db.raw(\`SELECT * FROM users WHERE name = '\${name.replace(/'/g, "''")}'\`);
 }
@@ -35,7 +36,7 @@ async function f(name: string) {
 
 /** Ternary whose branches are both substitution-free (static) templates. */
 const SAFE_TERNARY = `
-import { db } from './db';
+const db: D1Database = getDb();
 async function f(kind: string) {
   const where = kind === 'skipped' ? \`error LIKE 'SKIP:%'\` : \`status = 'failed'\`;
   await db.raw(\`SELECT * FROM t WHERE \${where}\`);
@@ -44,7 +45,7 @@ async function f(kind: string) {
 
 /** Local helper call whose body is safe under its literal call-site argument. */
 const SAFE_LOCAL_HELPER = `
-import { db } from './db';
+const db: D1Database = getDb();
 function qualifiedIconRemote(alias: string): string {
   return \`(\${alias}.icon_url LIKE 'http%' OR \${alias}.icon_url LIKE '//%')\`;
 }
@@ -55,7 +56,7 @@ async function f() {
 
 /** Function parameter safe because every call site passes a literal. */
 const PARAM_SAFE_AT_CALL_SITES = `
-import { db } from './db';
+const db: D1Database = getDb();
 async function countRows(table: string) {
   await db.raw(\`SELECT COUNT(*) AS c FROM \${table}\`);
 }
@@ -64,7 +65,7 @@ countRows('matchmaking_pool');
 
 /** Static-array `.map().join()` chain producing a compile-time column list. */
 const STATIC_MAP_JOIN = `
-import { db } from './db';
+const db: D1Database = getDb();
 const EFFECT_FLAGS = ['a', 'b'];
 async function f() {
   const cols = EFFECT_FLAGS.map((c) => 'a.' + c).join(', ');
@@ -75,7 +76,7 @@ async function f() {
 /** Same as above but the array is declared `as const`, and the `.map().join()`
  *  is interpolated inline (not via a local `const cols`). */
 const STATIC_MAP_JOIN_AS_CONST = `
-import { db } from './db';
+const db: D1Database = getDb();
 const EFFECT_FLAGS = ['a', 'b'] as const;
 async function f() {
   await db.raw(\`SELECT \${EFFECT_FLAGS.map((c) => \`a.\${c}\`).join(", ")} FROM t\`);
@@ -84,7 +85,7 @@ async function f() {
 
 /** Guard-validated parameter — `assertRegistered(table)` throws before use. */
 const GUARD_VALIDATED_PARAM = `
-import { db } from './db';
+const db: D1Database = getDb();
 const PIPELINES = { matchmaking_pool: true };
 function assertRegistered(table: string) {
   if (!(table in PIPELINES)) throw new Error('unregistered');
@@ -97,7 +98,8 @@ async function statusCounts(table: string) {
 
 /** Genuine raw parameter — unguarded, unescaped, no safe call sites. */
 const RAW_PARAMETER = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 async function f(modeArg: string) {
   await db.raw(\`SELECT * FROM t WHERE mode = '\${modeArg}'\`);
 }
@@ -105,7 +107,8 @@ async function f(modeArg: string) {
 
 /** Member-expression access — a value we cannot prove safe. */
 const MEMBER_EXPRESSION = `
-import { db } from './db';
+import Database from 'better-sqlite3';
+const db = new Database(':memory:');
 async function f(req: { name: string }) {
   await db.raw(\`SELECT * FROM t WHERE name = '\${req.name}'\`);
 }

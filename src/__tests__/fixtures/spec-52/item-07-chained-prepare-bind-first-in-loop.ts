@@ -20,12 +20,12 @@ interface Statement {
   all<T>(): T[];
   run(): unknown;
 }
-interface Db {
+interface D1Database {
   prepare(sql: string): Statement;
   batch(stmts: unknown[]): unknown;
 }
 
-export async function fetchHeroById(db: Db, ids: number[]): Promise<HeroRow[]> {
+export async function fetchHeroById(db: D1Database, ids: number[]): Promise<HeroRow[]> {
   const out: HeroRow[] = [];
   for (const id of ids) {
     const row = await db

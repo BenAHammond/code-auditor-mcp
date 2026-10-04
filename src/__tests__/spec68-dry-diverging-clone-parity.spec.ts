@@ -34,7 +34,7 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(() => {
-  db.exec('DELETE FROM dry_pair_history');
+  db.rawSql.exec('DELETE FROM dry_pair_history');
 });
 
 afterAll(async () => {
@@ -53,7 +53,7 @@ interface PairRow {
 }
 
 function insertPair(r: PairRow): void {
-  db.run(
+  db.rawSql.run(
     `INSERT INTO dry_pair_history
       (pair_fingerprint, file1, symbol1, line1, content_hash1,
        file2, symbol2, line2, content_hash2, similarity, timestamp, run_id)
@@ -83,13 +83,13 @@ function legacyKeys(cfg: DivergenceCfg): string[] {
   const requiredDeclines = cfg.divergenceRuns ?? 2;
   if (threshold <= 0) return [];
 
-  const fingerprints = db.query(
+  const fingerprints = db.rawSql.query(
     'SELECT DISTINCT pair_fingerprint FROM dry_pair_history',
   ) as Array<{ pair_fingerprint: string }>;
 
   const out: string[] = [];
   for (const { pair_fingerprint: fp } of fingerprints) {
-    const rows = db.query(
+    const rows = db.rawSql.query(
       'SELECT similarity, timestamp FROM dry_pair_history WHERE pair_fingerprint = ? ORDER BY timestamp ASC',
       [fp],
     ) as Array<{ similarity: number; timestamp: string }>;
@@ -101,7 +101,7 @@ function legacyKeys(cfg: DivergenceCfg): string[] {
     }
 
     if (consecutiveDeclines >= requiredDeclines) {
-      const last = db.query(
+      const last = db.rawSql.query(
         'SELECT file1, line1 FROM dry_pair_history WHERE pair_fingerprint = ? ORDER BY timestamp DESC LIMIT 1',
         [fp],
       )[0] as { file1: string; line1: number } | undefined;
@@ -115,7 +115,7 @@ function legacyKeys(cfg: DivergenceCfg): string[] {
 
 /** The migrated rule over the same table, via the `clone-pair-history` producer. */
 async function migratedKeys(cfg: DivergenceCfg): Promise<string[]> {
-  const fact = CORPUS_PRODUCERS['clone-pair-history'].process({}, { indexHandle: db });
+  const fact = CORPUS_PRODUCERS['clone-pair-history'].process({}, { indexHandle: db.indexHandle });
   const rule = dryRules.find((r) => r.id === 'dry/diverging-clone')!;
   const findings = (await rule.analyze({
     facts: {

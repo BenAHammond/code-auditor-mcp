@@ -6,12 +6,20 @@
  * skip must be surgical and leave eager member methods firing.
  */
 
+import Database from 'better-sqlite3';
+
 interface ItemRow {
   id: number;
   name: string;
 }
 
-export async function renameAll(db: any, items: ItemRow[]): Promise<void> {
+// Spec 70 R4 — the handle is proven by the manifest-package import
+// (`better-sqlite3`), not a `D1Database` type annotation. `db.exec(sql)` with a
+// dynamic (interpolated) argument has no static SQL for R3, so the import is the
+// proof; the `D1Database` binding would read `unproven` (cannot-fire).
+const db = new Database(':memory:');
+
+export async function renameAll(items: ItemRow[]): Promise<void> {
   for (const item of items) {
     db.exec(`UPDATE items SET name = 'renamed' WHERE id = ${item.id}`);
   }
