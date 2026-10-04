@@ -1067,9 +1067,9 @@ the correct homes are recorded below.
 
 | List | Len | Stands in for |
 |------|-----|---------------|
-| `DB_RECEIVER_NAMES` | 4 | `db database sql stmt` — receiver names that mark a DB handle. |
-| `DB_CALL_METHOD_NAMES` | 6 | `exec prepare batch run all first` — the fixed DB-call API surface. |
-| `SQL_CARRYING_METHOD_NAMES` | 5 | `exec prepare query raw execute` — methods whose *first* arg is SQL text (vs a params array). |
+| ~~`DB_RECEIVER_NAMES`~~ (deleted, Spec 69 S3) | — | the former name-list fallback; removed with `S3` (declaration resolution replaces it). |
+| ~~`DB_CALL_METHOD_NAMES`~~ (deleted, 5.0.0) | — | the trimmed method set, collapsed into `DB_CALL_METHODS` (single owner in `provenance.ts`). |
+| `SQL_CARRYING_METHOD_NAMES` | 5 | `exec prepare query raw execute` — methods whose *first* arg is SQL text (vs a params array); the `sql-argument` evidence source's predicate, a pre-SQL-grammar crutch **slated for deletion by the SQL grammar** (Spec 70). |
 | `DB_BINDING_NAMES` | 1 | `env.DB` — the Cloudflare D1 binding. |
 | `DB_WRAPPER_NAMES` | 2 | `d1Query d1Exec` — D1 wrapper helpers. |
 | `SQL_TAG_NAMES` | 2 | `sql db` — tagged-template SQL tag names. |
@@ -1081,7 +1081,7 @@ the correct homes are recorded below.
 | `DB_PACKAGES` | 16 | known DB driver/ORM package names (`better-sqlite3 drizzle-orm @prisma/client pg mysql2 postgres kysely knex mongodb mongoose @libsql/client @planetscale/database @neondatabase/serverless @vercel/postgres bun:sqlite node:sqlite`). |
 | `VALIDATOR_PACKAGES` | 9 | validator library names (`zod joi ajv valibot yup superstruct arktype @sinclair/typebox class-validator`). |
 | `DB_TYPES` | 10 | known DB type names for propagation (`D1Database D1PreparedStatement D1Result Database Pool PrismaClient Kysely Connection SqliteDatabase BetterSQLite3Database`). |
-| `DB_CALL_METHODS` | 8 | `exec prepare batch run all first query raw` — the fixed DB-call surface (superset of `DB_CALL_METHOD_NAMES`). |
+| `DB_CALL_METHODS` | 8 | `exec prepare batch run all first query raw` — the fixed DB-call surface (single owner after the 5.0.0 method-list collapse). |
 | `ORM_METHODS` | 39 | ORM recognition surface (find/findOne/…/where/join/leftJoin/… + Kysely `selectFrom`/`selectAll`/…). |
 
 **schema-code — `schema/codeAnalysis.ts`.**
@@ -1149,7 +1149,10 @@ the correct homes are recorded below.
 
 ### Section B — the complete list
 
-Twenty-eight name/suffix/receiver lists total, across ten owning modules. Four named in the request
+Forty-five name/suffix/receiver lists total, across ten owning modules. Combined with Section A's
+17 source-region patterns, the two capstone sections enumerate **62 approximations** (17 + 45) — the
+correct total; the earlier "28 lists" figure under-counted by omitting the concern-classifier and
+security-vocabulary rows. Four named in the request
 resolve as follows: `DB_RECEIVER_NAMES` (real, 4), `isAbstractionBoundary`'s suffix regex (renamed —
 the `functionConcerns.ts` classifier, above), `BUILTIN_TYPES` (real, 56), `GO_GROUP_RULES` (renamed —
 the `goRules` array of 5 rule *definitions*, whose actual name lists are `SYNC_METHOD_NAMES`/

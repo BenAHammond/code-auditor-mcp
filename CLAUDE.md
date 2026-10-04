@@ -119,7 +119,7 @@ and WASM grammars survive packaging.
 
 ## Repository boundary — hard constraint
 The repositories you may modify are this one (code-auditor) and the docs
-site (`../code-auditor-docs/`, authorized by Ben). All other directories
+site (`docs/` in this repo, authorized by Ben). All other directories
 on this machine — including recall-protocol and any project used for
 validation — are READ-ONLY REFERENCE. You may read files and run
 `code-audit` against them; you may NEVER edit, create, delete, git-touch,

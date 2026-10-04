@@ -2,6 +2,190 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.0.0]
+
+About a third of the non-documentation findings the tool emitted on its own
+validation corpora turned out to be the tool's own precision defects rather
+than real signals — and the first triage of those defects was wrong about ten
+of them. The Spec 69 fix pass rebuilt the affected firing conditions (extractor
+consumers, cross-file receiver resolution, name-fallback deletion, algorithm
+placement) and re-measured every corpus; the before/after counts and the
+per-fix attribution are in `specs/spec69-fixes-corpus-effect.md`.
+
+### SQL is now a parsed format, not a regex (`node-sql-parser`)
+
+**SQL text was extracted and classified by regex alone; it is now parsed with
+`node-sql-parser` (5.4.0), a new runtime dependency.** `parseSql(text, dialect)`
+(`src/languages/sql/sqlAst.ts`) normalizes positional params, template
+substitutions, statement splitting, and transaction control, then parses each
+statement to an AST under the corpus's dialect. The grammar is CommonJS and
+synchronous, so the parse runs inline in the phase pipeline with no new async
+boundary. The regex residue the grammar did not absorb is enumerated in
+`specs/rule-evidence-audit.md` (next section), not silently retained.
+
+### `Dialect` narrowed — `sqlserver` and `oracle` removed
+
+**The SQL dialect enum previously accepted `sqlserver` and `oracle`; both are
+removed.** `Dialect` is now `'postgresql' | 'mysql' | 'sqlite'` only, and
+`normalizeDialect('sqlserver')` / `normalizeDialect('oracle')` return `null`
+(`discoveryQueries.ts:23`, `:200`; pinned by `discoveryQueries.spec.ts:37-38`).
+A caller naming an unsupported dialect gets a null (and the
+`cannot-fire`/`notApplicable` disposition), not a silently-wrong parse.
+
+### 62 approximations, classified
+
+**Every place a rule's truth rests on a regex over raw text or a
+hand-enumerated name — rather than a relation over located facts — is now
+enumerated.** `specs/rule-evidence-audit.md` classifies the full residue into
+Section A (17 source-region patterns) and Section B (45 name/suffix/receiver
+lists): 62 approximations total, each with its owning module, the pattern or
+list, the region scanned, and the rule(s) it decides. The count replaces the
+earlier under-count of 28 lists, which had omitted the concern-classifier and
+security-vocabulary rows.
+
+### 4.x baselines detected as incompatible
+
+**A baseline written by 4.x is detected and reported as incompatible, never
+silently matched.** `loadBaseline` rejects a baseline whose `schemaVersion` is
+≤ 3 (the 4.x format) and reports the regeneration command
+(`src/baseline.ts:76-87`), so a 4.x baseline cannot silently absorb a
+regression measured at a lower precision. Pinned by `baseline.test.ts:198-201`.
+
+### `CodeIndexDB` is decomposed into per-concern modules (breaking API change)
+
+**`CodeIndexDB` no longer exposes its 67 storage methods directly.** The inline
+methods — register/search, graph, coverage, schema, whitelist, audit results,
+analyzer config, code maps, project tasks, conventions, meta, provenance,
+inferred receivers, and raw SQL — all lived on the one class, which pushed
+`solid/class-size` over both thresholds. They now live on public per-concern
+fields, so call sites change from `db.<method>(…)` to `db.<field>.<method>(…)`.
+
+- `db.functionIndex` — `registerFunction`, `registerFunctions`, `findDefinition`,
+  `getAllFunctions`, `getFunctionCount`, `getStats`
+- `db.search` — `searchFunctions`
+- `db.graph` — `updateDependencyGraph`, `getTransitiveDependencies`,
+  `getTransitiveCallers`, `detectCircularDependencies`, `calculateDependencyDepths`,
+  `getGraphStats`
+- `db.coverage` — `clearCoverageData`, `importCoverageData`, `getCoverageByBasis`,
+  `getCoverageByRiskDecile`, `getUntestedTopDecile`, `isCoverageStale`
+- `db.meta` — `getMeta`, `setMeta`
+- `db.provenance` — `getFileProvenance`, `storeFileProvenance`
+- `db.inferredReceivers` — `getInferredReceivers`, `storeInferredReceivers`
+- `db.schema` — `getSchema`, `getAllSchemas`, `storeSchema`, `deleteSchema`,
+  `getSchemaStats`, `recordSchemaUsage`, `getSchemaUsage`, `clearSchemaUsageForFile`,
+  `findFunctionsUsingTable`
+- `db.whitelist` — `isWhitelisted`, `getWhitelist`, `addWhitelistEntry`,
+  `updateWhitelistStatus`, `detectWhitelistCandidates`
+- `db.auditResults` — `getAuditResults`, `getMostRecentAuditResults`,
+  `storeAuditResults`
+- `db.analyzerConfig` — `getAllAnalyzerConfigs`, `getAnalyzerConfig`,
+  `storeAnalyzerConfig`, `deleteAnalyzerConfig`, `resetAnalyzerConfigs`
+- `db.codeMap` — `listCodeMapSections`, `getCodeMapSection`, `storeCodeMapSection`,
+  `clearOldCodeMaps`, `deleteCodeMap`
+- `db.projectTasks` — `createProjectTask`, `getProjectTask`, `listProjectTasks`,
+  `listProjectTasksTree`, `listActionableProjectTasks`, `updateProjectTask`,
+  `completeProjectTask`, `deleteProjectTask`, `hasOpenTaskByFingerprint`
+- `db.conventions` — `mineAllConventions`
+- `db.rawSql` — `query`, `count`, `run`, `exec`, `tableHasRows`
+
+Five of those — `query`, `count`, `tableHasRows`, `run`, `exec` — plus `getMeta`
+and `getUntestedTopDecile` are also composed into a new read-only `db.indexHandle`
+field (with `rawDb`), the analyzer facade that replaces passing the whole
+`CodeIndexDB` to analyzers as an `IndexHandle`.
+
+**`functionIndex` is now a public field.** The function-index store — whose
+`functionToRow` / `rowToFunction` helpers were private to `CodeIndexDB`, and which
+surfaced during the decomposition under an underscore-private `_functionIndex` —
+is the public `db.functionIndex` field, so `db.functionIndex.functionToRow(…)` is a
+supported access path.
+
+**`searchWithSchemaContext` drops its dead first argument.** The method's first
+parameter (`query: string`) was never read — the body called `searchFunctions`
+with `options` alone — so it is removed. The signature is now
+`searchWithSchemaContext(options?)`.
+
+### Removed config key: `dbCallMethods`
+
+**`schema.dbCallMethods` / `data-access.dbCallMethods` was a dead config knob —
+declared, defaulted, and threaded through the pipeline into `buildProvenanceContext`,
+which never read it.** DB-call detection hardcodes `DB_CALL_METHODS` (the single
+method set in `provenance.ts`), so the key had no effect on which calls were
+treated as DB calls. It is removed from the config types, the defaults, and the
+threading; a `.codeauditor.json` that still sets it is now a no-op.
+
+### LokiJS sniff no longer reads the whole index into memory
+
+**Every `CodeIndexDB.initialize()` in every 4.x release read the entire index
+file into memory as a UTF-8 string just to decide whether it was a legacy
+LokiJS file to migrate.** `migrateFromLokiJS` ran `readFileSync(dbPath, 'utf-8')`
+up front, then checked the first bytes for the LokiJS `filename`/`collections`
+marker — a full-file read whose only purpose was a format sniff, on a path that
+almost always answers "not LokiJS" (the file is already SQLite). The cost scaled
+with index size: ~55 ms CPU and ~19.7 MB slurped into memory (roughly double that
+as a JS UTF-16 string) per process start on a 19.7 MB index, and it grew with the
+project.
+
+**The fix reads a 64 KiB header instead** (`openSync`/`readSync` of the leading
+`LOKIJS_SNIFF_BYTES`), which is enough to distinguish a LokiJS JSON export (whose
+`filename`/`collections` keys sit at the very top) from a SQLite binary. The
+full-file read now runs only when the sniff has already confirmed the file *is*
+LokiJS and a migration is actually about to happen — ~2 ms CPU, and no index-sized
+allocation on the common path.
+
+### `verify:close` no longer short-circuits on the first failing gate
+
+**`verify:close` was a single `&&` conjunction of thirteen gates, and a `&&`
+chain stops at the first non-zero exit.** The first gate to fail aborted the run
+and every gate *after* it was silently skipped — a gate "passed" by not running.
+This is the recurring failure shape the project already documents twice (the
+broken-compiler-that-sat-green in 4.0.1, and the stale-`missing-org-filter` false
+clean in 4.1.0). It bit a third time here: `verify:dist-fresh` has failed since
+the Spec 69 R1/R2 commits (a stale `dist/cli.js`), so `verify:oracle-shortfalls` —
+which pins the Spec 69 completeness residuals — had not actually run in that
+window, and its baseline drift sat concealed behind a `verify:dist-fresh` failure
+for seven consecutive passes of the chain.
+
+**The fix is a run-all runner, not another reorder.** `verify:close` now runs
+`scripts/verify-close.mjs`, which executes every gate, records every outcome, and
+prints a full PASS/FAIL/SKIP summary before deciding the exit code — so no gate
+is ever skipped by an earlier failure. The one remaining skip is deliberate and
+loud: the gates that consume `dist/cli.js` (`test`, `test:integration`,
+`verify:gate-budget`, `verify:self`, `verify:dist`) are `SKIPPED (dist stale)`
+when `verify:dist-fresh` fails, because running them would validate a compiled
+CLI that is not the source — the exact trap `verify:dist-fresh` exists to catch.
+The drift gates (`bench`, `verify:recall-value-drift`,
+`verify:extraction-completeness`, `verify:oracle-shortfalls`) are `tsx` over
+`src/` and do not depend on dist, so they always run and surface their drift
+alongside the dist failure. The planner is pinned by
+`gate-liveness.test.ts` (a stale dist skips only the dist-consuming set and still
+runs every drift gate), the same machine form as Spec 62 R9.
+
+### Known issue — `verify:gate-budget` passes with a thin, flaky margin
+
+**`verify:gate-budget` is green on the 5.0.0 tree but not clean.** The warm-gate
+CPU time sits at 344 ms and 352 ms inside the `verify:close` chain, 348–383 ms
+standalone, with a tail out to 419 ms against the 400 ms budget. That margin is
+thin enough to flip on a cold cache or a one-off slow rule, so it is recorded
+here as a known issue rather than as a settled green. The durable fix is the
+double-parse collapse — the warm gate currently parses each file three times
+(`detectChangedFunctions` for the content-hash diff, the legacy pipeline's
+always-on index-population visitors, and the phase model's single
+`parseOne`). Collapsing those to one parse is the release's outstanding
+performance item, tracked against the phase-model migration's remaining
+board items (Spec 63 R1–R3, Spec 64 R1–R3/R5–R7, board §6.1/§6.2/§7/§8/§9).
+
+### Known limitation — `text(N)` DDL columns don't parse under the sqlite grammar
+
+**`node-sql-parser`'s sqlite grammar rejects `text(N)` column spellings — the
+shape Drizzle-sqlite emits for `text` columns — so DDL extraction reports
+`cannot-fire` on those tables rather than emitting their tables/columns.**
+`text(256)` / `text(2)` fail to parse while `text` and `varchar(255)` succeed;
+it is an upstream grammar limitation, not a defect in this tool's extractors.
+This is a permanent detection gap across any Drizzle-sqlite corpus (most
+acutely openstatus), not a file-local note; the honest `cannot-fire` is correct
+behavior for an unparseable statement, and a regex fallback would re-introduce
+the hand-rolled parser this release removed. See `specs/known-issues.md`.
+
 ## [Unreleased]
 
 ### Any repo with a Go file silently dropped eleven analyzers

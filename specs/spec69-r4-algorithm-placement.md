@@ -51,13 +51,15 @@ Two entries are named in the spec but are correctly left in the rule:
   the seam). Once the CIELAB conversion moves out, the rule clusters over
   processor-provided Lab values — the processor computes, the rule decides.
 
-## The move
+## The move (done)
 
-`value-drift`'s CIELAB conversion (`parseColorToRGB`, `rgbToLab`, `deltaE`)
-moves from `styles.ts` into a processor that produces a `color-values` fact (per
-color declaration: property, file, line, raw value, sRGB triple, Lab triple).
-The rule reads `color-values` and keeps the clustering + canonical selection +
-flagging, whose threshold (`colorDeltaE`) is its own config.
+`value-drift`'s CIELAB conversion moved from `styles.ts` into
+`src/phase/colorMath.ts` (`parseColorToRGB`, `rgbToLab`, `labDistance` — the
+`deltaE` name the list recorded is now `labDistance`), and a `color-values`
+corpus producer (`producers.ts`, `needs: ['style-declarations']`) pre-computes
+the per-declaration Lab triples. The rule reads `color-values` via
+`ctx.facts['color-values']`, imports only `labDistance`, and keeps the
+clustering + canonical selection + flagging at its own `colorDeltaE` config.
 
 This mirrors how the DRY hash/skeleton was already placed: the producer
 computes the derived value with default normalization and no threshold; the rule

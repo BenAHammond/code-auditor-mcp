@@ -53,8 +53,13 @@ invisible the same way its *tables* were: a query scoped by
 `eq(x.workspaceId, …)` read as having no tenant predicate and fired. Unifying
 predicate detection and tier discovery on the one configured vocabulary quiets
 those 89 false positives. `hhra-org` tiers on the default `organization_id`,
-which was already in the eight, so it carries only the one stray configured
-column (−1). This is the largest single real-corpus move in the whole fix set.
+which was already in the eight, so its one Fix-1 move is **not** the vocabulary
+half but the dotted-value half: `existingRelation` in
+`app/api/admin/users/[userId]/organizations/route.ts` (`POST`) is a
+correctly-scoped `eq(userOrganizations.organizationId, validatedData.organizationId)`
+whose dotted *value* the old blanket lookahead misread as a join (−1). See
+`spec69-r5-hhra-redisposition.md`. This is the largest single real-corpus move
+in the whole fix set.
 
 **Fix 2 — tagged templates recurse for interpolation (`bb3493e`): +17 total
 (+7 hhra-org, +10 openstatus).** `sql\`…\`` tags whose template is a direct
