@@ -31,6 +31,18 @@ import type { AstFile, CodeBlockFact } from './types.js';
 // DEFAULT_DRY_CONFIG values (true) here — the same values the legacy
 // default-merged analyzer used before any user override.
 
+/** Reserved words left intact by `normalizeStructure` — hoisted so the replace
+ *  callback does not re-allocate a 70-entry Set for every identifier match. */
+const STRUCTURE_KEYWORDS = new Set([
+  'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
+  'return', 'throw', 'try', 'catch', 'finally', 'new', 'delete', 'typeof',
+  'instanceof', 'in', 'of', 'class', 'extends', 'super', 'this', 'function',
+  'const', 'let', 'var', 'async', 'await', 'yield', 'import', 'export',
+  'default', 'from', 'as', 'static', 'get', 'set', 'enum', 'type', 'interface',
+  'implements', 'abstract', 'public', 'private', 'protected', 'readonly',
+  'ID', 'LIT',
+]);
+
 /**
  * Normalize code to its token-kind sequence.
  * Identifiers → ID, string/number/regex literals → LIT.
@@ -59,17 +71,7 @@ function normalizeStructure(code: string): string {
   // Identifiers → ID (after literals so we don't replace inside strings)
   // Match camelCase, PascalCase, snake_case, dollar-prefixed, underscore-prefixed
   normalized = normalized.replace(/\b[a-zA-Z_$][a-zA-Z0-9_$]*\b/g, (match) => {
-    // Keep keywords intact
-    const keywords = new Set([
-      'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
-      'return', 'throw', 'try', 'catch', 'finally', 'new', 'delete', 'typeof',
-      'instanceof', 'in', 'of', 'class', 'extends', 'super', 'this', 'function',
-      'const', 'let', 'var', 'async', 'await', 'yield', 'import', 'export',
-      'default', 'from', 'as', 'static', 'get', 'set', 'enum', 'type', 'interface',
-      'implements', 'abstract', 'public', 'private', 'protected', 'readonly',
-      'ID', 'LIT',
-    ]);
-    if (keywords.has(match)) return match;
+    if (STRUCTURE_KEYWORDS.has(match)) return match;
     return 'ID';
   });
 
@@ -87,12 +89,6 @@ function normalizeCode(code: string): string {
   return normalized;
 }
 
-/** Normalize code for structural comparison (default ignore flags). */
-function normalizeCodeForStructure(code: string): string {
-  const normalized = normalizeCode(code);
-  return normalizeStructure(normalized);
-}
-
 /** Hash code for comparison. */
 function hashCode(text: string): string {
   return crypto.createHash('sha256').update(text).digest('hex');
@@ -104,27 +100,30 @@ function countLines(text: string): number {
 }
 
 /**
- * Find a node by its location via BFS (from the root's children, never the
- * root — the root is a whole-file wrapper whose start collides with the first
- * top-level child).
+ * Index every node by its start `line:column` in one BFS pass (starting from the
+ * root's children, never the root — the root is a whole-file wrapper whose start
+ * collides with the first top-level child). Built once per file so block lookup
+ * is O(1); the previous per-block BFS (`queue.shift()` on an array) was O(n²)
+ * and was the gate-budget's bimodal ~29 ms tail.
  */
-function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
+function buildLocationIndex(root: ASTNode): Map<string, ASTNode> {
+  const index = new Map<string, ASTNode>();
   const queue: ASTNode[] = [...(root.children ?? [])];
+  let head = 0;
 
-  while (queue.length > 0) {
-    const node = queue.shift()!;
+  while (head < queue.length) {
+    const node = queue[head++];
 
-    if (node.location.start.line === location.line &&
-        node.location.start.column === location.column) {
-      return node;
-    }
+    const start = node.location.start;
+    const key = start.line + ':' + start.column;
+    if (!index.has(key)) index.set(key, node);
 
     if (node.children) {
-      queue.push(...node.children);
+      for (const child of node.children) queue.push(child);
     }
   }
 
-  return null;
+  return index;
 }
 
 /** Walk the AST depth-first, invoking the callback on every node. */
@@ -162,7 +161,7 @@ function createCodeBlock(ctx: BlockContext, node: ASTNode): CodeBlockFact | null
 
   const normalizedText = normalizeCode(text);
   const lineCount = countLines(text);
-  const structuralSkeleton = normalizeCodeForStructure(text);
+  const structuralSkeleton = normalizeStructure(normalizedText);
 
   return {
     kind: 'block',
@@ -177,13 +176,15 @@ function createCodeBlock(ctx: BlockContext, node: ASTNode): CodeBlockFact | null
   };
 }
 
-/** Locate the node at `location`, build its block, and append it. */
+/** Look up the node at `location` in the pre-built index, build its block, and
+ *  append it. */
 function collectBlock(
   ctx: BlockContext,
+  index: Map<string, ASTNode>,
   location: { line: number; column: number },
   blocks: CodeBlockFact[],
 ): void {
-  const node = findNodeByLocation(ctx.ast.root, location);
+  const node = index.get(location.line + ':' + location.column);
   if (!node) return;
   const block = createCodeBlock(ctx, node);
   if (block) blocks.push(block);
@@ -192,22 +193,23 @@ function collectBlock(
 /** Extract all code blocks from an AST: functions, classes + methods, control-flow. */
 function extractBlocks(ctx: BlockContext): CodeBlockFact[] {
   const blocks: CodeBlockFact[] = [];
+  const index = buildLocationIndex(ctx.ast.root);
 
   for (const func of ctx.adapter.extractFunctions(ctx.ast)) {
-    collectBlock(ctx, func.location.start, blocks);
+    collectBlock(ctx, index, func.location.start, blocks);
   }
 
   const classes = ctx.adapter.extractClasses(ctx.ast);
   for (const cls of classes) {
-    collectBlock(ctx, cls.location.start, blocks);
+    collectBlock(ctx, index, cls.location.start, blocks);
     for (const method of cls.methods) {
-      collectBlock(ctx, method.location.start, blocks);
+      collectBlock(ctx, index, method.location.start, blocks);
     }
   }
 
   walkAST(ctx.ast.root, (node) => {
     if (isSignificantBlockType(node.type)) {
-      collectBlock(ctx, node.location.start, blocks);
+      collectBlock(ctx, index, node.location.start, blocks);
     }
   });
 
