@@ -21,6 +21,7 @@
 
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { STYLE_MARKUP_EXTENSIONS } from '../utils/fileDiscovery.js';
+import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { fileProducerFor, CORPUS_PRODUCERS } from './producers.js';
 import { solidRules } from './rules/solid.js';
 import { dataAccessRules, loopQueryRules } from './rules/dataAccess.js';
@@ -42,13 +43,15 @@ import { schemaJsonRules } from './rules/schemaJson.js';
 import type {
   ParsedFile,
   FileSymbols,
+  FactShapes,
+  FileFactKind,
   ResolvedQuery,
   LoopQueryFact,
   DynamicSqlFact,
   SchemaUsageFact,
   SchemaDeclaration,
   SchemaObject,
-  TableCatalog,
+  ResolutionFact,
   MigrationHistory,
   Entity,
   Format,
@@ -106,16 +109,23 @@ export function formatFor(path: string): Format {
  *
  * @param input - The file to parse (path + already-read content).
  * @param projectRoot - The optional project root threaded into the parsed file.
+ * @param sqlDialect - The corpus's named SQL dialect (null means cannot-fire for
+ *   the SQL-reading producers: `ddl-declarations` and `data-access-calls`).
  * @returns The parsed file, or `null` when no adapter resolves or the parse fails.
  */
-export async function parseOne(input: InputFile, projectRoot?: string): Promise<ParsedFile | null> {
+export async function parseOne(
+  input: InputFile,
+  projectRoot?: string,
+  sqlDialect?: Dialect | null,
+): Promise<ParsedFile | null> {
   // `.sql` and markup (`.astro`/`.vue`/`.svelte`/`.html`) are the text-only
   // formats: no grammar, no adapter, no AST. Their sole producers
   // (ddl-declarations, style-declarations) read `.source`/`.file`, so return a
   // ParsedFile with neither `ast` nor `adapter`.
   const format = formatFor(input.path);
+  const sqlDialectSpread = sqlDialect === undefined ? {} : { sqlDialect };
   if (format === 'sql' || format === 'markup') {
-    return { file: input.path, format, source: input.content, ...(projectRoot ? { projectRoot } : {}) };
+    return { file: input.path, format, source: input.content, ...(projectRoot ? { projectRoot } : {}), ...sqlDialectSpread };
   }
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(input.path);
   if (!adapter) return null;
@@ -128,10 +138,42 @@ export async function parseOne(input: InputFile, projectRoot?: string): Promise<
       ast,
       adapter,
       ...(projectRoot ? { projectRoot } : {}),
+      ...sqlDialectSpread,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Parse → Process the shared body behind every per-file fact build: parse each
+ * file (freeing its AST after the producer runs), run the `(kind, format)`
+ * producer, and concatenate the fragments into the corpus fact. The single seam
+ * behind `buildFileSymbols`, `buildDataAccessCalls`, `buildLoopQueries`,
+ * `buildDynamicSql`, `buildSchemaUsage`, `buildDdlDeclarations`, and
+ * `buildSchemaObjects` — each was the identical loop over a different fact kind
+ * and return type, so the loop lives here and the callers name `kind` (the
+ * return type is `FactShapes[K]`, resolved by `kind`). `sqlDialect` stays
+ * `undefined` for kinds whose producers do not read SQL; `parseOne` treats an
+ * explicit `undefined` as "no dialect" (identical to omitting the argument).
+ */
+async function buildFileFact<K extends FileFactKind>(
+  files: readonly InputFile[],
+  kind: K,
+  sqlDialect?: Dialect | null,
+): Promise<FactShapes[K]> {
+  const out = [] as unknown as FactShapes[K];
+  for (const input of files) {
+    const parsed = await parseOne(input, undefined, sqlDialect);
+    if (!parsed) continue;
+    try {
+      const producer = fileProducerFor(kind, parsed.format);
+      if (producer) (out as unknown[]).push(...producer.process(parsed));
+    } finally {
+      parsed.ast?.dispose?.();
+    }
+  }
+  return out;
 }
 
 /**
@@ -142,18 +184,7 @@ export async function parseOne(input: InputFile, projectRoot?: string): Promise<
  * @returns The assembled `file-symbols` corpus fact.
  */
 export async function buildFileSymbols(files: readonly InputFile[]): Promise<FileSymbols[]> {
-  const symbols: FileSymbols[] = [];
-  for (const input of files) {
-    const parsed = await parseOne(input);
-    if (!parsed) continue;
-    try {
-      const producer = fileProducerFor('file-symbols', parsed.format);
-      if (producer) symbols.push(...producer.process(parsed));
-    } finally {
-      parsed.ast?.dispose?.();
-    }
-  }
-  return symbols;
+  return buildFileFact(files, 'file-symbols');
 }
 
 /**
@@ -186,25 +217,38 @@ async function analyzeWithRules(
  *  so the Go arms (`interface-size`'s Go branch, `struct-size`, `function-size`,
  *  `switch-size`, `liskov-substitution`) reduce an empty fact in this TS-only
  *  slice rather than a missing one — they produce nothing because there are no
- *  Go files here.
+ *  Go files here. `resolution` supplies the class-declaration chain
+ *  `solid/open-closed` walks (`isErrorSubclass`) for its `instanceof` guard.
  *
  *  @param symbols - The assembled `file-symbols` fact to analyze.
+ *  @param resolution - The one resolution fact (`solid/open-closed` reads its
+ *    `classes` for the extends-Error check).
  *  @param thresholds - The SOLID rule thresholds (defaults to `{}`).
  *  @returns The SOLID rules' findings over the fact.
  */
-export async function analyzeFileSymbols(symbols: FileSymbols[], thresholds: ThresholdValues = {}): Promise<Finding[]> {
+export async function analyzeFileSymbols(symbols: FileSymbols[], resolution: ResolutionFact, thresholds: ThresholdValues = {}): Promise<Finding[]> {
   return analyzeWithRules(solidRules, {
     'file-symbols': symbols,
+    'resolution': resolution,
     'type-declarations': [] as TypeDeclarationsFact[],
     'go-functions': [] as GoFunctionFact[],
     'go-switches': [] as GoSwitchFact[],
   }, ['typescript', 'tsx', 'javascript', 'go'], thresholds);
 }
 
-/** The whole vertical slice: parse → file-symbols → SOLID rules → findings. */
+/** The whole vertical slice: parse → file-symbols + resolution → SOLID rules →
+ *  findings.
+ *
+ * @param files the input files to parse and analyze
+ * @param thresholds the SOLID rule thresholds (defaults to `{}`)
+ * @returns the SOLID rules' findings over the whole file set
+ */
 export async function runFileSymbolsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const symbols = await buildFileSymbols(files);
-  return analyzeFileSymbols(symbols, thresholds);
+  const [symbols, resolution] = await Promise.all([
+    buildFileSymbols(files),
+    buildResolution(files),
+  ]);
+  return analyzeFileSymbols(symbols, resolution, thresholds);
 }
 
 // ── documentation slice (same fact, different rules) ─────────────────────────
@@ -233,54 +277,70 @@ export async function runDocumentationSlice(files: readonly InputFile[], thresho
  * corpus fact (every resolved DB call from every file, ASTs already freed).
  *
  * @param files - The input files to parse and process.
+ * @param sqlDialect - The corpus's named dialect for SQL parsing, or null/undefined.
  * @returns The assembled `data-access-calls` corpus fact.
  */
-export async function buildDataAccessCalls(files: readonly InputFile[]): Promise<ResolvedQuery[]> {
-  const calls: ResolvedQuery[] = [];
-  for (const input of files) {
-    const parsed = await parseOne(input);
-    if (!parsed) continue;
-    try {
-      const producer = fileProducerFor('data-access-calls', parsed.format);
-      if (producer) calls.push(...producer.process(parsed));
-    } finally {
-      parsed.ast?.dispose?.();
-    }
-  }
-  return calls;
+export async function buildDataAccessCalls(
+  files: readonly InputFile[],
+  sqlDialect?: Dialect | null,
+): Promise<ResolvedQuery[]> {
+  const [candidates, within, imports, exports, goBindings, activity] = await Promise.all([
+    buildFileFact(files, 'data-access-calls-candidates'),
+    buildFileFact(files, 'within-file-provenance'),
+    buildFileFact(files, 'import-specifiers'),
+    buildFileFact(files, 'export-symbols'),
+    buildFileFact(files, 'go-package-bindings'),
+    buildFileFact(files, 'receiver-activity'),
+  ]);
+  const provenance = CORPUS_PRODUCERS['receiver-provenance'].process({
+    'within-file-provenance': within,
+    'import-specifiers': imports,
+    'export-symbols': exports,
+    'go-package-bindings': goBindings,
+  });
+  return CORPUS_PRODUCERS['data-access-calls'].process(
+    {
+      'data-access-calls-candidates': candidates,
+      'within-file-provenance': within,
+      'receiver-provenance': provenance,
+      'receiver-activity': activity,
+    },
+    { sqlDialect: sqlDialect ?? null },
+  );
 }
 
-/** Analyze the assembled `data-access-calls` + `table-catalog` facts with the
- *  data-access rules. `missing-org-filter` reads the catalog for Tier 3 (DDL)
+/** Analyze the assembled `data-access-calls` + `resolution` facts with the
+ *  data-access rules. `missing-org-filter` reads the resolution for Tier 3 (DDL)
  *  tenancy; the other three rules ignore it (their `needs` declare only
  *  `data-access-calls`, and the union context carries both).
  *
  *  @param calls - The assembled `data-access-calls` fact to analyze.
- *  @param catalog - The known-table catalog (`missing-org-filter` reads it).
+ *  @param resolution - The one resolution fact (`missing-org-filter` reads it).
  *  @param thresholds - The data-access rule thresholds (defaults to `{}`).
  *  @returns The data-access rules' findings over the facts.
  */
 export async function analyzeDataAccessCalls(
   calls: ResolvedQuery[],
-  catalog: TableCatalog,
+  resolution: ResolutionFact,
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  return analyzeWithRules(dataAccessRules, { 'data-access-calls': calls, 'table-catalog': catalog }, ['typescript', 'tsx', 'javascript', 'go'], thresholds);
+  return analyzeWithRules(dataAccessRules, { 'data-access-calls': calls, 'resolution': resolution }, ['typescript', 'tsx', 'javascript', 'go'], thresholds);
 }
 
 /**
- * The data-access slice: parse → data-access-calls + table-catalog → rules → findings.
+ * The data-access slice: parse → data-access-calls + resolution → rules → findings.
  *
  * @param files - The input files to parse and process.
  * @param thresholds - The data-access rule thresholds (defaults to `{}`).
+ * @param sqlDialect - The corpus's named dialect (null means cannot-fire).
  * @returns The data-access rules' findings over the assembled facts.
  */
-export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const [calls, catalog] = await Promise.all([
-    buildDataAccessCalls(files),
-    buildTableCatalog(files),
+export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues, sqlDialect?: Dialect | null): Promise<Finding[]> {
+  const [calls, resolution] = await Promise.all([
+    buildDataAccessCalls(files, sqlDialect),
+    buildResolution(files, sqlDialect),
   ]);
-  return analyzeDataAccessCalls(calls, catalog, thresholds);
+  return analyzeDataAccessCalls(calls, resolution, thresholds);
 }
 
 // ── loop-queries slice (loop-queries → loop-query) ──────────────────────────
@@ -292,21 +352,36 @@ export async function runDataAccessSlice(files: readonly InputFile[], thresholds
  * in isolation, exactly as the legacy `checkLoopQueries` ran once per AST.
  *
  * @param files - The input files to parse and process.
+ * @param sqlDialect - The corpus's named dialect (null means cannot-fire).
  * @returns The assembled `loop-queries` corpus fact.
  */
-export async function buildLoopQueries(files: readonly InputFile[]): Promise<LoopQueryFact[]> {
-  const facts: LoopQueryFact[] = [];
-  for (const input of files) {
-    const parsed = await parseOne(input);
-    if (!parsed) continue;
-    try {
-      const producer = fileProducerFor('loop-queries', parsed.format);
-      if (producer) facts.push(...producer.process(parsed) as LoopQueryFact[]);
-    } finally {
-      parsed.ast?.dispose?.();
-    }
-  }
-  return facts;
+export async function buildLoopQueries(
+  files: readonly InputFile[],
+  sqlDialect?: Dialect | null,
+): Promise<LoopQueryFact[]> {
+  const [candidates, within, imports, exports, goBindings, activity] = await Promise.all([
+    buildFileFact(files, 'loop-query-candidates'),
+    buildFileFact(files, 'within-file-provenance'),
+    buildFileFact(files, 'import-specifiers'),
+    buildFileFact(files, 'export-symbols'),
+    buildFileFact(files, 'go-package-bindings'),
+    buildFileFact(files, 'receiver-activity'),
+  ]);
+  const provenance = CORPUS_PRODUCERS['receiver-provenance'].process({
+    'within-file-provenance': within,
+    'import-specifiers': imports,
+    'export-symbols': exports,
+    'go-package-bindings': goBindings,
+  });
+  return CORPUS_PRODUCERS['loop-queries'].process(
+    {
+      'loop-query-candidates': candidates,
+      'within-file-provenance': within,
+      'receiver-provenance': provenance,
+      'receiver-activity': activity,
+    },
+    { sqlDialect: sqlDialect ?? null },
+  );
 }
 
 /**
@@ -323,9 +398,20 @@ export async function analyzeLoopQueries(
   return analyzeWithRules(loopQueryRules, { 'loop-queries': facts }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
-/** The loop-queries slice: parse → loop-queries → loop-query → findings. */
-export async function runLoopQueriesSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const facts = await buildLoopQueries(files);
+/**
+ * The loop-queries slice: parse → loop-queries → loop-query → findings.
+ *
+ * @param files - The input files to parse and process.
+ * @param thresholds - The loop-query rule thresholds (defaults to `{}`).
+ * @param sqlDialect - The corpus's named dialect (null means cannot-fire).
+ * @returns The loop-query rule's findings over the assembled facts.
+ */
+export async function runLoopQueriesSlice(
+  files: readonly InputFile[],
+  thresholds?: ThresholdValues,
+  sqlDialect?: Dialect | null,
+): Promise<Finding[]> {
+  const facts = await buildLoopQueries(files, sqlDialect);
   return analyzeLoopQueries(facts, thresholds);
 }
 
@@ -342,18 +428,7 @@ export async function runLoopQueriesSlice(files: readonly InputFile[], threshold
  * @returns The assembled `dynamic-sql` corpus fact.
  */
 export async function buildDynamicSql(files: readonly InputFile[]): Promise<DynamicSqlFact[]> {
-  const facts: DynamicSqlFact[] = [];
-  for (const input of files) {
-    const parsed = await parseOne(input);
-    if (!parsed) continue;
-    try {
-      const producer = fileProducerFor('dynamic-sql', parsed.format);
-      if (producer) facts.push(...producer.process(parsed) as DynamicSqlFact[]);
-    } finally {
-      parsed.ast?.dispose?.();
-    }
-  }
-  return facts;
+  return buildFileFact(files, 'dynamic-sql');
 }
 
 /**
@@ -383,135 +458,139 @@ export async function runDynamicSqlSlice(files: readonly InputFile[], thresholds
  * fact (every table reference from every file, ASTs already freed).
  *
  * @param files - The input files to parse and process.
+ * @param sqlDialect - The corpus's named dialect for SQL parsing, or null/undefined.
  * @returns The assembled `schema-usage` corpus fact.
  */
-export async function buildSchemaUsage(files: readonly InputFile[]): Promise<SchemaUsageFact[]> {
-  const usages: SchemaUsageFact[] = [];
-  for (const input of files) {
-    const parsed = await parseOne(input);
-    if (!parsed) continue;
-    try {
-      const producer = fileProducerFor('schema-usage', parsed.format);
-      if (producer) usages.push(...producer.process(parsed));
-    } finally {
-      parsed.ast?.dispose?.();
-    }
-  }
-  return usages;
+export async function buildSchemaUsage(
+  files: readonly InputFile[],
+  sqlDialect?: Dialect | null,
+): Promise<SchemaUsageFact[]> {
+  const [candidates, within, imports, exports, goBindings, activity] = await Promise.all([
+    buildFileFact(files, 'schema-usage-candidates'),
+    buildFileFact(files, 'within-file-provenance'),
+    buildFileFact(files, 'import-specifiers'),
+    buildFileFact(files, 'export-symbols'),
+    buildFileFact(files, 'go-package-bindings'),
+    buildFileFact(files, 'receiver-activity'),
+  ]);
+  const provenance = CORPUS_PRODUCERS['receiver-provenance'].process({
+    'within-file-provenance': within,
+    'import-specifiers': imports,
+    'export-symbols': exports,
+    'go-package-bindings': goBindings,
+  });
+  return CORPUS_PRODUCERS['schema-usage'].process(
+    {
+      'schema-usage-candidates': candidates,
+      'within-file-provenance': within,
+      'receiver-provenance': provenance,
+      'receiver-activity': activity,
+    },
+    { sqlDialect: sqlDialect ?? null },
+  );
 }
 
 /**
  * Parse → Process for the `ddl-declarations` fact (DDL in code and `.sql`
  * migration files). Returns the raw declarations both corpus processors
- * (`table-catalog`, `migration-history`) reduce — so the two derive from one
+ * (`resolution`, `migration-history`) reduce — so the two derive from one
  * parse pass rather than re-parsing the same files twice.
  *
  * @param files - The input files to parse and process.
+ * @param sqlDialect - The corpus's named dialect for SQL parsing, or null/undefined.
  * @returns The raw `ddl-declarations` the corpus processors reduce.
  */
-export async function buildDdlDeclarations(files: readonly InputFile[]): Promise<SchemaDeclaration[]> {
-  const declarations: SchemaDeclaration[] = [];
-  for (const input of files) {
-    const parsed = await parseOne(input);
-    if (!parsed) continue;
-    try {
-      const producer = fileProducerFor('ddl-declarations', parsed.format);
-      if (producer) declarations.push(...producer.process(parsed));
-    } finally {
-      parsed.ast?.dispose?.();
-    }
-  }
-  return declarations;
+export async function buildDdlDeclarations(
+  files: readonly InputFile[],
+  sqlDialect?: Dialect | null,
+): Promise<SchemaDeclaration[]> {
+  return buildFileFact(files, 'ddl-declarations', sqlDialect);
 }
 
 /**
  * Parse → Process for the `schema-objects` fact (ORM `const <id> = pgTable(
  * 'name', …)` bindings). Returns the identifier → SQL-name bindings the
- * `table-catalog` corpus processor folds into its alias map.
+ * `resolution` corpus processor folds into its alias map.
  *
  * @param files - The input files to parse and process.
  * @returns The raw `schema-objects` the corpus processor reduces.
  */
 export async function buildSchemaObjects(files: readonly InputFile[]): Promise<SchemaObject[]> {
-  const objects: SchemaObject[] = [];
-  for (const input of files) {
-    const parsed = await parseOne(input);
-    if (!parsed) continue;
-    try {
-      const producer = fileProducerFor('schema-objects', parsed.format);
-      if (producer) objects.push(...producer.process(parsed) as SchemaObject[]);
-    } finally {
-      parsed.ast?.dispose?.();
-    }
-  }
-  return objects;
+  return buildFileFact(files, 'schema-objects');
 }
 
 /**
- * Reduce the `ddl-declarations` fact through the `table-catalog` corpus
- * processor into the known-table set. The JSON-schema half of the old catalog
- * is config-driven (§10) and not reachable from this simple runner, so it is
- * dropped — this is the DDL-only slice of the catalog, the config-free half the
- * corpus processor consumes.
+ * Reduce the `ddl-declarations` + `schema-objects` + `file-symbols` facts
+ * through the `resolution` corpus processor into the one resolution fact. The
+ * JSON-schema half of the old catalog is config-driven (§10) and not reachable
+ * from this simple runner, so it is dropped — this is the DDL-only slice of the
+ * resolution, the config-free half the corpus processor consumes.
  *
  * @param files The input files to parse and process.
- * @returns The reduced known-table catalog.
+ * @param sqlDialect The corpus's named dialect (null means cannot-fire).
+ * @returns The reduced resolution fact.
  */
-export async function buildTableCatalog(files: readonly InputFile[]): Promise<TableCatalog> {
-  const [declarations, objects] = await Promise.all([
-    buildDdlDeclarations(files),
+export async function buildResolution(files: readonly InputFile[], sqlDialect?: Dialect | null): Promise<ResolutionFact> {
+  const [declarations, objects, symbols] = await Promise.all([
+    buildDdlDeclarations(files, sqlDialect),
     buildSchemaObjects(files),
+    buildFileSymbols(files),
   ]);
-  return CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations, 'schema-objects': objects });
+  return CORPUS_PRODUCERS['resolution'].process({ 'ddl-declarations': declarations, 'schema-objects': objects, 'file-symbols': symbols });
 }
 
 /**
  * Reduce the `ddl-declarations` fact through the `migration-history` corpus
  * processor into the cross-file drop provenance (`stale-table-reference` reads
  * it to partition dropped tables from never-existed tables).
+ *
+ * @param files The input files to parse and process.
+ * @param sqlDialect The corpus's named dialect (null means cannot-fire).
  */
-export async function buildMigrationHistory(files: readonly InputFile[]): Promise<MigrationHistory> {
-  const declarations = await buildDdlDeclarations(files);
+export async function buildMigrationHistory(files: readonly InputFile[], sqlDialect?: Dialect | null): Promise<MigrationHistory> {
+  const declarations = await buildDdlDeclarations(files, sqlDialect);
   return CORPUS_PRODUCERS['migration-history'].process({ 'ddl-declarations': declarations });
 }
 
-/** Analyze the `schema-usage` + `table-catalog` + `migration-history` facts with
- *  the schema rules. `unknown-table` reads the catalog and migration-history to
- *  hand dropped tables to `stale-table-reference`; `table-naming-convention`
+/** Analyze the `schema-usage` + `resolution` + `migration-history` facts with
+ *  the schema rules. `unknown-table` reads the resolution and migration-history
+ *  to hand dropped tables to `stale-table-reference`; `table-naming-convention`
  *  reads `schema-usage` alone (its `needs` declares only that fact, and the
  *  union context carries all three).
  *
  *  @param usages - The assembled `schema-usage` fact to analyze.
- *  @param catalog - The known-table catalog (`unknown-table` reads it).
+ *  @param resolution - The one resolution fact (`unknown-table` reads it).
  *  @param migrationHistory - The cross-file drop provenance.
  *  @param thresholds - The schema rule thresholds (defaults to `{}`).
  *  @returns The schema rules' findings over the facts.
  */
 export async function analyzeSchemaRules(
   usages: SchemaUsageFact[],
-  catalog: TableCatalog,
+  resolution: ResolutionFact,
   migrationHistory: MigrationHistory,
   thresholds: ThresholdValues = {},
 ): Promise<Finding[]> {
-  return analyzeWithRules(schemaRules, { 'schema-usage': usages, 'table-catalog': catalog, 'migration-history': migrationHistory }, ['typescript', 'tsx', 'javascript'], thresholds);
+  return analyzeWithRules(schemaRules, { 'schema-usage': usages, 'resolution': resolution, 'migration-history': migrationHistory }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
-/** The schema slice: parse → schema-usage + table-catalog + migration-history →
+/** The schema slice: parse → schema-usage + resolution + migration-history →
  *  schema rules → findings.
  *
  *  @param files - The input files to parse and process.
  *  @param thresholds - The schema rule thresholds (defaults to `{}`).
+ *  @param sqlDialect - The corpus's named dialect (null means cannot-fire).
  *  @returns The schema rules' findings over the assembled facts.
  */
-export async function runSchemaSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const [usages, declarations, objects] = await Promise.all([
-    buildSchemaUsage(files),
-    buildDdlDeclarations(files),
+export async function runSchemaSlice(files: readonly InputFile[], thresholds?: ThresholdValues, sqlDialect?: Dialect | null): Promise<Finding[]> {
+  const [usages, declarations, objects, symbols] = await Promise.all([
+    buildSchemaUsage(files, sqlDialect),
+    buildDdlDeclarations(files, sqlDialect),
     buildSchemaObjects(files),
+    buildFileSymbols(files),
   ]);
-  const catalog = CORPUS_PRODUCERS['table-catalog'].process({ 'ddl-declarations': declarations, 'schema-objects': objects });
+  const resolution = CORPUS_PRODUCERS['resolution'].process({ 'ddl-declarations': declarations, 'schema-objects': objects, 'file-symbols': symbols });
   const migrationHistory = CORPUS_PRODUCERS['migration-history'].process({ 'ddl-declarations': declarations });
-  return analyzeSchemaRules(usages, catalog, migrationHistory, thresholds);
+  return analyzeSchemaRules(usages, resolution, migrationHistory, thresholds);
 }
 
 // ── cross-domain lifecycle slice (same `schema-usage` fact, different rules) ─
@@ -530,9 +609,17 @@ export async function analyzeCrossDomain(usages: SchemaUsageFact[], thresholds: 
   return analyzeWithRules(crossDomainRules, { 'schema-usage': usages }, ['typescript', 'tsx', 'javascript'], thresholds);
 }
 
-/** The cross-domain slice: parse → schema-usage → lifecycle rules → findings. */
-export async function runCrossDomainSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const usages = await buildSchemaUsage(files);
+/** The cross-domain slice: parse → schema-usage → lifecycle rules → findings.
+ * @param files - The input files to parse and process.
+ * @param thresholds - The cross-domain rule thresholds.
+ * @param sqlDialect - The corpus's named dialect for SQL parsing, or null/undefined.
+ * @returns The cross-domain lifecycle rules' findings over the fact. */
+export async function runCrossDomainSlice(
+  files: readonly InputFile[],
+  thresholds?: ThresholdValues,
+  sqlDialect?: Dialect | null,
+): Promise<Finding[]> {
+  const usages = await buildSchemaUsage(files, sqlDialect);
   return analyzeCrossDomain(usages, thresholds);
 }
 
@@ -1019,27 +1106,45 @@ export async function runSecurityDefectsSlice(files: readonly InputFile[], thres
 // ── query-sites slice (query-sites → too-many-queries) ───────────────────────
 
 /**
- * Parse → Process for the `query-sites` fact. Returns the assembled corpus fact
- * (every located DB-query site from every file, each attributed to its innermost
- * enclosing function, ASTs already freed). The rule groups sites by enclosing
- * function, so a nested closure's sites are never double-counted.
+ * Parse → Process → Reduce for the `query-sites` fact (Spec 70 Item 4, step 3).
+ * The legacy `query-sites` producer did two jobs — locate each DB-query site and
+ * gate the file on DB context — with a second parse of the file's provenance.
+ * The collapse splits them: `query-site-candidates` runs the location job
+ * un-gated while the AST lives, and the `query-sites` corpus producer re-derives
+ * each file's gate (`glob || dbProvenanced || dbActivity || hasSqlTag`) once the
+ * `receiver-provenance` fixed point supplies the cross-file seed, then emits the
+ * sites of the gated files. This helper builds the raw file facts + the fixed
+ * point and reduces through the two corpus producers, so the returned fact is
+ * byte-identical to the legacy gated extraction.
  *
  * @param files - The input files to parse and process.
+ * @param sqlDialect - The corpus's named dialect for SQL parsing, or null/undefined.
  * @returns The assembled `query-sites` corpus fact.
  */
-export async function buildQuerySites(files: readonly InputFile[]): Promise<QuerySiteFact[]> {
-  const facts: QuerySiteFact[] = [];
-  for (const input of files) {
-    const parsed = await parseOne(input);
-    if (!parsed) continue;
-    try {
-      const producer = fileProducerFor('query-sites', parsed.format);
-      if (producer) facts.push(...producer.process(parsed) as QuerySiteFact[]);
-    } finally {
-      parsed.ast?.dispose?.();
-    }
-  }
-  return facts;
+export async function buildQuerySites(files: readonly InputFile[], sqlDialect?: Dialect | null): Promise<QuerySiteFact[]> {
+  const [candidates, within, imports, exports, goBindings, activity] = await Promise.all([
+    buildFileFact(files, 'query-site-candidates'),
+    buildFileFact(files, 'within-file-provenance'),
+    buildFileFact(files, 'import-specifiers'),
+    buildFileFact(files, 'export-symbols'),
+    buildFileFact(files, 'go-package-bindings'),
+    buildFileFact(files, 'receiver-activity'),
+  ]);
+  const provenance = CORPUS_PRODUCERS['receiver-provenance'].process({
+    'within-file-provenance': within,
+    'import-specifiers': imports,
+    'export-symbols': exports,
+    'go-package-bindings': goBindings,
+  });
+  return CORPUS_PRODUCERS['query-sites'].process(
+    {
+      'query-site-candidates': candidates,
+      'within-file-provenance': within,
+      'receiver-provenance': provenance,
+      'receiver-activity': activity,
+    },
+    { sqlDialect: sqlDialect ?? null },
+  );
 }
 
 /**
@@ -1057,8 +1162,8 @@ export async function analyzeQuerySites(
 }
 
 /** The query-sites slice: parse → query-sites → too-many-queries → findings. */
-export async function runQuerySitesSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
-  const facts = await buildQuerySites(files);
+export async function runQuerySitesSlice(files: readonly InputFile[], thresholds?: ThresholdValues, sqlDialect?: Dialect | null): Promise<Finding[]> {
+  const facts = await buildQuerySites(files, sqlDialect);
   return analyzeQuerySites(facts, thresholds);
 }
 

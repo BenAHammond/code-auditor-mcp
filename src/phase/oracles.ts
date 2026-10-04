@@ -33,11 +33,16 @@ import type {
   ParsedFile,
   ReactComponentScan,
   SchemaDeclaration,
+  SchemaUsageCandidatesFact,
+  QuerySiteCandidatesFact,
   StyleDeclarationsFile,
+  GoPackageBindingFact,
 } from './types.js';
 import { isFunctionNodeType } from '../analyzers/universal/functionConcerns.js';
 import { isTestFile } from '../languages/testConventions.js';
 import { countSqlKeywordOccurrences } from '../analyzers/universal/schema/codeAnalysis.js';
+import { getRawNode } from '../languages/tree-sitter/rawNode.js';
+import type { ASTNode, LanguageAdapter } from '../languages/types.js';
 
 /** A counted oracle: `count` returns the units one file should yield; `measured`
  *  reads the same unit back out of the emitted fragments.
@@ -152,6 +157,97 @@ export function countExportForm(file: ParsedFile): number {
   }).length;
 }
 
+/** The declaration node types `collectExports` (receiverResolution.ts) treats as
+ *  a declaration wrapped by `export`. Kept here (not imported) so the oracle is
+ *  an independent count, not the producer's own `EXPORT_DECLARATION_TYPES`. */
+const EXPORT_DECLARATION_TYPES = new Set([
+  'class_declaration',
+  'abstract_class_declaration',
+  'function_declaration',
+  'generator_function_declaration',
+  'lexical_declaration',
+  'variable_declaration',
+  'interface_declaration',
+  'enum_declaration',
+  'type_alias_declaration',
+]);
+
+/** Iterate an AST subtree (inclusive) for nodes matching a predicate — the
+ *  `collectNodes` walk the producer uses, re-declared so the oracle does not
+ *  share the producer's traversal. */
+function walkMatching(root: ASTNode, adapter: LanguageAdapter, pred: (n: ASTNode) => boolean): ASTNode[] {
+  const out: ASTNode[] = [];
+  const walk = (n: ASTNode): void => {
+    if (pred(n)) out.push(n);
+    for (const c of adapter.getChildren(n)) walk(c);
+  };
+  walk(root);
+  return out;
+}
+
+/** Strip surrounding quotes from a string-literal node text. */
+function unquoteText(text: string): string {
+  if (text.length >= 2 && (text[0] === '"' || text[0] === "'" || text[0] === '`')) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+/** export-symbols — count the exported names the producer emits, mirroring
+ *  `collectExports` (one fragment per named / default / star-reexported name).
+ *  A raw `export_statement` count is neither an upper nor a lower bound here: it
+ *  under-counts multi-name `export { a, b, c }` (one statement, three names) and
+ *  over-counts the empty `export {}` (one statement, zero names). So this counts
+ *  the same units the producer does: named `export_specifier`s carrying a leading
+ *  identifier, one declaration-wrapped name, one default identifier, and the
+ *  `export * from '…'` star re-export.
+ *
+ * @param file The parsed file to count over.
+ * @returns The number of exported names `collectExports` would emit.
+ */
+export function countExportSymbols(file: ParsedFile): number {
+  const astFile = file as AstFile;
+  const { ast, adapter, source } = astFile;
+  let n = 0;
+  const stmts = adapter.findNodes(ast, { custom: (x) => x.type === 'export_statement' });
+
+  for (const stmt of stmts) {
+    const children = adapter.getChildren(stmt);
+    const isDefault = children.some(
+      (c) => c.type === 'default' || adapter.getNodeText(c, source) === 'default',
+    );
+    const sourceChild = children.find(
+      (c) => c.type === 'string' || c.type === 'string_fragment' || c.type === 'template_string',
+    );
+    const src = sourceChild ? unquoteText(adapter.getNodeText(sourceChild, source)) : undefined;
+
+    // Named export specifiers — one per specifier that names an identifier.
+    for (const spec of walkMatching(stmt, adapter, (x) => x.type === 'export_specifier')) {
+      const id = walkMatching(spec, adapter, (x) => x.type === 'identifier' || x.type === 'property_identifier')[0];
+      if (id) n++;
+    }
+
+    // A declaration wrapped by export (its name counts once; then no default/star).
+    const decl = children.find((c) => EXPORT_DECLARATION_TYPES.has(c.type));
+    if (decl) {
+      if (adapter.getNodeName(decl)) n++;
+      continue;
+    }
+
+    // `export default <identifier>` (no declaration).
+    if (isDefault) {
+      const value = children.find((c) => c.type === 'identifier');
+      if (value) n++;
+    }
+
+    // `export * from '…'`.
+    const star = children.some((c) => adapter.getNodeText(c, source) === '*');
+    if (star && src) n++;
+  }
+
+  return n;
+}
+
 /** function-index — count `function_declaration` + `arrow_function` nodes. A
  *  function declaration is emitted one-to-one; an arrow is emitted only when
  *  bound to a `variable_declarator`, so a bare callback arrow is a residual by
@@ -237,6 +333,43 @@ export const countGoSwitches = goNodeCount(['expression_switch_statement', 'type
  *  interface), exempting `*_test.go`. */
 export const countTypeDeclarations = goNodeCount(['type_spec']);
 
+/** go-package-bindings — count the *pre-dedup* package-scope binding
+ *  declarations: top-level `function_declaration`/`method_declaration` with a
+ *  name, plus the named `type_spec`/`var_spec` children of a top-level
+ *  `type_declaration`/`var_declaration`. This is the number of bindings
+ *  `buildGoFileBindings` emits *before* its first-wins dedup — which is a no-op
+ *  within a single valid Go file (package-scope names are unique per file), so it
+ *  bounds the deduped `bindings.length` exactly. A raw node-type count would
+ *  over-count (a `type_spec`/`var_spec` may nest inside a function body), so this
+ *  walks the root's named children exactly as the producer does. Exempts
+ *  `*_test.go`. */
+export function countGoPackageBindings(file: ParsedFile): number {
+  if (isTestFile('go', file.file)) return 0;
+  const astFile = file as AstFile;
+  if (astFile.adapter.name !== 'go') return 0;
+  const root = getRawNode(astFile.ast.root);
+  let n = 0;
+  for (const decl of root.namedChildren) {
+    switch (decl.type) {
+      case 'function_declaration':
+      case 'method_declaration':
+        if (decl.childForFieldName('name')) n++;
+        break;
+      case 'type_declaration':
+        for (const spec of decl.namedChildren) {
+          if (spec.type === 'type_spec' && spec.childForFieldName('name')) n++;
+        }
+        break;
+      case 'var_declaration':
+        for (const spec of decl.namedChildren) {
+          if (spec.type === 'var_spec' && spec.childForFieldName('name')) n++;
+        }
+        break;
+    }
+  }
+  return n;
+}
+
 /** schema-objects — count the ORM-builder *call sites* off the source text (a
  *  different feature than the producer emits: the producer emits one fact per
  *  `const <id> = <builder>('name', …)` *binding*, this counts every `<builder>(`
@@ -251,17 +384,20 @@ export function countSchemaObjects(file: ParsedFile): number {
   return [...file.source.matchAll(ORM_BUILDER_CALL_RE)].length;
 }
 
-/** ddl-declarations — count the DDL *statement headers* (CREATE/DROP/ALTER TABLE)
- *  off the source text — a different, coarser feature than the producer emits.
- *  The producer's single fragment carries one op per CREATE/DROP/ALTER-RENAME
- *  TABLE statement, matched by its own `DDL_RE` (which also captures the names
- *  and the `RENAME TO` clause); this counts the bare header independently, so a
- *  change to `DDL_RE`'s name/rename machinery cannot silently propagate here.
- *  Every op header carries exactly one header, so this is an upper bound; an
- *  `ALTER TABLE … ADD COLUMN`/`… ADD CONSTRAINT` header (a column/constraint the
- *  producer correctly records in `tableColumns`, not as an op) is a positive
- *  residual by design. */
-const DDL_HEADER_RE = /\b(?:CREATE|DROP|ALTER)\s+(?:VIRTUAL\s+)?TABLE\b/gi;
+/** ddl-declarations — count the DDL *op-producing statements* off the source
+ *  text — a different, coarser feature than the producer emits, but counting the
+ *  same unit: one op per CREATE / DROP / ALTER-RENAME TABLE statement. The
+ *  producer emits one op per CREATE (incl. the FTS5 `CREATE VIRTUAL TABLE`
+ *  recovery), one per DROP target, and one per `ALTER TABLE … RENAME TO`; this
+ *  counts those headers independently, so a change to `ddlMigrationOps` cannot
+ *  silently propagate here. An `ALTER TABLE … ADD/DROP/ALTER COLUMN` /
+ *  `ADD CONSTRAINT` header is a *column/constraint* change the producer records
+ *  in `tableColumns`, not as an op — the oracle must NOT count it, or it measures
+ *  a different population than the producer emits. (`RENAME TO` is the
+ *  table-rename form; `RENAME COLUMN` is a column change and is excluded by the
+ *  same `RENAME TO` guard.) */
+const DDL_HEADER_RE =
+  /\b(?:CREATE|DROP)\s+(?:VIRTUAL\s+)?TABLE\b|\bALTER\s+TABLE\b[^;]*?\bRENAME\s+TO\b/gi;
 
 export function countDdlOps(file: ParsedFile): number {
   return [...file.source.matchAll(DDL_HEADER_RE)].length;
@@ -385,4 +521,36 @@ export function measuredJsxElements(fragments: readonly unknown[]): number {
 /** file-imports — the import specifier count inside the fragment. */
 export function measuredFileImports(fragments: readonly unknown[]): number {
   return (fragments as FileImportsFact[]).reduce((n, f) => n + f.imports.length, 0);
+}
+
+/** go-package-bindings — the package-scope binding count inside the (single)
+ *  fragment. */
+export function measuredGoPackageBindings(fragments: readonly unknown[]): number {
+  return (fragments as GoPackageBindingFact[]).reduce((n, f) => n + f.bindings.length, 0);
+}
+
+/** query-site-candidates — the located-site count across the file's candidate
+ *  fragments. The producer emits one fragment per TS-family file carrying the
+ *  `sites` array, so this sums the site count inside it (the same unit
+ *  `countQuerySites` upper-bounds), not the fragment count. */
+export function measuredQuerySites(fragments: readonly unknown[]): number {
+  return (fragments as QuerySiteCandidatesFact[]).reduce((n, f) => n + f.sites.length, 0);
+}
+
+/** schema-usage-candidates — the candidate count across the file's candidate
+ *  fragments. One fragment per TS-family file carries the five candidate arrays
+ *  (`ormRefs`, `queryBuilderRefs`, `collectionAdapterRefs`, `tagged`, `dbCalls`);
+ *  this sums their lengths (the unit `countSchemaUsage` upper-bounds), not the
+ *  fragment count. */
+export function measuredSchemaUsageCandidates(fragments: readonly unknown[]): number {
+  return (fragments as SchemaUsageCandidatesFact[]).reduce(
+    (n, f) =>
+      n +
+      f.ormRefs.length +
+      f.queryBuilderRefs.length +
+      f.collectionAdapterRefs.length +
+      f.tagged.length +
+      f.dbCalls.length,
+    0,
+  );
 }

@@ -5,7 +5,7 @@
  * identifier → SQL-name binding a Drizzle schema file declares
  * (`export const sampleOwnership = pgTable('sample_ownership', …)`). The DDL
  * half (`ddl-declarations`) records the SQL `CREATE TABLE` names; this fact
- * records the JS binding that names them, so the `table-catalog` corpus reducer
+ * records the JS binding that names them, so the `resolution` corpus reducer
  * can build the alias map that lets `.from(sampleOwnership)` resolve to the
  * catalog entry `sample_ownership`.
  *
@@ -84,11 +84,33 @@ function columnsBodyAfter(source: string, afterName: number): string | null {
 const UNIQUE_FIELD_RE =
   /([A-Za-z_$][\w$]*)\s*:\s*\w+\s*\(\s*['"]([^'"]+)['"]\s*(?:(?!\s*[A-Za-z_$][\w$]*\s*:\s*\w+\s*\()[^])*?\.unique\s*\(/g;
 
+/** One Drizzle column field carrying a `.primaryKey()` marker — the surrogate-
+ *  key signal recorded *separately* from natural UNIQUE (Spec 69 R3, criterion
+ *  8). `.primaryKey()` on a column builder (`id: uuid('id').primaryKey()`)
+ *  mirrors `.unique()`; a table-level `primaryKey({ columns: [...] })` is not
+ *  matched here (the DDL `PRIMARY KEY` extraction covers the SQL spelling). */
+const PRIMARY_KEY_FIELD_RE =
+  /([A-Za-z_$][\w$]*)\s*:\s*\w+\s*\(\s*['"]([^'"]+)['"]\s*(?:(?!\s*[A-Za-z_$][\w$]*\s*:\s*\w+\s*\()[^])*?\.primaryKey\s*\(/g;
+
 /** The natural-UNIQUE column names in a columns-object body: each field's
  *  JS name plus, when different, its SQL name. */
 function uniqueColumnsIn(body: string): string[] {
   const out: string[] = [];
   for (const m of body.matchAll(UNIQUE_FIELD_RE)) {
+    const jsName = m[1];
+    const sqlName = m[2];
+    out.push(jsName);
+    if (sqlName !== jsName) out.push(sqlName);
+  }
+  return out;
+}
+
+/** The PRIMARY-KEY column names in a columns-object body (surrogate keys only —
+ *  `.primaryKey()` markers). PK and natural UNIQUE are kept separate so the
+ *  quiet set can stay natural-UNIQUE-only. */
+function primaryKeyColumnsIn(body: string): string[] {
+  const out: string[] = [];
+  for (const m of body.matchAll(PRIMARY_KEY_FIELD_RE)) {
     const jsName = m[1];
     const sqlName = m[2];
     out.push(jsName);
@@ -110,7 +132,8 @@ export function extractSchemaObjects(file: ParsedFile): SchemaObject[] {
     const afterName = match.index + match[0].length;
     const body = columnsBodyAfter(file.source, afterName);
     const uniqueColumns = body === null ? [] : uniqueColumnsIn(body);
-    out.push({ file: file.file, identifier, table, uniqueColumns });
+    const primaryKeyColumns = body === null ? [] : primaryKeyColumnsIn(body);
+    out.push({ file: file.file, identifier, table, uniqueColumns, primaryKeyColumns });
   }
   return out;
 }

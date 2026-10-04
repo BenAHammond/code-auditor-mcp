@@ -68,6 +68,11 @@ function usageIdentityLabel(
   return functionName ?? `fn:${startLine}:${startColumn}`;
 }
 
+/** Coordinate key `${file_path}::${function_name}` — the cross-domain identity key. */
+function funcTableKey(filePath: string, functionName: string): string {
+  return `${filePath}::${functionName}`;
+}
+
 /** Chunked IN-clause bound (SQLite max host params, conservative). */
 const SQLITE_MAX_VARIABLES = 900;
 
@@ -110,10 +115,23 @@ function resolveFileScope(config: any): FileScope {
   };
 }
 
-/** Call-graph infrastructure availability for depth-1 callee expansion. */
-interface CallGraphContext {
+/**
+ * Preloaded call-graph data, read once at the top of a run and reused by every
+ * detector so the BFS walks and depth-1 expansion never re-query `graph_cache`,
+ * `functions`, or `schema_usage` per node/callee (the N+1 this replaces). All
+ * fields are populated only when the index has call edges; otherwise the empty
+ * structure is returned and each consumer degrades to its no-graph path.
+ */
+interface CallGraphData {
   hasGraphData: boolean;
-  fnIdLookup: Map<string, number> | null;
+  /** function key (`file_path::name`) → id */
+  fnIdLookup: Map<string, number>;
+  /** function id → { name, file_path } */
+  fnInfo: Map<number, { name: string; file_path: string }>;
+  /** call-edge adjacency: source node id → neighbor node ids */
+  callEdges: Map<number, number[]>;
+  /** `${file_path}::${name}` → names of tables that function writes */
+  fnWriteTables: Map<string, Set<string>>;
 }
 
 /** A function that writes to schema tables, from the schema_usage join. */
@@ -163,21 +181,21 @@ interface HighRiskFn {
 // ---------------------------------------------------------------------------
 
 /**
- * Advance a call-graph BFS frontier by one node: query `funcId`'s call
- * neighbors and enqueue any not yet visited. Shared by the two BFS walks.
+ * Advance a call-graph BFS frontier by one node: read `funcId`'s call
+ * neighbors from the preloaded adjacency map and enqueue any not yet visited.
+ * Shared by the two BFS walks. The adjacency read replaced a per-node
+ * `graph_cache` query, the BFS N+1.
  */
 function enqueueCallNeighbors(
-  indexHandle: IndexHandle,
+  callEdges: Map<number, number[]>,
   nextLevel: number[],
   funcId: number,
   visited: Set<number>,
 ): void {
-  const callees = indexHandle
-    .query(`SELECT neighbor_key FROM graph_cache
-       WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
-  for (const callee of callees) {
-    const calleeId = parseInt(callee.neighbor_key, 10);
-    if (!isNaN(calleeId) && !visited.has(calleeId)) {
+  const callees = callEdges.get(funcId);
+  if (!callees) return;
+  for (const calleeId of callees) {
+    if (!visited.has(calleeId)) {
       nextLevel.push(calleeId);
     }
   }
@@ -188,7 +206,7 @@ function enqueueCallNeighbors(
  * any path from startFuncId reaches a validator function ID.
  */
 function bfsReachesValidator(
-  indexHandle: IndexHandle,
+  callEdges: Map<number, number[]>,
   startFuncId: number,
   validatorIds: Set<number>,
   maxDepth: number,
@@ -204,8 +222,8 @@ function bfsReachesValidator(
       if (visited.has(funcId)) continue;
       visited.add(funcId);
 
-      // Get callees from graph_cache call edges
-      enqueueCallNeighbors(indexHandle, nextLevel, funcId, visited);
+      // Get callees from the preloaded call edges
+      enqueueCallNeighbors(callEdges, nextLevel, funcId, visited);
     }
 
     currentLevel = nextLevel;
@@ -226,40 +244,27 @@ function bfsReachesValidator(
  * code-audit index sync); without it, returns the direct write set unchanged.
  */
 function expandWrittenTables(
-  indexHandle: IndexHandle,
   key: string,
   initialTables: Set<string>,
-  graph: CallGraphContext,
+  graph: CallGraphData,
 ): Set<string> {
   const allTables = new Set(initialTables);
-  const { fnIdLookup, hasGraphData } = graph;
+  const { fnIdLookup, hasGraphData, callEdges, fnInfo, fnWriteTables } = graph;
 
-  if (!fnIdLookup || !hasGraphData) return allTables;
+  if (!hasGraphData) return allTables;
 
   const funcId = fnIdLookup.get(key);
   if (funcId === undefined) return allTables;
 
-  const calleeRows = indexHandle
-    .query(`SELECT neighbor_key FROM graph_cache
-       WHERE graph_type = 'call' AND node_key = ?`, [String(funcId)]) as Array<{ neighbor_key: string }>;
+  const calleeIds = callEdges.get(funcId);
+  if (!calleeIds) return allTables;
 
-  for (const callee of calleeRows) {
-    const calleeFuncs = indexHandle
-      .query(`SELECT name, file_path FROM functions WHERE id = ?`, [parseInt(callee.neighbor_key, 10)]) as Array<{
-      name: string;
-      file_path: string;
-    }>;
-
-    for (const cf of calleeFuncs) {
-      const calleeTables = indexHandle
-        .query(`SELECT DISTINCT table_name FROM schema_usage
-           WHERE usage_type IN ('insert', 'update', 'delete', 'create')
-             AND function_name = ? AND file_path = ?`, [cf.name, cf.file_path]) as Array<{ table_name: string }>;
-
-      for (const ct of calleeTables) {
-        allTables.add(ct.table_name);
-      }
-    }
+  for (const calleeId of calleeIds) {
+    const cf = fnInfo.get(calleeId);
+    if (!cf) continue;
+    const calleeTables = fnWriteTables.get(`${cf.file_path}::${cf.name}`);
+    if (!calleeTables) continue;
+    for (const tableName of calleeTables) allTables.add(tableName);
   }
 
   return allTables;
@@ -271,7 +276,7 @@ function expandWrittenTables(
  * static-reach fallback: a high-risk function not in this set is uncovered.
  */
 function collectReachableIds(
-  indexHandle: IndexHandle,
+  callEdges: Map<number, number[]>,
   startIds: Set<number>,
   maxDepth: number,
 ): Set<number> {
@@ -288,7 +293,7 @@ function collectReachableIds(
         visited.add(funcId);
         reachableIds.add(funcId);
 
-        enqueueCallNeighbors(indexHandle, nextLevel, funcId, visited);
+        enqueueCallNeighbors(callEdges, nextLevel, funcId, visited);
       }
       currentLevel = nextLevel;
     }
@@ -366,6 +371,13 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
   private runDetectors(indexHandle: IndexHandle, config: any, scope: FileScope): Violation[] {
     const violations: Violation[] = [];
 
+    // Preload the call-graph adjacency, function identity, and per-function write
+    // tables once and share across every detector that walks the graph. Each
+    // detector previously re-queried `graph_cache` (and, for callee expansion,
+    // `functions` + `schema_usage`) once per BFS node / callee — the N+1 that
+    // dominated cross-domain time on full audits.
+    const graph = loadCallGraphData(indexHandle);
+
     // R1 — Schema lifecycle detectors
     const lifecycle = config.schemaLifecycle ?? {};
     if (lifecycle.enableWrittenNeverRead !== false) {
@@ -376,19 +388,19 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
     }
     if (lifecycle.enableTransactionBoundaryRisk !== false) {
       const txnTableMax = lifecycle.txnTableMax ?? 4;
-      violations.push(...detectTransactionBoundaryRisk(indexHandle, txnTableMax, scope));
+      violations.push(...detectTransactionBoundaryRisk(indexHandle, txnTableMax, scope, graph));
     }
 
     // R3 — Validation-bypass detection
     const bypass = config.validatorBypass as ValidatorBypassConfig | undefined;
     if (bypass) {
-      violations.push(...detectValidationBypass(indexHandle, bypass, scope));
+      violations.push(...detectValidationBypass(indexHandle, bypass, scope, graph));
     }
 
     // R4 — Coverage by importance
     const coverage = config.coverage as CoverageConfig | undefined;
     if (coverage) {
-      violations.push(...detectUncoveredRisk(indexHandle, coverage, scope));
+      violations.push(...detectUncoveredRisk(indexHandle, coverage, scope, graph));
     }
 
     return violations;
@@ -555,6 +567,7 @@ function detectTransactionBoundaryRisk(
   indexHandle: IndexHandle,
   txnTableMax: number,
   scope: FileScope,
+  graph: CallGraphData,
 ): Violation[] {
   const fp = scope.apply('su.file_path');
 
@@ -581,8 +594,7 @@ function detectTransactionBoundaryRisk(
   if (writerRows.length === 0) return [];
 
   const funcWrites = groupWriterTables(writerRows);
-  const graph = resolveCallGraphContext(indexHandle);
-  return flagTransactionBoundaryWrites(funcWrites, indexHandle, graph, txnTableMax);
+  return flagTransactionBoundaryWrites(funcWrites, graph, txnTableMax);
 }
 
 /** Group written tables by coordinate-identity key (display name is the label). */
@@ -679,14 +691,13 @@ function enclosingFunctionBatches(filePath: string, writeLine: number): boolean 
  */
 function flagTransactionBoundaryWrites(
   funcWrites: Map<string, FuncWriteEntry>,
-  indexHandle: IndexHandle,
-  graph: CallGraphContext,
+  graph: CallGraphData,
   txnTableMax: number,
 ): Violation[] {
   const violations: Violation[] = [];
 
   for (const [key, funcData] of funcWrites) {
-    const allTables = expandWrittenTables(indexHandle, key, funcData.tables, graph);
+    const allTables = expandWrittenTables(key, funcData.tables, graph);
 
     if (allTables.size >= txnTableMax) {
       // A single `.batch()` commit is the transaction scope — no risk to flag.
@@ -710,38 +721,77 @@ function flagTransactionBoundaryWrites(
 }
 
 /**
- * Resolve the call-graph infrastructure available for callee expansion:
- * whether graph_cache has any 'call' edges, and a function key → id lookup
- * built from the functions table (populated only by deepSync). Any failure
- * degrades gracefully to direct-write-only detection.
+ * Load the call-graph infrastructure in three reads, reused by every detector
+ * that walks the graph. Previously each BFS node re-queried `graph_cache`, and
+ * depth-1 callee expansion re-queried `functions` + `schema_usage` per callee —
+ * an N+1 on full audits. One read each of the edge list, the function identity,
+ * and the per-function write tables collapses that to a constant number of
+ * queries. Any failure (or an empty graph) returns the empty structure and each
+ * consumer degrades to its no-graph path.
  */
-function resolveCallGraphContext(indexHandle: IndexHandle): CallGraphContext {
-  let hasGraphData = false;
+function loadCallGraphData(indexHandle: IndexHandle): CallGraphData {
+  const empty: CallGraphData = {
+    hasGraphData: false,
+    fnIdLookup: new Map(),
+    fnInfo: new Map(),
+    callEdges: new Map(),
+    fnWriteTables: new Map(),
+  };
+
+  let edgeRows: Array<{ node_key: string; neighbor_key: string }>;
   try {
-    const row = indexHandle.query("SELECT COUNT(*) AS n FROM graph_cache WHERE graph_type = 'call'",
-    ) as Array<{ n: number }>;
-    const cnt = row[0] as { n: number } | undefined;
-    hasGraphData = (cnt?.n ?? 0) > 0;
+    edgeRows = indexHandle.query(
+      "SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'",
+    ) as Array<{ node_key: string; neighbor_key: string }>;
   } catch {
-    hasGraphData = false;
+    return empty;
+  }
+  if (edgeRows.length === 0) return empty;
+
+  const callEdges = new Map<number, number[]>();
+  for (const e of edgeRows) {
+    const src = parseInt(e.node_key, 10);
+    const dst = parseInt(e.neighbor_key, 10);
+    if (isNaN(src) || isNaN(dst)) continue;
+    const list = callEdges.get(src);
+    if (list) list.push(dst);
+    else callEdges.set(src, [dst]);
   }
 
-  let fnIdLookup: Map<string, number> | null = null;
-  if (hasGraphData) {
-    try {
-      const fnRows = indexHandle.query('SELECT id, name, file_path FROM functions',) as Array<{ id: number; name: string; file_path: string }>;
-      if (fnRows.length > 0) {
-        fnIdLookup = new Map();
-        for (const r of fnRows) {
-          fnIdLookup.set(`${r.file_path}::${r.name}`, r.id);
-        }
-      }
-    } catch {
-      // functions table might not exist or be unpopulated
-    }
+  let fnRows: Array<{ id: number; name: string; file_path: string }>;
+  try {
+    fnRows = indexHandle.query('SELECT id, name, file_path FROM functions',) as Array<{ id: number; name: string; file_path: string }>;
+  } catch {
+    fnRows = [];
   }
 
-  return { hasGraphData, fnIdLookup };
+  const fnIdLookup = new Map<string, number>();
+  const fnInfo = new Map<number, { name: string; file_path: string }>();
+  for (const r of fnRows) {
+    fnIdLookup.set(`${r.file_path}::${r.name}`, r.id);
+    fnInfo.set(r.id, { name: r.name, file_path: r.file_path });
+  }
+
+  let writeRows: Array<{ file_path: string; function_name: string | null; table_name: string }>;
+  try {
+    writeRows = indexHandle.query(
+      `SELECT DISTINCT file_path, function_name, table_name FROM schema_usage
+       WHERE usage_type IN ('insert', 'update', 'delete', 'create')`,
+    ) as Array<{ file_path: string; function_name: string | null; table_name: string }>;
+  } catch {
+    writeRows = [];
+  }
+
+  const fnWriteTables = new Map<string, Set<string>>();
+  for (const w of writeRows) {
+    if (w.function_name == null) continue;
+    const key = funcTableKey(w.file_path, w.function_name);
+    const set = fnWriteTables.get(key);
+    if (set) set.add(w.table_name);
+    else fnWriteTables.set(key, new Set([w.table_name]));
+  }
+
+  return { hasGraphData: true, fnIdLookup, fnInfo, callEdges, fnWriteTables };
 }
 
 // ── R3: Validation-Bypass ────────────────────────────────────────────────
@@ -760,6 +810,7 @@ function detectValidationBypass(
   indexHandle: IndexHandle,
   config: ValidatorBypassConfig,
   scope: FileScope,
+  graph: CallGraphData,
 ): Violation[] {
   const violations: Violation[] = [];
   const {
@@ -785,7 +836,7 @@ function detectValidationBypass(
 
   if (writers.length === 0) return violations;
 
-  const writerCoverage = computeWriterCoverage(writers, validatorIds, indexHandle, depth);
+  const writerCoverage = computeWriterCoverage(writers, validatorIds, graph.callEdges, depth);
   violations.push(...flagUncoveredWriters(writers, writerCoverage, { minCorpus, modeShare, depth }));
 
   return violations;
@@ -795,15 +846,15 @@ function detectValidationBypass(
 function computeWriterCoverage(
   writers: WriterRow[],
   validatorIds: Set<number>,
-  indexHandle: IndexHandle,
+  callEdges: Map<number, number[]>,
   depth: number,
 ): Map<string, WriterCoverage> {
   const writerCoverage = new Map<string, WriterCoverage>();
 
   for (const w of writers) {
-    const key = `${w.file_path}::${w.function_name}`;
+    const key = funcTableKey(w.file_path, w.function_name);
     if (writerCoverage.has(key)) continue; // deduplicate
-    const covered = bfsReachesValidator(indexHandle, w.function_id, validatorIds, depth);
+    const covered = bfsReachesValidator(callEdges, w.function_id, validatorIds, depth);
     writerCoverage.set(key, {
       covered,
       line: w.line,
@@ -823,20 +874,36 @@ function computeWriterCoverage(
 function buildValidatorIds(indexHandle: IndexHandle, userValidators: string[]): Set<number> {
   const validatorIds = new Set<number>();
 
-  // 1a. User-configured validators (format: "funcName" or "path#funcName")
+  // 1a. User-configured validators (format: "funcName" or "path#funcName").
+  //     Batched into chunked `IN`/composite-OR reads instead of one query per
+  //     entry (the per-validator query was an N+1 on the small user list).
+  const plainNames: string[] = [];
+  const namePathPairs: Array<[string, string]> = [];
   for (const v of userValidators) {
     const hashIdx = v.indexOf('#');
     if (hashIdx >= 0) {
-      const vPath = v.substring(0, hashIdx);
-      const vName = v.substring(hashIdx + 1);
-      const rows = indexHandle
-        .query('SELECT id FROM functions WHERE name = ? AND file_path = ?', [vName, vPath]) as Array<{ id: number }>;
-      for (const r of rows) validatorIds.add(r.id);
+      namePathPairs.push([v.substring(hashIdx + 1), v.substring(0, hashIdx)]);
     } else {
-      const rows = indexHandle
-        .query('SELECT id FROM functions WHERE name = ?', [v]) as Array<{ id: number }>;
-      for (const r of rows) validatorIds.add(r.id);
+      plainNames.push(v);
     }
+  }
+
+  for (let i = 0; i < plainNames.length; i += SQLITE_MAX_VARIABLES) {
+    const chunk = plainNames.slice(i, i + SQLITE_MAX_VARIABLES);
+    const rows = indexHandle.query(
+      `SELECT id FROM functions WHERE name IN (${chunk.map(() => '?').join(', ')})`,
+      chunk,
+    ) as Array<{ id: number }>;
+    for (const r of rows) validatorIds.add(r.id);
+  }
+
+  for (let i = 0; i < namePathPairs.length; i += Math.floor(SQLITE_MAX_VARIABLES / 2)) {
+    const chunk = namePathPairs.slice(i, i + Math.floor(SQLITE_MAX_VARIABLES / 2));
+    const rows = indexHandle.query(
+      `SELECT id FROM functions WHERE ${chunk.map(() => '(name = ? AND file_path = ?)').join(' OR ')}`,
+      chunk.flatMap(([n, p]) => [n, p]),
+    ) as Array<{ id: number }>;
+    for (const r of rows) validatorIds.add(r.id);
   }
 
   // 1b. Provenanced validators: exported functions whose OWN used_imports
@@ -892,7 +959,7 @@ function groupWritersByDirectory(
 
   for (const w of writers) {
     const dir = path.dirname(w.file_path);
-    const key = `${w.file_path}::${w.function_name}`;
+    const key = funcTableKey(w.file_path, w.function_name);
     const dirKey = `${dir}::${key}`;
     if (dirSeen.has(dirKey)) continue;
     dirSeen.add(dirKey);
@@ -965,6 +1032,7 @@ function detectUncoveredRisk(
   indexHandle: IndexHandle,
   coverage: CoverageConfig,
   scope: FileScope,
+  graph: CallGraphData,
 ): Violation[] {
   const topRiskDecile = coverage.topRiskDecile ?? 0.1;
 
@@ -977,7 +1045,7 @@ function detectUncoveredRisk(
   if (measuredCount > 0) {
     return detectMeasuredUncovered(indexHandle, topRiskDecile);
   }
-  return detectStaticReachUncovered(indexHandle, coverage, scope);
+  return detectStaticReachUncovered(indexHandle, coverage, scope, graph);
 }
 
 /**
@@ -1040,13 +1108,14 @@ function detectStaticReachUncovered(
   indexHandle: IndexHandle,
   coverage: CoverageConfig,
   scope: FileScope,
+  graph: CallGraphData,
 ): Violation[] {
   const topRiskDecile = coverage.topRiskDecile ?? 0.1;
   const highRiskFns = queryHighRiskFunctions(indexHandle, topRiskDecile, scope);
 
   if (highRiskFns.length === 0) return [];
 
-  const reachableIds = computeTestReachableIds(indexHandle, coverage);
+  const reachableIds = computeTestReachableIds(indexHandle, coverage, graph.callEdges);
   return flagUnreachedHighRisk(highRiskFns, reachableIds);
 }
 
@@ -1109,12 +1178,16 @@ function flagUnreachedHighRisk(highRiskFns: HighRiskFn[], reachableIds: Set<numb
  * Compute the set of function IDs reachable from test-file functions via
  * BFS through the call graph (reverse direction: test → code under test).
  */
-function computeTestReachableIds(indexHandle: IndexHandle, coverage: CoverageConfig): Set<number> {
+function computeTestReachableIds(
+  indexHandle: IndexHandle,
+  coverage: CoverageConfig,
+  callEdges: Map<number, number[]>,
+): Set<number> {
   const testFuncIds = collectTestFuncIds(indexHandle, coverage);
   if (testFuncIds.size === 0) return new Set<number>();
 
   const maxDepth = coverage.staticReachDepth ?? 2;
-  return collectReachableIds(indexHandle, testFuncIds, maxDepth);
+  return collectReachableIds(callEdges, testFuncIds, maxDepth);
 }
 
 /** Find test-file function IDs to use as BFS starting points. */

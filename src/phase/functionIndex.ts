@@ -28,7 +28,8 @@ import {
   calculateComplexity,
   getFunctionBody,
 } from '../languages/adapterBridge.js';
-import { buildImportMap, extractFunctionCalls } from '../utils/dependencyExtractor.js';
+import { buildImportMap, extractFunctionCalls, extractIdentifierUsage } from '../utils/dependencyExtractor.js';
+import { getImportsDetailed } from '../utils/astUtils.js';
 import { isReactComponent, detectComponentType, getComponentName } from '../utils/reactDetection.js';
 import { getLanguageFromPath } from '../utils/fileDiscovery.js';
 import type { ASTNode } from '../languages/types.js';
@@ -56,13 +57,26 @@ function row(
   name: string,
   entityType: FunctionIndexFact['entityType'],
   componentType: string | null,
-  ctx: { filePath: string; sourceCode: string; lang: string; importMap: ReturnType<typeof buildImportMap> },
+  ctx: {
+    filePath: string;
+    sourceCode: string;
+    lang: string;
+    importMap: ReturnType<typeof buildImportMap>;
+    importNames: Set<string>;
+  },
   exportedNode: ASTNode = node,
 ): FunctionIndexFact {
-  const { filePath, sourceCode, lang, importMap } = ctx;
+  const { filePath, sourceCode, lang, importMap, importNames } = ctx;
   const { line } = getLineAndColumn(node);
   const body = getFunctionBody(node, sourceCode);
   const calls = extractFunctionCalls(node, sourceCode, importMap);
+  // Item 4 2b — the phase-parse equivalent of `functions.used_imports`. Same
+  // derivation as `functionScanner.ts` (the sync path that used to be the only
+  // writer of that column): the identifier-usage walk over the function's full
+  // node, keyed by the file's import local names. `extractIdentifierUsage` keys
+  // its map on the imported local name, so `.keys()` is the used-import list in
+  // first-use order.
+  const usedImports = Array.from(extractIdentifierUsage(node, sourceCode, importNames).keys());
   return {
     file: filePath,
     name,
@@ -74,6 +88,7 @@ function row(
     complexity: calculateComplexity(node),
     body: body ?? null,
     functionCalls: [...new Set(calls.map((c) => c.callee))],
+    usedImports,
     language: lang,
   };
 }
@@ -93,7 +108,11 @@ export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
   if (lang === 'unknown') return [];
 
   const importMap = buildImportMap(root, sourceCode);
-  const scanCtx = { filePath, sourceCode, lang, importMap };
+  // Item 4 2b — the import local-name set `extractIdentifierUsage` keys on,
+  // built once per file from `getImportsDetailed` exactly as `functionScanner.ts`
+  // builds it (`new Set(detailedImports.map(imp => imp.localName))`).
+  const importNames = new Set(getImportsDetailed(root, sourceCode).map((imp) => imp.localName));
+  const scanCtx = { filePath, sourceCode, lang, importMap, importNames };
   const entries: FunctionIndexFact[] = [];
 
   // Pass 1 — named function declarations and class methods.

@@ -57,7 +57,7 @@ const _incompleteProducers: ProducerMap = {};
 //    this assignment would compile — the `@ts-expect-error` goes unused and the
 //    build fails.
 // @ts-expect-error — an overlapping kind would make this a non-never type
-const _overlap: keyof typeof PRODUCERS & keyof typeof CORPUS_PRODUCERS = 'table-catalog';
+const _overlap: keyof typeof PRODUCERS & keyof typeof CORPUS_PRODUCERS = 'resolution';
 
 // 6. Producer-side oracle (Spec 69 R1 criterion 1) — `FileProcessor` requires
 //    `oracle`. A processor literal that omits it must not satisfy the type, the

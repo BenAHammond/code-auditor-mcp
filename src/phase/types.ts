@@ -37,6 +37,13 @@
 
 import type { AST, LanguageAdapter } from '../languages/types.js';
 import type { IndexHandle } from '../types.js';
+import type { DdlForeignKey } from '../analyzers/universal/schema/migrations.js';
+import type { ProvenanceReason } from '../analyzers/provenance.js';
+import type { TsExpressionDescriptor, PropagationRule, ClassCall } from '../analyzers/tsExpressionDescriptor.js';
+import type { BindingKind, ValueDescriptor } from '../analyzers/receiverRoot.js';
+import type { HandleVerdict } from '../analyzers/handleIdentification.js';
+import type { Dialect } from '../mcp-tools/discoveryQueries.js';
+import type { UnresolvedQuery } from '../analyzers/universal/schema/codeAnalysis.js';
 
 export interface FactShapes {
   /** Reserved: an AST is not a fact and cannot be declared. */
@@ -44,7 +51,10 @@ export interface FactShapes {
   'file-symbols': FileSymbols[];
   'function-index': FunctionIndexFact[];
   'query-sites': QuerySiteFact[];
+  'query-site-candidates': QuerySiteCandidatesFact[];
   'imports': ImportFact[];
+  'import-specifiers': ImportSpecifiersFact[];
+  'export-symbols': ExportSymbolFact[];
   'export-form': ExportFormFact[];
   'import-form': ImportFormFact[];
   'string-literals': StringLiteralFact[];
@@ -60,14 +70,17 @@ export interface FactShapes {
   // holds only what works.
   'ddl-declarations': SchemaDeclaration[];
   'schema-usage': SchemaUsageFact[];
+  'schema-usage-candidates': SchemaUsageCandidatesFact[];
   'schema-objects': SchemaObject[];
   'style-declarations': StyleDeclarationsFile[];
   'color-values': ColorValuesFact[];
   'cross-language-entities': Entity[];
   'data-access-calls': ResolvedQuery[];
+  'data-access-calls-candidates': DataAccessCallCandidate[];
   'loop-queries': LoopQueryFact[];
+  'loop-query-candidates': LoopQueryRawCandidate[];
   'dynamic-sql': DynamicSqlFact[];
-  'table-catalog': TableCatalog;
+  'resolution': ResolutionFact;
   'migration-history': MigrationHistory;
   'mined-conventions': MinedConvention[];
   'react-component': ReactComponentScan[];
@@ -83,6 +96,10 @@ export interface FactShapes {
   'error-bindings': ErrorBindingsFact[];
   'concurrency-primitives': ConcurrencyPrimitivesFact[];
   'channel-operations': ChannelOperationsFact[];
+  'go-package-bindings': GoPackageBindingFact[];
+  'within-file-provenance': WithinFileProvenanceFact[];
+  'receiver-activity': ReceiverActivityFact[];
+  'receiver-provenance': ReceiverProvenanceFact;
   'call-graph': CallGraphFact;
   'batch-functions': BatchFunctionFact[];
   'hotspot': HotspotFact[];
@@ -210,6 +227,9 @@ export type FileClassSymbol = {
   column?: number;
   isExported?: boolean;
   extends?: string;
+  /** The interface names this class `implements`, resolved in-repo by the
+   *  resolution fact (Spec 69 R3 — class → what it implements). */
+  implements?: string[];
   methodCount: number;
   /** Σ of method cyclomatic complexity (class-size's second threshold). */
   aggregateComplexity: number;
@@ -228,6 +248,9 @@ export type FileInterfaceSymbol = {
   name: string;
   line: number;
   column?: number;
+  /** The interface names this interface `extends`, resolved in-repo by the
+   *  resolution fact (Spec 69 R3 — interface → what it extends). */
+  extends?: string[];
   memberCount: number;
   /** True when any member is a method signature (interface-size's discriminator). */
   hasMethodMembers: boolean;
@@ -255,6 +278,12 @@ export type FunctionIndexFact = {
   complexity: number;
   body: string | null;
   functionCalls: string[];
+  /** The imported local names this function's body uses, in first-use order —
+   *  the phase-parse equivalent of `functions.used_imports` (Item 4 2b). Computed
+   *  by `extractIdentifierUsage(node, source, importNames)` over the same
+   *  `importNames` set the functionScanner sync path built, so it reproduces the
+   *  identifier-usage analysis that previously only `index.sync` produced. */
+  usedImports: string[];
   language: string;
 };
 
@@ -285,6 +314,26 @@ export type QuerySiteFact = {
 };
 
 /**
+ * One file's un-gated query-site candidates — the raw, provenance-free extract
+ * the corpus `query-sites` producer re-gates (Spec 70 Item 4, step 3). The
+ * `query-sites` producer splits: the *sites* (attributed to their enclosing
+ * function) are extracted here while the AST lives, because `extractQuerySiteOffsets`
+ * + `extractFunctions` need the tree; the *gate* (glob || dbProvenanced ||
+ * dbActivity || hasSqlTag) is applied corpus-side once the `receiver-provenance`
+ * fixed point supplies the cross-file seed. `hasSqlTag` is the one gate input a
+ * corpus producer cannot re-derive (it scans source text), so it is projected
+ * here; `dbActivity` travels in `receiver-activity` and `dbProvenanced` is
+ * re-derived by `classifyBuildProvenance`. Emits one fragment per TS-family file
+ * (null-or-value, like `receiver-activity`), so a file with no sites still marks
+ * its presence for the corpus producer.
+ */
+export type QuerySiteCandidatesFact = {
+  readonly file: string;
+  readonly sites: readonly QuerySiteFact[];
+  readonly hasSqlTag: boolean;
+};
+
+/**
  * One import statement, the serializable projection of the adapter's
  * `ImportInfo` (types.ts) — `source` plus the 1-based start position. The
  * `duplicate-import` rule groups by `(file, source)`: the legacy
@@ -305,6 +354,30 @@ export type ImportFact = {
   line: number;
   column: number;
   alias?: string | null;
+};
+
+/**
+ * One import statement's full specifier detail — the serializable projection of
+ * the adapter's `extractImports` (`ImportInfo[]`) that the cross-file
+ * receiver-provenance fixed point (Spec 70 Item 4, 2a) reads. The existing
+ * `imports` fact drops `name`/`isDefault`/`isNamespace` and collapses the
+ * specifier list to one row per statement (it serves `duplicate-import`, which
+ * only groups by `(file, source)`); this fact keeps every specifier so the fixed
+ * point can resolve which local binding is a namespace/default/named import of a
+ * DB-provenanced re-export. `location` is dropped — the fixed point keys by
+ * `source` + specifier, never position.
+ */
+export type ImportSpecifierDetail = {
+  name: string;
+  alias?: string;
+  isDefault: boolean;
+  isNamespace: boolean;
+};
+
+export type ImportSpecifiersFact = {
+  file: string;
+  source: string;
+  specifiers: ImportSpecifierDetail[];
 };
 
 /**
@@ -340,6 +413,25 @@ export type ImportFormFact = {
 export type ExportFormFact = {
   file: string;
   name: string;
+  isDefault: boolean;
+};
+
+/**
+ * One exported symbol, the serializable projection of `collectExports`
+ * (receiverResolution.ts) that the cross-file receiver-provenance fixed point
+ * (Spec 70 Item 4, 2a) reads. Unlike `export-form` — which drops re-export
+ * `source` and the star re-export (`export * from '…'`), and emits only the
+ * first name of a multi-name clause — this fact keeps the *complete* export set
+ * the fixed point resolves against: `name` (including `'*'`), the re-export
+ * `source` when present, and `isDefault`. It calls the exact `collectExports`
+ * the legacy `resolveCorpusReceivers` used, so the export set is byte-identical
+ * by construction, not re-implemented.
+ */
+export type ExportSymbolFact = {
+  file: string;
+  name: string;
+  /** The re-export source (`export … from '…'`); absent for a local export. */
+  source?: string;
   isDefault: boolean;
 };
 
@@ -386,6 +478,46 @@ export type LoopQueryFact = {
   loopLine: number;
   /** Nesting depth of the enclosing loop (1 = top-level, 2 = nested once, …). */
   depth: number;
+};
+
+/**
+ * One un-gated, un-deduped loop-query candidate — the raw projection of one
+ * in-loop DB call, pre-`isDbCallNode`-filter and pre-loop-dedup. The corpus
+ * `loop-queries` producer re-folds the strict-handle verdict (`isDbCallNode`'s
+ * `identifyHandle`), drops non-handles, dedups by loop byte-offset (one finding
+ * per loop), and assigns the stable symbol — the three steps that depend on the
+ * cross-file `dbProvenanced` seed, which the raw producer (empty seed) cannot
+ * see. The provenance-free discriminators (statement-construction, for-of-iterable,
+ * hoisted-reuse, batch-argument, LLM/queue suppression) already ran here while
+ * the AST lived.
+ */
+export type LoopQueryRawCandidate = {
+  readonly file: string;
+  /** 1-based line/column of the resolved query-call anchor (`getCallExpressionCallee`). */
+  readonly line: number;
+  readonly column: number;
+  /** The enclosing-function identity label the symbol is keyed on. */
+  readonly enclosingFunction: string;
+  /** The enclosing loop's start byte offset — the dedup key (one finding per loop). */
+  readonly loopStartOffset: number;
+  /** 1-based line of the enclosing loop's opening token. */
+  readonly loopLine: number;
+  readonly depth: number;
+  // `handleVerdictForCall`'s CallSite identity (the node's own callee — templates
+  // are skipped), so the corpus producer can re-fold the strict-handle filter.
+  readonly handleCalleeType: 'identifier' | 'member' | null;
+  readonly handleName: string | null;
+  readonly handleRoot: string | null;
+  readonly handleReceiver: string | null;
+  readonly handleMethod: string | null;
+  readonly handleThisField: boolean;
+  /** The handle verdict's site-dialect receiver (raw nullable
+   *  `getMemberExpressionReceiver` of the callee) — `resolveSiteDialect` reads
+   *  the nullable raw, distinct from `handleReceiver` (`receiver ?? root`). */
+  readonly handleSiteReceiver: string | null;
+  /** The static SQL argument (unquoted), or null — feeds the handle verdict's
+   *  sql-argument source. */
+  readonly sqlArg: string | null;
 };
 
 /**
@@ -518,13 +650,22 @@ export type SchemaDeclaration = {
    *  PRIMARY KEY is excluded — a surrogate PK is the IDOR surface, not a
    *  bootstrap signal. */
   uniqueColumns: Readonly<Record<string, readonly string[]>>;
+  /** Per-table PRIMARY KEY columns (SQL names, lowercased) — kept *separate*
+   *  from `uniqueColumns` so the resolution fact can distinguish a surrogate PK
+   *  (the IDOR surface) from a natural key (the bootstrap signal). */
+  primaryKeyColumns: Readonly<Record<string, readonly string[]>>;
+  /** Per-table NOT NULL columns (SQL names, lowercased). */
+  notNullColumns: Readonly<Record<string, readonly string[]>>;
+  /** Per-table foreign-key references (declaring column → referenced table +
+   *  column), all lowercased. */
+  foreignKeys: Readonly<Record<string, readonly DdlForeignKey[]>>;
 };
 
 /**
  * One ORM schema-object declaration: a `const <identifier> = pgTable|mysqlTable|
  * sqliteTable('<table>', …)` binding. The identifier is the JS name the code
  * references (`.from(sampleOwnership)`), and `table` is the SQL name the DDL
- * catalog keys on (`sample_ownership`). The `table-catalog` corpus reducer
+ * catalog keys on (`sample_ownership`). The `resolution` corpus reducer
  * builds an alias map from these so a query referencing the identifier reaches
  * the catalog entry the identifier names — the Drizzle chain that was broken
  * before: `.from(sampleOwnership)` extracted `sampleOwnership`, which matches no
@@ -543,6 +684,9 @@ export type SchemaObject = {
    *  structurally-scoped (bootstrap) lookup by `missing-org-filter`. A surrogate
    *  primary key is excluded: it is the IDOR surface, not a bootstrap signal. */
   uniqueColumns: readonly string[];
+  /** The `.primaryKey()` columns (surrogate key), kept *separate* from
+   *  `uniqueColumns` so the resolution fact distinguishes PK from UNIQUE. */
+  primaryKeyColumns: readonly string[];
 };
 
 /**
@@ -561,7 +705,108 @@ export type SchemaUsageFact = {
   column?: number;
   rawQuery?: string;
   parameters?: string[];
-  origin?: 'query-builder';
+  origin?: 'query-builder' | 'collection-adapter';
+};
+
+/** A function/method span, the projection of one enclosing-function node the
+ *  corpus `schema-usage` producer uses to re-home a reference to its innermost
+ *  enclosing function with no AST. `name` is `adapter.getNodeName`'s text (null
+ *  for an anonymous arrow). */
+export type FunctionSpanFact = {
+  readonly startLine: number;
+  readonly startColumn: number;
+  readonly endLine: number;
+  readonly endColumn: number;
+  readonly name: string | null;
+};
+
+/** A string-fragment span, the projection of one `string_fragment` leaf the
+ *  corpus `schema-usage` producer uses to re-home a *top-level* reference with no
+ *  AST. The legacy re-home (`findClosestNodeAt` + `findEnclosingFunctionIdentity`)
+ *  returned the deepest node containing the reference — for a table name inside a
+ *  SQL string that node is a `string_fragment`, whose start (the content start,
+ *  right after the backtick/quote or a `${…}` substitution) becomes the
+ *  top-level coordinate. The end is projected so the corpus producer can test
+ *  containment. */
+export type StringFragmentFact = {
+  readonly startLine: number;
+  readonly startColumn: number;
+  readonly endLine: number;
+  readonly endColumn: number;
+};
+
+/** One tagged-template SQL candidate (`sql\`SELECT …\``), extracted un-gated. */
+export type TaggedTemplateCandidate = {
+  readonly tagName: string;
+  readonly templateText: string;
+  readonly location: { line: number; column: number };
+};
+
+/** One DB-call candidate, split by callee shape so the corpus producer can mirror
+ *  `dbCallVerdict`'s identifier / member arms. `sqlArgument` feeds
+ *  `identifyHandle`'s sql-argument source; `sqlText` is the resolved SQL
+ *  `parseSqlTables` reads — or null when the argument is held in an unresolvable
+ *  identifier, in which case `unresolved` carries the identifier + location so the
+ *  corpus-side reduction can re-admit the call and emit the `unresolved-query`
+ *  coverage diagnostic (Spec 70 1b). `sqlText` and `unresolved` are mutually
+ *  exclusive: `resolveQuerySql` returns at most one. */
+export type DbCallCandidate =
+  | {
+      readonly calleeType: 'identifier';
+      readonly name: string;
+      readonly sqlArgument: string | null;
+      readonly sqlText: string | null;
+      readonly unresolved: UnresolvedQuery | null;
+      readonly location: { line: number; column: number };
+    }
+  | {
+      readonly calleeType: 'member';
+      readonly method: string;
+      readonly root: string;
+      readonly receiver: string | null;
+      readonly thisField: boolean;
+      readonly sqlArgument: string | null;
+      readonly sqlText: string | null;
+      readonly unresolved: UnresolvedQuery | null;
+      readonly location: { line: number; column: number };
+    };
+
+/** One re-admitted DB-call whose SQL argument is held in an unresolvable
+ *  identifier (Spec 70 1b) — the corpus-side `unresolved-query` record, re-derived
+ *  from the raw `schema-usage-candidates` fact + the `receiver-provenance` fixed
+ *  point with no AST. `identifyHandle` already re-admitted the call (a DB handle),
+ *  so the query's table read/write status is genuinely unknown, not "no tables".
+ *  Feeds the `unresolved-query` coverage diagnostic re-homed in the caller. */
+export type UnresolvedQuerySite = {
+  readonly file: string;
+  readonly identifier: string;
+  readonly location: { line: number; column: number };
+};
+
+/**
+ * One file's un-gated schema-usage candidates — the raw, provenance-free extract
+ * the corpus `schema-usage` producer re-gates and re-derives (Spec 70 Item 4,
+ * step 3). The split mirrors `query-site-candidates`: the provenance-free half of
+ * `findTableReferences` — strategies (4)/(5)/(6) ORM / query-builder /
+ * collection-adapter — is extracted *and re-homed* here while the AST lives,
+ * while the two provenance-dependent strategies (1) tagged-template and (2)
+ * DB-call emit raw candidates the corpus producer re-admits and re-homes once
+ * `classifyBuildProvenance` has re-derived `dbProvenanced`. `functions` projects
+ * every enclosing-function node so the corpus producer can re-home tagged / DB-call
+ * references without walking the tree; `hasSqlTag` is the one gate input a corpus
+ * producer cannot re-derive (it scans source text).
+ */
+export type SchemaUsageCandidatesFact = {
+  readonly file: string;
+  readonly sourceCode: string;
+  readonly hasSqlTag: boolean;
+  readonly functions: readonly FunctionSpanFact[];
+  readonly stringFragments: readonly StringFragmentFact[];
+  readonly tagged: readonly TaggedTemplateCandidate[];
+  readonly dbCalls: readonly DbCallCandidate[];
+  readonly ormRefs: readonly SchemaUsageFact[];
+  readonly queryBuilderRefs: readonly SchemaUsageFact[];
+  readonly collectionAdapterRefs: readonly SchemaUsageFact[];
 };
 
 /**
@@ -648,9 +893,12 @@ export type DefinedClassesFact = {
 /** One stylesheet source the style indexer could not read (Spec 45 R5). The
  *  `styles/undefined-class` rule carries the full list as
  *  `details.incompleteDefinitions` so "undefined" reads as "not defined in any
- *  *read* stylesheet" rather than a definitive assertion. Read from the
- *  `style_unread_sources` index table by the `unread-style-sources` corpus
- *  producer — the same source the legacy reducer threaded as `unreadStyleSources`. */
+ *  *read* stylesheet" rather than a definitive assertion. The walk-level reasons
+ *  (unsupported dialect, read failure, unknown extension) are produced by the
+ *  traverse phase's own read/dialect walk (`runPhaseModel`); the content-level
+ *  `<style lang="…">` reason is read from the `style_unread_sources` index table
+ *  by the `unread-style-sources` corpus producer — the two are merged in
+ *  `buildFacts`. */
 export type UnreadStyleSourceFact = {
   filePath: string;
   reason: string;
@@ -740,6 +988,22 @@ export type ResolvedQuery = {
   queryText: string;
   hasOrganizationFilter: boolean;
   hasFilter: boolean;
+  /** Spec 70 R2 — AST-derived SQL facts, parsed from the call's static SQL
+   *  argument. Each is absent (false / empty / null) when the corpus named no
+   *  dialect or the argument failed to parse: that is `cannot-fire`, not a
+   *  negative verdict. The write/upsert facts are the raw-SQL statement kind;
+   *  a Kysely builder verb (`updateTable`) is folded into `isWrite`/`isMassWrite`
+   *  by the producer (host-language shape, not SQL). */
+  isWrite: boolean;
+  isMassWrite: boolean;
+  isUpsert: boolean;
+  isRawInsert: boolean;
+  /** The lowercased explicit column list of a raw-SQL INSERT/REPLACE, or `null`
+   *  for a positional INSERT (`INSERT INTO t VALUES (…)`, no column list). */
+  insertColumns: string[] | null;
+  /** Lowercased column refs appearing as predicate operands in the WHERE tree;
+   *  `null` when no SQL was parsed (the tenant-predicate signal `cannot-fire`). */
+  sqlWhereColumns: string[] | null;
   hasParameterizedQuery: boolean;
   hasSqlInjectionRisk: boolean;
   /** True when the injection risk is manually quote-escaped (downgrades severity). */
@@ -751,28 +1015,145 @@ export type ResolvedQuery = {
   /** Spec 69 R3 — the resolved WHERE predicate when the `.where(...)` spreads a
    *  local array binding (`and(...conditions)`). */
   resolvedWhere?: ResolvedWhere;
-};
-
-/** The known-table catalog built by the corpus schema processor (§5). Each
- *  table carries its DDL-declared column names so Tier 3 tenant discovery
- *  (`missing-org-filter`) can read tenancy from the corpus, not just config.
- *  `aliases` maps ORM schema-object identifiers (`sampleOwnership`) to their
- *  declared SQL names (`sample_ownership`), so a query referencing the
- *  identifier resolves to the catalog entry it names. */
-export type TableCatalog = {
-  tables: ReadonlyArray<{
-    name: string;
-    source: string;
-    columns: ReadonlyArray<string>;
-    /** Natural UNIQUE columns (DDL SQL names + Drizzle JS/SQL names, PRIMARY KEY
-     *  excluded), the bootstrap-lookup signal `missing-org-filter` reads. */
-    uniqueColumns: ReadonlyArray<string>;
-  }>;
-  aliases: Readonly<Record<string, string>>;
+  /** Spec 70 R1.2 — the handle verdict from `identifyHandle` (`handle` with its
+   *  `via`, or `unproven` with its reason). Present only when the call was
+   *  admitted through handle identification; absent for shape-only / ORM /
+   *  tagged-template / variable-assignment candidates. A `not-handle` site is
+   *  rejected at admission and never reaches a resolved query. */
+  handleVerdict?: HandleVerdict;
 };
 
 /**
- * A config-declared table the phase `table-catalog` producer merges alongside
+ * One un-gated data-access-call candidate — the raw, provenance-free projection
+ * of `buildDatabaseCall`'s AST-derived fields plus the two identities the corpus
+ * `data-access-calls` producer re-folds over the re-derived `dbProvenanced`. The
+ * split mirrors `schema-usage-candidates`: the provenance-free half (text-derived
+ * shape, static security arms 1–3, organization filter, enclosing identity,
+ * resolved WHERE) is computed here while the AST lives; the provenance-dependent
+ * half (the handle verdict → admission + injection-risk gate, and the site
+ * dialect → the SQL parse) is re-derived by `classifyDataAccessCalls` once
+ * `classifyBuildProvenance` supplies `dbProvenanced`.
+ *
+ * `handle*` is the identity of `handleVerdictForCall`'s `CallSite` — the
+ * *enclosing call* callee for a template-string candidate, the node's own callee
+ * otherwise — because the admission verdict and the injection-risk gate fold over
+ * it. `site*` is the identity of `resolveSiteDialect`'s input — the node's *own*
+ * callee, null for a template string — because the parse dialect follows it. The
+ * two diverge for a template argument, which is why both travel.
+ */
+export type DataAccessCallCandidate = {
+  readonly file: string;
+  readonly line: number;
+  readonly column: number;
+  /** 'typescript' covers tsx/javascript; 'go' is the Go family (selector callee). */
+  readonly format: 'typescript' | 'go';
+  /** The comment-stripped node text (`queryText`). */
+  readonly nodeText: string;
+  /** `extractMethodName` — the resolved method/property label. */
+  readonly method: string;
+  /** The static SQL argument (unquoted), or null when absent/interpolated. */
+  readonly sqlArg: string | null;
+  /** `isOrmPattern(nodeText)` — an ORM-shaped text, not necessarily SQL. */
+  readonly isOrmCall: boolean;
+  /** `isTaggedTemplateSqlCall` — a tagged-template SQL call (discovery path c). */
+  readonly isTaggedSqlCall: boolean;
+  /** `isQueryBuilderShape` — a query-builder chain (discovery path b). */
+  readonly isQueryBuilderShape: boolean;
+  /** `isVariableAssignment && extractStaticSql !== null` (discovery path d). */
+  readonly isVariableAssignmentSql: boolean;
+  /** `isTemplateLiteral(node)` — the dedup preference (template over declaration). */
+  readonly isTemplateLiteral: boolean;
+  // `handleVerdictForCall`'s CallSite identity (the enclosing-call callee).
+  readonly handleCalleeType: 'identifier' | 'member' | null;
+  readonly handleName: string | null;
+  readonly handleRoot: string | null;
+  readonly handleReceiver: string | null;
+  readonly handleMethod: string | null;
+  readonly handleThisField: boolean;
+  /** `extractStaticSql(callNode)` — the handle verdict's SQL argument (the
+   *  enclosing-call first arg for a template, the node's own arg otherwise).
+   *  Distinct from `sqlArg` (`extractStaticSql(node)`) for a template that is a
+   *  *later* argument of its enclosing call. */
+  readonly handleSqlArg: string | null;
+  /** The handle verdict's site-dialect receiver — the raw nullable
+   *  `getMemberExpressionReceiver` of `callNode`'s callee. Distinct from
+   *  `handleReceiver` (`receiver ?? root`) because `resolveSiteDialect` reads the
+   *  nullable raw (`this.db.prepare` → `db`, not `this.db`). */
+  readonly handleSiteReceiver: string | null;
+  /** `shouldSkipCallForTemplateArg` — drop a call rediscovered via its template
+   *  argument (a multi-line template starts on a later line than its call, so the
+   *  line dedup does not collapse them). */
+  readonly skipCallForTemplateArg: boolean;
+  // `resolveSiteDialect`'s identity (the node's own callee; null for template).
+  readonly siteCalleeType: 'identifier' | 'member' | null;
+  readonly siteName: string | null;
+  readonly siteReceiver: string | null;
+  // Provenance-free derived fields.
+  readonly hasOrganizationFilter: boolean;
+  readonly enclosingFunction: string;
+  readonly resolvedWhere: ResolvedWhere | null;
+  readonly ormTables: readonly string[];
+  readonly builderVerb: 'insert' | 'update' | 'delete' | null;
+  readonly ormHasFilter: boolean;
+  // Static security (arms 1–3 + static wrappers), corrected for cross-file
+  // learned wrappers corpus-side.
+  readonly staticParameterized: boolean;
+  readonly staticInjectionRisk: boolean;
+  readonly staticEscaped: boolean;
+  readonly arm4CalleeName: string | null;
+};
+
+/** One column's resolved constraints (Spec 69 R3, criterion 8). PK and natural
+ *  UNIQUE are recorded as *separate* flags — the quiet set reads `unique` only,
+ *  never `primaryKey`, because a surrogate PK is the IDOR surface the rule
+ *  exists to catch, not a bootstrap signal. */
+export type ResolutionColumn = {
+  name: string;
+  primaryKey: boolean;
+  unique: boolean;
+  notNull: boolean;
+  /** The foreign-key reference, when this column references an in-repo table. */
+  foreignKey: { table: string; column: string } | null;
+};
+
+/** One resolved table: its last-CREATE source, and each column with its
+ *  separately-recorded constraints. */
+export type ResolutionTable = {
+  name: string;
+  source: string;
+  columns: ReadonlyArray<ResolutionColumn>;
+};
+
+/** One class declaration, resolved to what it extends/implements in-repo. */
+export type ResolutionClass = {
+  name: string;
+  file: string;
+  extends: string | null;
+  implements: ReadonlyArray<string>;
+};
+
+/** One interface declaration, resolved to what it extends in-repo. */
+export type ResolutionInterface = {
+  name: string;
+  file: string;
+  extends: ReadonlyArray<string>;
+};
+
+/** The one resolution fact (Spec 69 R3, criterion 7). It answers "what does this
+ *  name refer to?" for every declared entity a rule asks about: ORM identifiers
+ *  to SQL table names (`aliases`), tables to their columns and per-column
+ *  constraints (`tables`), and class/interface declarations to what they extend
+ *  and implement (`classes`/`interfaces`). No rule performs its own name
+ *  resolution — it reads this fact instead. */
+export type ResolutionFact = {
+  tables: ReadonlyArray<ResolutionTable>;
+  aliases: Readonly<Record<string, string>>;
+  classes: ReadonlyArray<ResolutionClass>;
+  interfaces: ReadonlyArray<ResolutionInterface>;
+};
+
+/**
+ * A config-declared table the phase `resolution` producer merges alongside
  * the DDL-derived tables. §5 parity: the legacy schema reducer added the
  * schema analyzer's `knownTables` string list and structured `schemas` to the
  * known-table set (the "external authority" the `unknown-table` fail-open guard
@@ -1195,22 +1576,229 @@ export type ChannelOperationsFact = {
 };
 
 /**
+ * One Go file's package-scope declarations, as the `go-package-bindings`
+ * producer projects them (Spec 70 Item 4, 2a). The per-file half of
+ * `buildGoPackageBindings` (`goResolution.ts`): top-level `function_declaration` /
+ * `method_declaration` (name + return type), `type_declaration` → `type_spec`
+ * (name), and `var_declaration` → `var_spec` (name + type + value), first-wins
+ * deduped by name within the file. The cross-file receiver-provenance fixed
+ * point groups these by directory (a Go package is directory-scoped) and merges
+ * first-wins to rebuild the package symbol table — the exact
+ * `Map<string, GoBinding>` the legacy `resolveCorpusReceivers` fed its Go arm.
+ *
+ * `bindings` is the serializable projection of `Map<string, GoBinding>` — one
+ * `{name, binding}` pair per entry. `GoPackageBindingDetail` and
+ * `GoPackageValueDescriptor` are object-literal `type` aliases (not the
+ * `GoBinding` / `GoValueDescriptor` `interface`s they project, which do not
+ * satisfy §4's `Serializable` index-signature arm); they carry the same fields
+ * byte-for-byte so the fixed point rehydrates a `GoBinding` with no translation.
+ */
+export type GoPackageBindingFact = {
+  file: string;
+  bindings: readonly GoPackageBinding[];
+};
+
+/** One package-scope binding: the declaration name keyed to its `GoBinding`. */
+export type GoPackageBinding = {
+  name: string;
+  binding: GoPackageBindingDetail;
+};
+
+/**
+ * The serializable projection of `GoBinding` (`goResolution.ts`). `kind` mirrors
+ * the full `GoBindingKind` union — package scope only ever produces
+ * `function`/`method`/`type`/`variable`, but keeping the wider union makes the
+ * projection assignable from any `GoBinding` with no narrowing.
+ */
+export type GoPackageBindingDetail = {
+  kind: GoPackageBindingKind;
+  /** Import source path (kind === 'import'). */
+  source?: string;
+  /** Type-annotation text (variable / parameter / field). */
+  typeText?: string;
+  /** Return-type text (function / method) — `(*sql.DB, error)`. */
+  returnTypeText?: string;
+  /** Initializer / value expression (variable / field), serializable. */
+  value?: GoPackageValueDescriptor;
+};
+
+/** The `GoBindingKind` union, mirrored so the projection needs no import. */
+export type GoPackageBindingKind =
+  | 'import'
+  | 'variable'
+  | 'parameter'
+  | 'field'
+  | 'function'
+  | 'method'
+  | 'type';
+
+/**
+ * The serializable projection of `GoValueDescriptor` (`goResolution.ts`) — the
+ * node type, its text, and the `function`/`operand`/`type` named children the
+ * classifier reads, recursively bounded (depth 4) in the producer.
+ */
+export type GoPackageValueDescriptor = {
+  type: string;
+  text: string;
+  function?: GoPackageValueDescriptor | null;
+  operand?: GoPackageValueDescriptor | null;
+  typeNode?: GoPackageValueDescriptor | null;
+};
+
+/**
+ * One file's within-file-provenance projection, as the `within-file-provenance`
+ * producer serializes it (Spec 70 Item 4 / Item 3). This is the *extract* half
+ * of the TS/Go within-file-provenance split — everything the fixed point reads,
+ * projected with no AST and no live node — so the corpus `receiver-provenance`
+ * producer can re-derive a file's DB-provenanced names without re-parsing it.
+ *
+ * Tagged by `format` so the corpus producer rehydrates the projection into the
+ * owning format's `classify` input. The descriptor pieces (`TsExpressionDescriptor`,
+ * `PropagationRule`, `ClassCall`) are reused *as* the serializable projection:
+ * they are already closed object-literal `type`s with no `interface`/`Map`/`Set`
+ * member, so they satisfy §4's `Serializable` as-is (the `GoPackageValueDescriptor`
+ * parallel exists only because `GoValueDescriptor` is an `interface`). The two
+ * non-serializable members of `TsWithinFileProvenanceExtract` — `seeds`
+ * (`Map<string, ProvenanceEvidence>`) and `localFunctions` (`Set<string>`) — and
+ * the two `interface`s (`OwnCall`, `ProvenanceEvidence`) are projected here as
+ * arrays and `type` aliases respectively.
+ */
+export type WithinFileProvenanceFact =
+  | { readonly file: string; readonly format: 'typescript' | 'tsx' | 'javascript'; readonly ts: TsWithinFileProvenanceProjection }
+  | { readonly file: string; readonly format: 'go'; readonly go: GoWithinFileProvenanceProjection };
+
+/** The serializable TS-family extract projection. */
+export type TsWithinFileProvenanceProjection = {
+  readonly seeds: readonly ProvenanceEvidenceFact[];
+  readonly localFunctions: readonly string[];
+  readonly propagationRules: readonly PropagationRule[];
+  readonly wrapperFunctions: readonly { readonly name: string; readonly ownCalls: readonly WithinFileOwnCall[] }[];
+  readonly wrapperClasses: readonly { readonly name: string; readonly classCalls: readonly ClassCall[] }[];
+  readonly returningFunctions: readonly { readonly name: string; readonly returnExprs: readonly TsExpressionDescriptor[] }[];
+};
+
+/**
+ * The serializable projection of `ProvenanceEvidence` (`provenance.ts`) — an
+ * object-literal `type`, not the `interface` it projects, so it satisfies §4.
+ * `reason` carries the `ProvenanceReason` union; the rehydrator casts it back
+ * (it is a string literal at runtime, so the cast is lossless).
+ */
+export type ProvenanceEvidenceFact = {
+  readonly identifier: string;
+  readonly reason: ProvenanceReason;
+  readonly source: string;
+  readonly chain: readonly string[];
+  readonly packageName?: string;
+};
+
+/** The serializable projection of `OwnCall` (`tsExpressionDescriptor.ts`). */
+export type WithinFileOwnCall = {
+  readonly callee: TsExpressionDescriptor | null;
+  readonly isD1Rest: boolean;
+};
+
+/**
+ * The serializable Go extract projection: the full per-file binding env
+ * `buildGoBindingEnv` produces (imports + parameters + short-vars + fields +
+ * functions + types — *not* the package-scope `go-package-bindings` set), keyed
+ * as name→binding pairs. `GoPackageBinding` already projects the full
+ * `GoBinding` union (`GoPackageBindingDetail.kind` is the 7-member
+ * `GoPackageBindingKind`), so the same projection carries a file-local binding
+ * (parameter/short-var/field) with no narrowing.
+ */
+export type GoWithinFileProvenanceProjection = {
+  readonly imports: readonly { readonly name: string; readonly source: string }[];
+  readonly bindings: readonly GoPackageBinding[];
+};
+
+/**
+ * The per-file receiver-resolution inputs the corpus-side `dbProvenanced`
+ * re-derivation needs beyond the within-file extract (Spec 70 Item 4, step 3):
+ * the TS binding environment (`identifyHandle` reads it for declaration
+ * resolution), the R3 sites (`applyR3FromSites` re-folds `identifyHandle` over
+ * them once the cross-file seed is known), and the DB-shaped activity set
+ * (`passesFileGate`'s `dbActivity` signal — provenance-free, so it must be
+ * extracted while the AST lives, not re-derived). Go files carry none of these:
+ * their binding/import env is already in the Go arm of `within-file-provenance`
+ * and `go-package-bindings`, and both `collectDbActivity` and `extractR3Sites`
+ * return empty for Go, so this fact is TS-family-only.
+ */
+export type ReceiverActivityFact = {
+  readonly file: string;
+  readonly format: 'typescript' | 'tsx' | 'javascript';
+  readonly bindings: readonly TsBindingFact[];
+  readonly r3Sites: readonly ReceiverActivityR3Site[];
+  readonly dbActivity: readonly string[];
+};
+
+/** One TS binding projected serializable: the `Binding` interface's fields as a
+ *  closed object-literal `type` (`ValueDescriptor` is already a serializable
+ *  `type`). */
+export type TsBindingFact = {
+  readonly name: string;
+  readonly kind: BindingKind;
+  readonly source?: string;
+  readonly typeText?: string;
+  readonly value?: ValueDescriptor;
+};
+
+/** The serializable projection of `R3Site` (`provenance.ts`, an `interface`). */
+export type ReceiverActivityR3Site = {
+  readonly root: string;
+  readonly receiver: string;
+  readonly method: string;
+  readonly sqlArgument: string;
+  readonly thisField: boolean;
+};
+
+/**
+ * The cross-file receiver-provenance fixed point (Spec 70 Item 4, 2a), re-derived
+ * by the `receiver-provenance` corpus producer from the four additive file facts
+ * (`within-file-provenance`, `import-specifiers`, `export-symbols`,
+ * `go-package-bindings`) with no AST. This is the phase-side replacement for
+ * `resolveCorpusReceivers`' `fileProvenance` + `unresolvedImports` halves — the
+ * per-file DB-provenanced identifiers the four receiver consumers read, plus the
+ * unresolved DB-looking imports the `cannot-fire` diagnostic names. `fileExports`
+ * (the fixed point's internal Phase-2 intermediate) is *not* carried: no consumer
+ * reads it, and the parity assertion compares it through the producer's exported
+ * core, not the fact.
+ */
+export type ReceiverProvenanceFact = {
+  readonly files: readonly ReceiverProvenanceFileFact[];
+  readonly unresolvedImports: readonly UnresolvedImportFact[];
+};
+
+/** One file's fixed-point DB-provenanced identifiers (the serializable
+ *  `Map<string, ProvenanceEvidence>` = `FileProvenance[file]`). */
+export type ReceiverProvenanceFileFact = {
+  readonly file: string;
+  readonly provenance: readonly ProvenanceEvidenceFact[];
+};
+
+/** An import whose specifier could not be resolved to an in-repo file (the
+ *  `cannot-fire` accounting signal), the serializable projection of
+ *  `UnresolvedImport` (`receiverResolution.ts`). */
+export type UnresolvedImportFact = {
+  readonly importer: string;
+  readonly source: string;
+  readonly names: readonly string[];
+};
+
+/**
  * The index-backed call-graph fact (§2.2) — the function catalog and the
  * function→function call edges the legacy `graph_cache` carried, read by the
  * corpus `call-graph` producer from the code index. Plain-data projection: no
- * handle survives the corpus boundary. `functions` is the `functions` table's
- * identity projection (id → {name, filePath, lineNumber, usedImports,
+ * handle survives the corpus boundary. `functions` is the identity projection of
+ * the `function-index` file fact (id → {name, filePath, lineNumber, usedImports,
  * isExported}) the depth-1 callee expansion maps a `filePath::name` key through
  * and the validation-bypass provenance (`buildValidatorIds`) reads its
- * `usedImports`/`isExported` through; `callEdges` is `graph_cache`'s `call`
- * edges (fromId → toId), parsed from its string node/neighbor keys.
+ * `usedImports`/`isExported` through; `callEdges` is the call-graph edges
+ * (fromId → toId) rebuilt from `function-index`'s `functionCalls` name join.
  *
- * `lineNumber` is the raw `line_number` column (nullable) — the uncovered-risk
- * ranking reads `f.line_number` as the finding anchor, so the fact carries it
- * verbatim. `usedImports` is the raw `used_imports` JSON-array string (or null)
- * — the provenance check `used_imports LIKE '%"zod"%'` runs over that exact
- * string, so the fact carries it verbatim rather than re-parsing. `isExported`
- * is the boolean projection of the `is_exported` 0/1 column.
+ * `lineNumber` is the `function-index` `line` (the uncovered-risk ranking reads
+ * it as the finding anchor). `usedImports` is the `function-index` `usedImports`
+ * array (Item 4 2b — carried verbatim, not re-derived from the index column).
+ * `isExported` is the boolean projection of `function-index` `isExported`.
  */
 export type CallGraphFact = {
   functions: ReadonlyArray<{
@@ -1218,7 +1806,7 @@ export type CallGraphFact = {
     name: string;
     filePath: string;
     lineNumber: number | null;
-    usedImports: string | null;
+    usedImports: readonly string[];
     isExported: boolean;
   }>;
   callEdges: ReadonlyArray<{ fromId: number; toId: number }>;
@@ -1399,6 +1987,11 @@ export interface ParsedFile {
    *  pipeline. Only the style producer reads it (to load the project's Tailwind
    *  theme tokens for utility expansion — a corpus-level context, not per-file). */
   readonly projectRoot?: string;
+  /** Spec 70 R1 — the corpus's named SQL dialect, threaded to the
+   *  `data-access-calls` producer so its SQL-content facts parse rather than
+   *  regex. Absent in the slice tests (single fixture, no corpus) — the producer
+   *  then runs on the default (null) dialect and SQL facts `cannot-fire`. */
+  readonly sqlDialect?: Dialect | null;
 }
 
 /**
@@ -1422,7 +2015,7 @@ export type FactFragment<K extends FactKind> = FactShapes[K];
 /**
  * The formats that supply each *file* fact kind, declared per kind and never
  * inferred. A kind absent from this interface is corpus-produced
- * (`table-catalog`): it has no supplying format, only upstream facts (§5).
+ * (`resolution`): it has no supplying format, only upstream facts (§5).
  *
  * This declaration is load-bearing, not documentation: a format named here
  * without a producer in {@link PRODUCERS} fails the mapped type, and a format
@@ -1435,20 +2028,22 @@ export type FactFragment<K extends FactKind> = FactShapes[K];
 export interface SupplyingFormats {
   'file-symbols': 'typescript' | 'tsx' | 'javascript';
   'function-index': 'typescript' | 'tsx' | 'javascript';
-  'query-sites': 'typescript' | 'tsx' | 'javascript';
+  'query-site-candidates': 'typescript' | 'tsx' | 'javascript';
   'imports': 'typescript' | 'tsx' | 'javascript' | 'go';
+  'import-specifiers': 'typescript' | 'tsx' | 'javascript';
+  'export-symbols': 'typescript' | 'tsx' | 'javascript';
   'export-form': 'typescript' | 'tsx' | 'javascript';
   'import-form': 'typescript' | 'tsx' | 'javascript';
   'string-literals': 'typescript' | 'tsx' | 'javascript';
   'secret-candidates': 'typescript' | 'tsx' | 'javascript';
   'security-candidates': 'typescript' | 'tsx' | 'javascript';
   'ddl-declarations': 'typescript' | 'tsx' | 'javascript' | 'sql';
-  'schema-usage': 'typescript' | 'tsx' | 'javascript';
+  'schema-usage-candidates': 'typescript' | 'tsx' | 'javascript';
   'schema-objects': 'typescript' | 'tsx' | 'javascript';
   'style-declarations': 'css' | 'scss' | 'typescript' | 'tsx' | 'javascript' | 'markup';
   'cross-language-entities': 'typescript' | 'tsx' | 'javascript' | 'go';
-  'data-access-calls': 'typescript' | 'tsx' | 'javascript' | 'go';
-  'loop-queries': 'typescript' | 'tsx' | 'javascript';
+  'data-access-calls-candidates': 'typescript' | 'tsx' | 'javascript' | 'go';
+  'loop-query-candidates': 'typescript' | 'tsx' | 'javascript';
   'dynamic-sql': 'typescript' | 'tsx' | 'javascript';
   'react-component': 'typescript' | 'tsx' | 'javascript';
   'file-header': 'typescript' | 'tsx' | 'javascript';
@@ -1461,6 +2056,9 @@ export interface SupplyingFormats {
   'error-bindings': 'go';
   'concurrency-primitives': 'go';
   'channel-operations': 'go';
+  'go-package-bindings': 'go';
+  'within-file-provenance': 'typescript' | 'tsx' | 'javascript' | 'go';
+  'receiver-activity': 'typescript' | 'tsx' | 'javascript';
   'batch-functions': 'typescript' | 'tsx' | 'javascript';
 }
 
@@ -1538,7 +2136,7 @@ export interface OracleShortfall {
  * module list, the tsconfig aliases and the package.json entry points — all
  * derived from the project root, none per-file — so they are threaded here as
  * one optional context rather than leaking config into the fact shapes. A
- * processor that needs none of this (table-catalog, migration-history,
+ * processor that needs none of this (resolution, migration-history,
  * mined-conventions, schema-validations) simply ignores it.
  */
 export interface CorpusContext {
@@ -1560,9 +2158,15 @@ export interface CorpusContext {
    *  empty fact, matching the legacy graceful-degradation). */
   indexHandle?: IndexHandle;
   /** Config-declared external tables (schema analyzer's `knownTables` +
-   *  `schemas`), merged into the `table-catalog` corpus fact. See
+   *  `schemas`), merged into the `resolution` corpus fact. See
    *  {@link ExternalTableDecl}. */
   externalTables?: ReadonlyArray<ExternalTableDecl>;
+  /** Spec 70 R1 — the corpus's named SQL dialect, threaded to the corpus
+   *  producers that re-apply provenance to the four receiver consumers (whose
+   *  file-fact half reads `ParsedFile.sqlDialect`). Absent in the slice tests
+   *  (single fixture, no corpus) — the producers then run on the default (null)
+   *  dialect and SQL-argument facts `cannot-fire`. */
+  sqlDialect?: Dialect | null;
 }
 
 /** A corpus processor: receives complete upstream facts, no AST, no format. */

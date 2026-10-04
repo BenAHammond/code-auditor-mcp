@@ -231,9 +231,26 @@ class DependencyGraphBuilderCore {
   }
 
   /**
-   * Find tightly coupled clusters
+   * Find tightly coupled clusters.
+   *
+   * Tight coupling is a property of a *pair* of modules, not of one module: two
+   * packages are tightly coupled when their mutual edges dominate the edges that
+   * stay inside either package — the pair is more entangled with each other than
+   * with itself, so neither can change without the other. The prior metric
+   * measured a single cluster's *cohesion* (`internalEdges / incidentEdges`) and
+   * reported it as coupling, which inverted the concept — a package whose nodes
+   * mostly call each other is cohesive (good design), not coupled — and flagged
+   * every well-factored package. See `specs/spec70-worklist.md` §4.
+   *
+   * Coupling here is `cross / (cross + within)` for each unordered pair of
+   * distinct clusters, where `cross` = aToB + bToA (edges spanning the
+   * boundary) and `within` = edges that stay inside either cluster. A pair is
+   * flagged only when edges flow in *both* directions (a one-directional
+   * fan-in — three functions in A calling a shared utility in B — is a
+   * dependency, not coupling), the pair has at least three cross edges, and
+   * the ratio exceeds the coupling threshold.
    */
-  protected findTightlyCoupledClusters(graph: DependencyGraph): { nodes: string[]; coupling: number }[] {
+  protected findTightlyCoupledClusters(graph: DependencyGraph): TightlyCoupledCluster[] {
     const clusters = new Map<string, string[]>();
 
     // Group nodes by cluster
@@ -244,35 +261,52 @@ class DependencyGraphBuilderCore {
       else clusters.set(cluster, [node.id]);
     }
 
-    const tightlyCoupled: { nodes: string[]; coupling: number }[] = [];
+    const clusterOf = new Map<string, string>();
+    for (const [cluster, ids] of clusters) {
+      for (const id of ids) clusterOf.set(id, cluster);
+    }
 
-    for (const nodeIds of clusters.values()) {
-      if (nodeIds.length < 3) continue; // coupling over a tiny cluster is meaningless
-      const member = new Set(nodeIds);
+    // Single pass over edges: bucket each as internal (both endpoints in one
+    // cluster) or cross-cluster, split by direction. The coupling ratio is then
+    // per-pair, and the scan is O(V + E + P), not O(P · E) for P cluster pairs.
+    const withinByCluster = new Map<string, number>();
+    const crossEdges = new Map<string, Map<string, { aToB: number; bToA: number }>>();
+    const pair = (lo: string, hi: string): { aToB: number; bToA: number } => {
+      let inner = crossEdges.get(lo);
+      if (!inner) { inner = new Map(); crossEdges.set(lo, inner); }
+      let counts = inner.get(hi);
+      if (!counts) { counts = { aToB: 0, bToA: 0 }; inner.set(hi, counts); }
+      return counts;
+    };
 
-      // Cohesion: the fraction of a cluster's incident edges that stay internal.
-      // A raw internal-density threshold (internalEdges / N×(N−1) > 0.7) is
-      // unreachable for any real sparse graph — it would require ~70% of all
-      // possible edges to exist — so tight-coupling never fired. Cohesion
-      // instead flags clusters whose nodes mostly talk to each other, which is
-      // what "tightly coupled" actually means.
-      let internalEdges = 0;
-      let incidentEdges = 0;
-      for (const edge of graph.edges) {
-        const fromIn = member.has(edge.from);
-        const toIn = member.has(edge.to);
-        if (fromIn && toIn) {
-          internalEdges++;
-          incidentEdges++;
-        } else if (fromIn || toIn) {
-          incidentEdges++;
-        }
+    for (const edge of graph.edges) {
+      const a = clusterOf.get(edge.from);
+      const b = clusterOf.get(edge.to);
+      if (a === undefined || b === undefined) continue; // endpoint outside the node set
+      if (a === b) {
+        withinByCluster.set(a, (withinByCluster.get(a) ?? 0) + 1);
+      } else {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        const counts = pair(lo, hi);
+        if (a < b) counts.aToB++;
+        else counts.bToA++;
       }
+    }
 
-      if (incidentEdges === 0) continue;
-      const coupling = internalEdges / incidentEdges;
-      if (coupling > 0.7) {
-        tightlyCoupled.push({ nodes: nodeIds, coupling });
+    const tightlyCoupled: TightlyCoupledCluster[] = [];
+    for (const [a, inner] of crossEdges) {
+      for (const [b, counts] of inner) {
+        if (counts.aToB === 0 || counts.bToA === 0) continue; // one-directional dependency, not coupling
+        const cross = counts.aToB + counts.bToA;
+        if (cross < 3) continue; // a lone edge is a dependency, not tight coupling
+        const aIds = clusters.get(a)!;
+        const bIds = clusters.get(b)!;
+        if (aIds.length + bIds.length < 3) continue; // coupling over a tiny pair is meaningless
+        const within = (withinByCluster.get(a) ?? 0) + (withinByCluster.get(b) ?? 0);
+        const coupling = cross / (cross + within);
+        if (coupling > 0.7) {
+          tightlyCoupled.push({ nodes: [...aIds, ...bIds], coupling, clusters: [a, b] });
+        }
       }
     }
 
@@ -666,7 +700,7 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     const idToName = new Map(graph.nodes.map(n => [n.id, n.name] as const));
 
     this.recordCycleCheck(sink, graph, idToName);
-    this.recordClusterCheck(sink, graph, idToName);
+    this.recordClusterCheck(sink, graph);
     this.recordOrphanCheck(sink, graph);
 
     return {
@@ -691,19 +725,18 @@ export class DependencyGraphBuilder extends DependencyGraphBuilderTraversal {
     });
   }
 
-  /** Record the tight-coupling check (clusters rendered with their coupling %). */
-  private recordClusterCheck(sink: CheckSink, graph: DependencyGraph, idToName: Map<string, string>): void {
-    const label = (ids: string[]): string[] => ids.map(id => idToName.get(id) ?? id);
+  /** Record the tight-coupling check (cluster pairs rendered with their coupling %). */
+  private recordClusterCheck(sink: CheckSink, graph: DependencyGraph): void {
     const clusters = this.findTightlyCoupledClusters(graph);
     this.recordCheck(sink, clusters.length, clusters.flatMap(c => c.nodes), {
       issueType: 'tight-coupling', severity: 'high', impact: 'medium',
       issueDesc: () =>
-        clusters.map(c => `${label(c.nodes).join(', ')} (${(c.coupling * 100).toFixed(0)}%)`).join('; '),
+        clusters.map(c => `${c.clusters[0]} ↔ ${c.clusters[1]} (${(c.coupling * 100).toFixed(0)}%)`).join('; '),
       suggestionType: 'reduce-coupling', priority: 'medium',
       suggestionDesc: 'Reduce coupling between modules using interfaces and abstractions',
       implementation: 'Extract common interfaces and use dependency injection',
       details: {
-        clusters: clusters.map(c => ({ nodes: c.nodes, coupling: c.coupling })),
+        clusters: clusters.map(c => ({ clusters: c.clusters, coupling: c.coupling })),
       },
     });
   }
@@ -825,6 +858,14 @@ function isNameReferenced(name: string, file: string, index: ReferenceIndex): bo
 interface ReferenceIndex {
   byFile: Map<string, Set<string>>;
   globalFiles: Map<string, Set<string>>;
+}
+
+/** A tightly-coupled cluster pair: the two cluster keys, their union of nodes, and the coupling ratio. */
+interface TightlyCoupledCluster {
+  nodes: string[];
+  coupling: number;
+  /** The two cluster (package) keys whose shared boundary the coupling measures. */
+  clusters: [string, string];
 }
 
 export interface DependencyIssue {

@@ -11,13 +11,18 @@
  * `usageIdentityLabel` helpers), which were SQL-over-`schema_usage` queries with
  * no other input.
  *
- * The "query-builder" exclusion is the one subtlety: a table whose *every* row
- * carries `origin = 'query-builder'` is a fluent scratch/test table built and
- * consumed through the knex-style builder — not a one-sided lifecycle defect —
- * so both detectors skip it. The read/write *sets* themselves are computed
- * regardless of origin, which is what lets a query-builder read balance a
- * raw-SQL create (cp_test). The filter is therefore: a table participates only
- * if it has at least one non-query-builder row.
+ * The facade-origin exclusion is the one subtlety: a table whose *every* row
+ * carries a facade `origin` (`query-builder` for a fluent knex-style builder, or
+ * `collection-adapter` for a `SqliteCollectionAdapter` binding) is accessed
+ * through a facade whose read/write methods the extractor does not record — not
+ * a one-sided lifecycle defect — so both detectors skip it. The read/write
+ * *sets* themselves are computed regardless of origin, which is what lets a
+ * query-builder read balance a raw-SQL create (cp_test). The filter is
+ * therefore: a table participates only if it has at least one non-facade row.
+ * (`collection-adapter` is the `whitelist`-table false positive: the extractor
+ * records only the constructor's `select` binding — `new SqliteCollectionAdapter(db,
+ * 'whitelist')` — and none of the facade's interpolated `INSERT`/`UPDATE`, so a
+ * facade-only table read as read-never-written.)
  *
  * The anchor line is the first row after sorting, which reproduces the legacy
  * SQL's `SELECT DISTINCT … ORDER BY table_name, file_path` exactly. SQLite sorts
@@ -195,11 +200,17 @@ function usageIdentityLabel(
 
 // ── Detectors (re-homed from CrossDomainAnalyzer, SQL → fact-array) ─────────
 
-/** The tables with at least one non-query-builder row. */
-function nonQueryBuilderTables(usages: SchemaUsageFact[]): Set<string> {
+/** The tables with at least one non-facade row. A facade row is a `query-builder`
+ *  fluent selector or a `collection-adapter` constructor binding — both are
+ *  facade accesses whose read/write methods the extractor does not record, so a
+ *  table that is *only* facade rows has no trustworthy lifecycle signal and is
+ *  skipped by the one-sided detectors (the `whitelist` read-never-written
+ *  false positive). A table with even one raw-SQL/ORM/tagged/.sql row still
+ *  participates. */
+function nonFacadeTables(usages: SchemaUsageFact[]): Set<string> {
   const tables = new Set<string>();
   for (const u of usages) {
-    if (u.origin !== 'query-builder') tables.add(u.tableName);
+    if (u.origin !== 'query-builder' && u.origin !== 'collection-adapter') tables.add(u.tableName);
   }
   return tables;
 }
@@ -237,7 +248,7 @@ function dataWrittenTables(usages: SchemaUsageFact[]): Set<string> {
 
 /** Tables written (INSERT/UPDATE/DELETE) but never read (SELECT). */
 function detectWrittenNeverRead(usages: SchemaUsageFact[]): Finding[] {
-  const nonQb = nonQueryBuilderTables(usages);
+  const nonQb = nonFacadeTables(usages);
   const selects = selectTables(usages);
   const dataWritten = dataWrittenTables(usages);
 
@@ -272,7 +283,7 @@ function detectWrittenNeverRead(usages: SchemaUsageFact[]): Finding[] {
 
 /** Tables read (SELECT) but never written (INSERT/UPDATE/DELETE/CREATE). */
 function detectReadNeverWritten(usages: SchemaUsageFact[]): Finding[] {
-  const nonQb = nonQueryBuilderTables(usages);
+  const nonQb = nonFacadeTables(usages);
   const writes = writeTables(usages);
 
   const candidates = usages
@@ -525,11 +536,11 @@ function collectWriters(usages: SchemaUsageFact[], graph: CallGraphFact): Writer
 /**
  * Build the validator function-ID set in priority order (re-homed from
  * `buildValidatorIds`): user-configured validators, then provenanced validators
- * (exported functions whose own `used_imports` JSON includes a validator
+ * (exported functions whose own `usedImports` array includes a validator
  * package), then a name-based heuristic fallback only when both prior sources
- * are silent. The provenance LIKE test runs over the raw `used_imports` JSON
- * string — `used_imports LIKE '%"zod"%'` — so the widened call-graph fact
- * carries it verbatim rather than re-parsed.
+ * are silent. Item 4 2b — `usedImports` is now the `function-index` array carried
+ * verbatim through the `call-graph` fact (no index column, no JSON string), so
+ * the provenance test is a plain `array.includes(pkg)`.
  */
 function buildValidatorIdsFact(graph: CallGraphFact, userValidators: string[]): Set<number> {
   const validatorIds = new Set<number>();
@@ -560,9 +571,9 @@ function buildValidatorIdsFact(graph: CallGraphFact, userValidators: string[]): 
   // 1b. Provenanced validators.
   if (validatorIds.size === 0) {
     for (const f of graph.functions) {
-      if (f.usedImports == null || !f.isExported) continue;
+      if (f.usedImports.length === 0 || !f.isExported) continue;
       for (const pkg of VALIDATOR_PACKAGES) {
-        if (f.usedImports.includes(`"${pkg}"`)) {
+        if (f.usedImports.includes(pkg)) {
           validatorIds.add(f.id);
           break;
         }

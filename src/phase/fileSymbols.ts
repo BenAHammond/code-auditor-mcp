@@ -68,6 +68,7 @@ export function extractFileSymbols(file: AstFile): FileSymbols[] {
       name: iface.name,
       line: iface.location.start.line,
       column: iface.location.start.column,
+      extends: iface.extends ?? [],
       memberCount: (iface.members ?? []).length,
       hasMethodMembers: (iface.members ?? []).some((m) => m.type === 'method'),
     });
@@ -116,6 +117,7 @@ function extractClass(file: AstFile, cls: ClassInfo): FileClassSymbol {
     column: cls.location.start.column,
     isExported: cls.isExported,
     extends: cls.extends,
+    implements: cls.implements ?? [],
     methodCount: cls.methods.length,
     aggregateComplexity,
     instanceofTargets: classNode ? extractInstanceofTargets(classNode, adapter, source) : [],

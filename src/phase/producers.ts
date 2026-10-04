@@ -35,7 +35,10 @@ import type {
   AstFile,
   FactFragment,
   CompletenessOracle,
-  TableCatalog,
+  ResolutionFact,
+  ResolutionTable,
+  ResolutionClass,
+  ResolutionInterface,
   MigrationHistory,
   MinedConvention,
   Format,
@@ -48,13 +51,20 @@ import type {
   DefinedClassesFact,
   UnreadStyleSourceFact,
   ColorValuesFact,
+  ReceiverProvenanceFact,
+  QuerySiteFact,
+  SchemaUsageFact,
+  ResolvedQuery,
+  LoopQueryFact,
 } from './types.js';
+import type { IndexHandle } from '../types.js';
 import {
   countOracle,
   noOracle,
   countFileSymbols,
   countImports,
   countExportForm,
+  countExportSymbols,
   countFunctionIndex,
   countStringLiterals,
   countCrossLanguageEntities,
@@ -66,6 +76,7 @@ import {
   countGoFunctions,
   countGoSwitches,
   countTypeDeclarations,
+  countGoPackageBindings,
   countSchemaObjects,
   countDdlOps,
   countCssDeclarations,
@@ -80,10 +91,13 @@ import {
   measuredStyleDeclarations,
   measuredJsxElements,
   measuredFileImports,
+  measuredGoPackageBindings,
+  measuredQuerySites,
+  measuredSchemaUsageCandidates,
 } from './oracles.js';
 import { extractFileSymbols } from './fileSymbols.js';
 import { extractFunctionIndex } from './functionIndex.js';
-import { extractQuerySites } from './querySites.js';
+import { extractQuerySiteCandidates } from './querySiteCandidates.js';
 import { extractReactComponents } from './reactComponents.js';
 import { extractFileHeader } from './fileHeader.js';
 import { extractCodeBlocks } from './codeBlocks.js';
@@ -91,6 +105,8 @@ import { extractBatchFunctions } from './batchFunctions.js';
 import { extractJsonDocument } from './jsonDocument.js';
 import { buildSchemaValidations } from './schemaValidations.js';
 import { extractImports } from './imports.js';
+import { extractImportSpecifiers } from './importSpecifiers.js';
+import { extractExportSymbols } from './exportSymbols.js';
 import { extractExportForm } from './exportForm.js';
 import { extractImportForm } from './importForm.js';
 import { extractStringLiterals } from './stringLiterals.js';
@@ -99,10 +115,10 @@ import { extractSecurityCandidates } from './securityCandidates.js';
 import { extractStylesCss } from './stylesCss.js';
 import { extractStylesSource } from './stylesSource.js';
 import { extractStylesMarkup } from './stylesMarkup.js';
-import { extractDataAccessCalls } from './dataAccessCalls.js';
-import { extractLoopQueries } from './loopQueries.js';
+import { extractDataAccessCallCandidates } from './dataAccessCallsCandidates.js';
+import { extractLoopQueryRawCandidates } from './loopQueryCandidates.js';
 import { extractDynamicSql } from './dynamicSql.js';
-import { extractSchemaUsage } from './schemaUsage.js';
+import { extractSchemaUsageCandidates } from './schemaUsageCandidates.js';
 import { extractSchemaCode } from './schemaCode.js';
 import { extractSchemaObjects } from './schemaObjects.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
@@ -114,6 +130,11 @@ import { extractTypeDeclarations } from './typeDeclarations.js';
 import { extractGoFunctions } from './goFunctions.js';
 import { extractGoSwitches } from './goSwitches.js';
 import { extractGoImports } from './goImports.js';
+import { extractGoPackageBindings } from './goPackageBindings.js';
+import { extractWithinFileProvenance, evidenceToFact } from './withinFileProvenance.js';
+import { extractReceiverActivity } from './receiverActivity.js';
+import { computeReceiverProvenance } from './receiverProvenance.js';
+import { classifyQuerySites, classifySchemaUsage, classifyDataAccessCalls, classifyLoopQueries } from './receiverConsumers.js';
 import { extractErrorBindings, extractConcurrencyPrimitives, extractChannelOperations } from './goFunctionAnalysis.js';
 import { computeReachability } from './reachability.js';
 import { DEFAULT_VIRTUAL_MODULES } from '../graph/importClassification.js';
@@ -159,23 +180,28 @@ function fileProducer<K extends FileFactKind, F extends SupplyingFormats[K]>(
 // AST consumer.
 const fileSymbolsProcess = (file: ParsedFile): FactFragment<'file-symbols'> => extractFileSymbols(file as AstFile);
 const functionIndexProcess = (file: ParsedFile): FactFragment<'function-index'> => extractFunctionIndex(file as AstFile);
-const querySitesProcess = (file: ParsedFile): FactFragment<'query-sites'> => extractQuerySites(file as AstFile);
+const querySiteCandidatesProcess = (file: ParsedFile): FactFragment<'query-site-candidates'> => extractQuerySiteCandidates(file as AstFile);
 const importsProcess = (file: ParsedFile): FactFragment<'imports'> => extractImports(file as AstFile);
+const importSpecifiersProcess = (file: ParsedFile): FactFragment<'import-specifiers'> => extractImportSpecifiers(file as AstFile);
+const exportSymbolsProcess = (file: ParsedFile): FactFragment<'export-symbols'> => extractExportSymbols(file as AstFile);
 const exportFormProcess = (file: ParsedFile): FactFragment<'export-form'> => extractExportForm(file as AstFile);
 const importFormProcess = (file: ParsedFile): FactFragment<'import-form'> => extractImportForm(file);
 const stringLiteralsProcess = (file: ParsedFile): FactFragment<'string-literals'> => extractStringLiterals(file as AstFile);
 const secretCandidatesProcess = (file: ParsedFile): FactFragment<'secret-candidates'> => extractSecretCandidates(file as AstFile);
 const securityCandidatesProcess = (file: ParsedFile): FactFragment<'security-candidates'> => extractSecurityCandidates(file as AstFile);
 const ddlProcess = (file: ParsedFile): FactFragment<'ddl-declarations'> => extractSchemaCode(file);
-const schemaUsageProcess = (file: ParsedFile): FactFragment<'schema-usage'> => extractSchemaUsage(file as AstFile);
+const schemaUsageCandidatesProcess = (file: ParsedFile): FactFragment<'schema-usage-candidates'> =>
+  extractSchemaUsageCandidates(file as AstFile);
 const schemaObjectsProcess = (file: ParsedFile): FactFragment<'schema-objects'> => extractSchemaObjects(file);
 const styleProcess = (file: ParsedFile): FactFragment<'style-declarations'> => [extractStylesCss(file as AstFile)];
 const styleSourceProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesSource(file as AstFile);
 const styleMarkupProcess = (file: ParsedFile): FactFragment<'style-declarations'> => extractStylesMarkup(file);
 const crossLangProcess = (file: ParsedFile): FactFragment<'cross-language-entities'> =>
   extractCrossLanguageEntities((file as AstFile).ast, file.file, file.source, getLanguageFromPath(file.file));
-const dataAccessProcess = (file: ParsedFile): FactFragment<'data-access-calls'> => extractDataAccessCalls(file as AstFile);
-const loopQueriesProcess = (file: ParsedFile): FactFragment<'loop-queries'> => extractLoopQueries(file as AstFile);
+const dataAccessCandidatesProcess = (file: ParsedFile): FactFragment<'data-access-calls-candidates'> =>
+  extractDataAccessCallCandidates(file as AstFile);
+const loopQueryCandidatesProcess = (file: ParsedFile): FactFragment<'loop-query-candidates'> =>
+  extractLoopQueryRawCandidates(file as AstFile);
 const dynamicSqlProcess = (file: ParsedFile): FactFragment<'dynamic-sql'> => extractDynamicSql(file as AstFile);
 const reactComponentProcess = (file: ParsedFile): FactFragment<'react-component'> => [extractReactComponents(file as AstFile)];
 const fileHeaderProcess = (file: ParsedFile): FactFragment<'file-header'> => extractFileHeader(file as AstFile);
@@ -187,6 +213,9 @@ const typeDeclarationsProcess = (file: ParsedFile): FactFragment<'type-declarati
 const goFunctionsProcess = (file: ParsedFile): FactFragment<'go-functions'> => extractGoFunctions(file as AstFile);
 const goSwitchesProcess = (file: ParsedFile): FactFragment<'go-switches'> => extractGoSwitches(file as AstFile);
 const goImportsProcess = (file: ParsedFile): FactFragment<'imports'> => extractGoImports(file as AstFile);
+const goPackageBindingsProcess = (file: ParsedFile): FactFragment<'go-package-bindings'> => extractGoPackageBindings(file as AstFile);
+const withinFileProvenanceProcess = (file: ParsedFile): FactFragment<'within-file-provenance'> => extractWithinFileProvenance(file as AstFile);
+const receiverActivityProcess = (file: ParsedFile): FactFragment<'receiver-activity'> => extractReceiverActivity(file as AstFile);
 const errorBindingsProcess = (file: ParsedFile): FactFragment<'error-bindings'> => extractErrorBindings(file as AstFile);
 const concurrencyPrimitivesProcess = (file: ParsedFile): FactFragment<'concurrency-primitives'> => extractConcurrencyPrimitives(file as AstFile);
 const channelOperationsProcess = (file: ParsedFile): FactFragment<'channel-operations'> => extractChannelOperations(file as AstFile);
@@ -200,7 +229,7 @@ const batchFunctionsProcess = (file: ParsedFile): FactFragment<'batch-functions'
 // CLASSIFICATION/GATED `none`s to coarse counted oracles — "no exact counter"
 // and "the residual drowns the signal" were judgements, not measurements, and
 // the aggregate gate pins `actual` exactly so any producer regression shows
-// regardless of residual size. The split is now 73 counted / 8 none.
+// regardless of residual size. The split is now 80 counted / 15 none.
 //   • STYLE_SOURCE / STYLE_MARKUP — the declaration unit is the *expansion* of a
 //     union of source mechanisms (Tailwind utility classes, inline-style object
 //     pairs, CSS-in-JS templates). Tailwind-utility and shorthand expansion make
@@ -221,6 +250,9 @@ const STYLE_MARKUP = noOracle(
 const SINGLE_OBJECT = noOracle(
   'emits exactly one fragment per file (null-or-value); there is no partial-extraction failure mode to guard, so a count of 1 against 1 is the empty oracle',
 );
+const WITHIN_FILE_PROVENANCE = noOracle(
+  'projects several distinct node families (imports, six function-node types, three class-node types, four propagation-rule node shapes) into six heterogeneous lists, and one named function node contributes to three of them at once (wrapper, returning, local-function) — so no cheap node-type count upper-bounds the total unit count without a weighted per-family multiplier, and any unweighted count either under-bounds (a dead oracle) or counts a different unit (total nodes) than the R1 "same unit" rule allows; the fact is an intermediate projection whose completeness is pinned byte-for-byte by the corpus-level parity assertion against resolveCorpusReceivers, which is the stronger guard',
+);
 
 export const PRODUCERS = {
   'file-symbols': {
@@ -233,16 +265,34 @@ export const PRODUCERS = {
     tsx: fileProducer('function-index', 'tsx', functionIndexProcess, countOracle(countFunctionIndex)),
     javascript: fileProducer('function-index', 'javascript', functionIndexProcess, countOracle(countFunctionIndex)),
   },
-  'query-sites': {
-    typescript: fileProducer('query-sites', 'typescript', querySitesProcess, countOracle(countQuerySites)),
-    tsx: fileProducer('query-sites', 'tsx', querySitesProcess, countOracle(countQuerySites)),
-    javascript: fileProducer('query-sites', 'javascript', querySitesProcess, countOracle(countQuerySites)),
+  // Spec 70 Item 4 (step 3) — the un-gated per-file query-site candidates. The
+  // `query-sites` corpus producer re-applies the file gate once the
+  // `receiver-provenance` fixed point supplies the cross-file seed. Emits one
+  // fragment per TS-family file (null-or-value) carrying the located `sites`
+  // array, so the oracle counts the site units inside it: `countQuerySites` is
+  // the same every-member-call + every-SQL-keyword upper bound the resolved
+  // producer used, measured as the summed `sites.length` — not the fragment
+  // count (which would be a 1-against-1 empty oracle).
+  'query-site-candidates': {
+    typescript: fileProducer('query-site-candidates', 'typescript', querySiteCandidatesProcess, countOracle(countQuerySites, measuredQuerySites)),
+    tsx: fileProducer('query-site-candidates', 'tsx', querySiteCandidatesProcess, countOracle(countQuerySites, measuredQuerySites)),
+    javascript: fileProducer('query-site-candidates', 'javascript', querySiteCandidatesProcess, countOracle(countQuerySites, measuredQuerySites)),
   },
   'imports': {
     typescript: fileProducer('imports', 'typescript', importsProcess, countOracle(countImports)),
     tsx: fileProducer('imports', 'tsx', importsProcess, countOracle(countImports)),
     javascript: fileProducer('imports', 'javascript', importsProcess, countOracle(countImports)),
     go: fileProducer('imports', 'go', goImportsProcess, countOracle(countGoImports)),
+  },
+  'import-specifiers': {
+    typescript: fileProducer('import-specifiers', 'typescript', importSpecifiersProcess, countOracle(countImports)),
+    tsx: fileProducer('import-specifiers', 'tsx', importSpecifiersProcess, countOracle(countImports)),
+    javascript: fileProducer('import-specifiers', 'javascript', importSpecifiersProcess, countOracle(countImports)),
+  },
+  'export-symbols': {
+    typescript: fileProducer('export-symbols', 'typescript', exportSymbolsProcess, countOracle(countExportSymbols)),
+    tsx: fileProducer('export-symbols', 'tsx', exportSymbolsProcess, countOracle(countExportSymbols)),
+    javascript: fileProducer('export-symbols', 'javascript', exportSymbolsProcess, countOracle(countExportSymbols)),
   },
   'export-form': {
     typescript: fileProducer('export-form', 'typescript', exportFormProcess, countOracle(countExportForm)),
@@ -278,10 +328,19 @@ export const PRODUCERS = {
     javascript: fileProducer('ddl-declarations', 'javascript', ddlProcess, countOracle(countDdlOps, measuredDdlOps)),
     sql: fileProducer('ddl-declarations', 'sql', ddlProcess, countOracle(countDdlOps, measuredDdlOps)),
   },
-  'schema-usage': {
-    typescript: fileProducer('schema-usage', 'typescript', schemaUsageProcess, countOracle(countSchemaUsage)),
-    tsx: fileProducer('schema-usage', 'tsx', schemaUsageProcess, countOracle(countSchemaUsage)),
-    javascript: fileProducer('schema-usage', 'javascript', schemaUsageProcess, countOracle(countSchemaUsage)),
+  // Spec 70 Item 4 (step 3) — the un-gated per-file schema-usage candidates. The
+  // `schema-usage` corpus producer re-applies the file gate and re-admits the
+  // provenance-dependent references once the `receiver-provenance` fixed point
+  // supplies the cross-file seed. Emits one fragment per TS-family file
+  // (null-or-value) carrying the five candidate arrays, so the oracle counts the
+  // candidate units inside it: `countSchemaUsage` is the same call+string+
+  // template upper bound the resolved producer used, measured as the summed
+  // candidate lengths — not the fragment count (which would be a 1-against-1
+  // empty oracle).
+  'schema-usage-candidates': {
+    typescript: fileProducer('schema-usage-candidates', 'typescript', schemaUsageCandidatesProcess, countOracle(countSchemaUsage, measuredSchemaUsageCandidates)),
+    tsx: fileProducer('schema-usage-candidates', 'tsx', schemaUsageCandidatesProcess, countOracle(countSchemaUsage, measuredSchemaUsageCandidates)),
+    javascript: fileProducer('schema-usage-candidates', 'javascript', schemaUsageCandidatesProcess, countOracle(countSchemaUsage, measuredSchemaUsageCandidates)),
   },
   // `schema-objects` — ORM `const <id> = pgTable('name', …)` bindings, the
   // identifier → SQL-name half of the known-table catalog's alias map. Text-only
@@ -306,16 +365,29 @@ export const PRODUCERS = {
     javascript: fileProducer('cross-language-entities', 'javascript', crossLangProcess, countOracle(countCrossLanguageEntities)),
     go: fileProducer('cross-language-entities', 'go', crossLangProcess, countOracle(countCrossLanguageEntities)),
   },
-  'data-access-calls': {
-    typescript: fileProducer('data-access-calls', 'typescript', dataAccessProcess, countOracle(countDataAccessCalls)),
-    tsx: fileProducer('data-access-calls', 'tsx', dataAccessProcess, countOracle(countDataAccessCalls)),
-    javascript: fileProducer('data-access-calls', 'javascript', dataAccessProcess, countOracle(countDataAccessCalls)),
-    go: fileProducer('data-access-calls', 'go', dataAccessProcess, countOracle(countDataAccessCalls)),
+  // Spec 70 Item 4 (step 3) — the raw, provenance-free candidate half of the
+  // `data-access-calls` collapse. Extracted while the AST lives on the
+  // empty-provenance scan; the corpus `data-access-calls` producer re-folds the
+  // provenance-dependent half (handle verdict → admission + injection gate, site
+  // dialect → SQL parse) once the `receiver-provenance` fixed point supplies the
+  // seed. The oracle is the same `call_expression` + `template_string` upper bound
+  // the resolved-call producer used: every candidate is a call or a tagged
+  // template (a variable-assignment candidate is a `variable_declaration`, the same
+  // residual the old producer carried).
+  'data-access-calls-candidates': {
+    typescript: fileProducer('data-access-calls-candidates', 'typescript', dataAccessCandidatesProcess, countOracle(countDataAccessCalls)),
+    tsx: fileProducer('data-access-calls-candidates', 'tsx', dataAccessCandidatesProcess, countOracle(countDataAccessCalls)),
+    javascript: fileProducer('data-access-calls-candidates', 'javascript', dataAccessCandidatesProcess, countOracle(countDataAccessCalls)),
+    go: fileProducer('data-access-calls-candidates', 'go', dataAccessCandidatesProcess, countOracle(countDataAccessCalls)),
   },
-  'loop-queries': {
-    typescript: fileProducer('loop-queries', 'typescript', loopQueriesProcess, countOracle(countLoopQueries)),
-    tsx: fileProducer('loop-queries', 'tsx', loopQueriesProcess, countOracle(countLoopQueries)),
-    javascript: fileProducer('loop-queries', 'javascript', loopQueriesProcess, countOracle(countLoopQueries)),
+  // Spec 70 Item 4 (step 3) — the raw, provenance-free candidate half of the
+  // `loop-queries` collapse. No dedup and no symbol happen here (both depend on
+  // the re-folded handle set); the corpus `loop-queries` producer re-folds the
+  // strict-handle filter, dedups by loop byte-offset, and assigns the symbol.
+  'loop-query-candidates': {
+    typescript: fileProducer('loop-query-candidates', 'typescript', loopQueryCandidatesProcess, countOracle(countLoopQueries)),
+    tsx: fileProducer('loop-query-candidates', 'tsx', loopQueryCandidatesProcess, countOracle(countLoopQueries)),
+    javascript: fileProducer('loop-query-candidates', 'javascript', loopQueryCandidatesProcess, countOracle(countLoopQueries)),
   },
   'dynamic-sql': {
     typescript: fileProducer('dynamic-sql', 'typescript', dynamicSqlProcess, countOracle(countDynamicSql)),
@@ -378,6 +450,37 @@ export const PRODUCERS = {
   'channel-operations': {
     go: fileProducer('channel-operations', 'go', channelOperationsProcess, countOracle(countGoFunctions)),
   },
+  // Spec 70 Item 4 (2a) — the per-file Go package-scope symbol table. The
+  // cross-file receiver-provenance fixed point groups these by directory and
+  // merges first-wins. The oracle is the *pre-dedup* binding-declaration count
+  // (top-level function/method/type/var declarations with a name) — the same
+  // number `buildGoFileBindings` emits before its first-wins dedup, which is a
+  // no-op within a single valid Go file, so it bounds the deduped
+  // `bindings.length` exactly.
+  'go-package-bindings': {
+    go: fileProducer('go-package-bindings', 'go', goPackageBindingsProcess, countOracle(countGoPackageBindings, measuredGoPackageBindings)),
+  },
+  // Spec 70 Item 4 (2a) — the per-file within-file-provenance projection. The
+  // extract half of the TS/Go split; the corpus `receiver-provenance` fixed
+  // point rehydrates it with no AST. Completeness is pinned by the parity
+  // assertion (classify(extract) ≡ compute), not by a per-file node count, so
+  // the oracle is a `none` (see WITHIN_FILE_PROVENANCE).
+  'within-file-provenance': {
+    typescript: fileProducer('within-file-provenance', 'typescript', withinFileProvenanceProcess, WITHIN_FILE_PROVENANCE),
+    tsx: fileProducer('within-file-provenance', 'tsx', withinFileProvenanceProcess, WITHIN_FILE_PROVENANCE),
+    javascript: fileProducer('within-file-provenance', 'javascript', withinFileProvenanceProcess, WITHIN_FILE_PROVENANCE),
+    go: fileProducer('within-file-provenance', 'go', withinFileProvenanceProcess, WITHIN_FILE_PROVENANCE),
+  },
+  // Spec 70 Item 4 (step 3) — the per-file receiver-resolution inputs (bindings +
+  // R3 sites + DB activity) the corpus-side `dbProvenanced` re-derivation reads.
+  // Emits exactly one fragment per TS-family file (null-or-value), so the oracle
+  // is the single-object one; completeness is pinned by the corpus parity assertion
+  // against `buildProvenanceContext`, not by a per-file count.
+  'receiver-activity': {
+    typescript: fileProducer('receiver-activity', 'typescript', receiverActivityProcess, SINGLE_OBJECT),
+    tsx: fileProducer('receiver-activity', 'tsx', receiverActivityProcess, SINGLE_OBJECT),
+    javascript: fileProducer('receiver-activity', 'javascript', receiverActivityProcess, SINGLE_OBJECT),
+  },
   // `batch-functions` — the functions whose full span contains `.batch(` (a
   // Cloudflare D1 / SQLite transaction-batching commit). `multi-table-write`
   // reads it to skip the transaction-boundary flag for batched commits; the
@@ -390,70 +493,116 @@ export const PRODUCERS = {
 } satisfies ProducerMap;
 
 // ── Corpus producers producing derived facts (no format) ─────────────────────
-// `table-catalog` and `migration-history` reduce the `ddl-declarations` fact
+// `resolution` and `migration-history` reduce the `ddl-declarations` fact
 // through the ONE shared `replayDdlDeclarations` — so the known-table set and
 // the drop provenance can never disagree about which table a migration dropped.
-// `needs` forms the DAG edges ddl-declarations → {table-catalog,
+// `needs` forms the DAG edges ddl-declarations → {resolution,
 // migration-history}. Corpus producers are a separate map because the
 // (kind, format) key cannot express a derived fact.
 
 export const CORPUS_PRODUCERS = {
-  'table-catalog': {
-    id: 'table-catalog',
-    produces: 'table-catalog',
-    needs: ['ddl-declarations', 'schema-objects'],
-    process(facts, ctx?): TableCatalog {
+  'resolution': {
+    id: 'resolution',
+    produces: 'resolution',
+    needs: ['ddl-declarations', 'schema-objects', 'file-symbols'],
+    process(facts, ctx?): ResolutionFact {
       // The known-table set is the *net* set after replaying DDL across files
       // in migration order — a table dropped in a later migration is a stale
       // reference, not a known table. `replayDdlDeclarations` returns that net
-      // set with each table's last-CREATE source file and columns (the shape
-      // `missing-org-filter`'s Tier-3 DDL discovery reads).
+      // set with each table's last-CREATE source file, its columns, and its four
+      // per-column constraint maps (UNIQUE, PRIMARY KEY, NOT NULL, foreign key)
+      // recorded *separately* so PK and natural UNIQUE stay distinguishable.
       const { netTables } = replayDdlDeclarations(
         facts['ddl-declarations'].map((d) => ({
           filePath: d.file,
           ops: d.ops,
           tableColumns: d.tableColumns,
           uniqueColumns: d.uniqueColumns,
+          primaryKeyColumns: d.primaryKeyColumns,
+          notNullColumns: d.notNullColumns,
+          foreignKeys: d.foreignKeys,
         })),
       );
-      const tables = netTables.map((t) => ({
-        name: t.name,
-        source: t.source,
-        columns: t.columns,
-        uniqueColumns: [...t.uniqueColumns],
-      }));
+      const tables: ResolutionTable[] = netTables.map((t) => {
+        const pk = new Set(t.primaryKeyColumns.map((c) => c.toLowerCase()));
+        const uniq = new Set(t.uniqueColumns.map((c) => c.toLowerCase()));
+        const nn = new Set(t.notNullColumns.map((c) => c.toLowerCase()));
+        const fk = new Map<string, { table: string; column: string }>();
+        for (const ref of t.foreignKeys) {
+          if (!fk.has(ref.column.toLowerCase())) fk.set(ref.column.toLowerCase(), { table: ref.refTable, column: ref.refColumn });
+        }
+        const columns = t.columns.map((c) => ({
+          name: c,
+          primaryKey: pk.has(c.toLowerCase()),
+          unique: uniq.has(c.toLowerCase()),
+          notNull: nn.has(c.toLowerCase()),
+          foreignKey: fk.get(c.toLowerCase()) ?? null,
+        }));
+        return { name: t.name, source: t.source, columns };
+      });
       // §5 parity: merge the config-declared external tables the legacy schema
       // reducer added to the known-table set (`knownTables` + `schemas`). Without
       // them a config-only schema is a 0-table catalog and `unknown-table`'s
       // fail-open guard silently never fires — exactly the sql-cte regression.
-      // Config-declared tables carry no column metadata, so no UNIQUE columns.
+      // Config-declared tables carry no column metadata, so no constraints.
       for (const t of ctx?.externalTables ?? []) {
-        tables.push({ name: t.name, source: t.source, columns: [...t.columns], uniqueColumns: [] });
+        tables.push({
+          name: t.name,
+          source: t.source,
+          columns: t.columns.map((c) => ({ name: c, primaryKey: false, unique: false, notNull: false, foreignKey: null })),
+        });
       }
       // The ORM schema-object alias map: `.from(sampleOwnership)` names the JS
       // identifier, not the SQL table. Resolve it through the pgTable/mysqlTable/
       // sqliteTable bindings so a query referencing a schema object reaches the
-      // catalog entry (and Tier-3 tenancy) the identifier declares.
+      // catalog entry (and Tier-3 tenancy) the identifier declares. The `.unique()`
+      // and `.primaryKey()` markers are merged into the matching table's columns
+      // as *separate* `unique` / `primaryKey` flags (both JS and SQL spelling), so
+      // the natural-UNIQUE quiet set and the PK surface never collapse into one.
       const aliases: Record<string, string> = {};
       for (const obj of facts['schema-objects']) {
         if (!(obj.identifier in aliases)) aliases[obj.identifier] = obj.table;
-        // Merge the Drizzle `.unique()` / `.primaryKey()` columns (JS field name
-        // + SQL name) into the matching catalog entry, so a query filtering on
-        // either spelling is recognised as a structurally-scoped (bootstrap)
-        // lookup by `missing-org-filter`. A DDL-only table with no schema-object
-        // binding keeps just its DDL-declared UNIQUE columns.
         const entry = tables.find((t) => t.name === obj.table);
-        if (entry && obj.uniqueColumns.length > 0) {
-          entry.uniqueColumns = [...new Set([...entry.uniqueColumns, ...obj.uniqueColumns])];
+        if (!entry) continue;
+        const merged = [...entry.columns];
+        for (const name of obj.uniqueColumns) {
+          const key = name.toLowerCase();
+          const existing = merged.find((c) => c.name.toLowerCase() === key);
+          if (existing) existing.unique = true;
+          else merged.push({ name, primaryKey: false, unique: true, notNull: false, foreignKey: null });
+        }
+        for (const name of obj.primaryKeyColumns) {
+          const key = name.toLowerCase();
+          const existing = merged.find((c) => c.name.toLowerCase() === key);
+          if (existing) existing.primaryKey = true;
+          else merged.push({ name, primaryKey: true, unique: false, notNull: false, foreignKey: null });
+        }
+        entry.columns = merged;
+      }
+      // Class/interface declarations → what they extend/implements, resolved in
+      // repo (Spec 69 R3 criterion 7c). `open-closed` reads these instead of
+      // walking the `file-symbols` classes itself.
+      const classes: ResolutionClass[] = [];
+      const interfaces: ResolutionInterface[] = [];
+      for (const sym of facts['file-symbols']) {
+        if (sym.kind === 'class') {
+          classes.push({
+            name: sym.name,
+            file: sym.file,
+            extends: sym.extends ?? null,
+            implements: [...(sym.implements ?? [])],
+          });
+        } else if (sym.kind === 'interface') {
+          interfaces.push({ name: sym.name, file: sym.file, extends: [...(sym.extends ?? [])] });
         }
       }
-      return { tables, aliases };
+      return { tables, aliases, classes, interfaces };
     },
-  } satisfies CorpusProcessor<'table-catalog', readonly ['ddl-declarations', 'schema-objects']>,
+  } satisfies CorpusProcessor<'resolution', readonly ['ddl-declarations', 'schema-objects', 'file-symbols']>,
   // `migration-history` reduces the DDL declarations into the cross-file drop
   // provenance (dropped-table → dropping migration + what it created). `needs`
   // forms the DAG edge ddl-declarations → migration-history, parallel to
-  // table-catalog. The provenance is the same `replayDdlDeclarations` pass the
+  // resolution. The provenance is the same `replayDdlDeclarations` pass the
   // legacy schema reducer ran, so `stale-table-reference` parity holds by
   // construction — the phase rule reads the same map the reducer did.
   'migration-history': {
@@ -552,23 +701,30 @@ export const CORPUS_PRODUCERS = {
       });
     },
   } satisfies CorpusProcessor<'reachability', readonly ['file-imports']>,
-  // `call-graph` (§2.2) — the index-backed function catalog + call edges the
-  // cross-domain rules' depth-1 callee expansion reads. The legacy
-  // `CrossDomainAnalyzer` queried `graph_cache` + `functions` directly; here that
-  // read is a corpus producer reading `ctx.indexHandle`, projecting plain data.
-  // With no handle (slice tests) or an unpopulated index, it degrades to an
-  // empty fact — matching the legacy graceful-degradation (direct writes only).
+  // `call-graph` (§2.2) — the function catalog + call edges the cross-domain
+  // rules' depth-1 callee expansion reads. The functions and `callEdges` remain
+  // index reads (`functions` + `graph_cache`), per "reading the index is always
+  // fine" — re-deriving the edges here from `functionCalls` would turn on the
+  // depth-1 expansion during a plain audit (the sync-only `graph_cache` is empty
+  // there), moving `multi-table-write`. Only `usedImports` moves (Item 4 2b): it
+  // was the one field the index column could not supply without the sync path's
+  // second parse, so it now comes from the `function-index` fact, joined by the
+  // `(file, name, line)` identity the index conflictKey uses.
   'call-graph': {
     id: 'call-graph',
     produces: 'call-graph',
-    needs: [],
-    process(_facts, ctx): CallGraphFact {
-      const ih = ctx?.indexHandle;
+    needs: ['function-index'],
+    process(facts, ctx): CallGraphFact {
+      const usedImportsByFn = new Map<string, readonly string[]>();
+      for (const f of facts['function-index']) {
+        usedImportsByFn.set(`${f.file}::${f.name}::${f.line}`, f.usedImports);
+      }
+      const ih: IndexHandle | undefined = ctx?.indexHandle;
       if (!ih) return { functions: [], callEdges: [] };
-      let funcs: Array<{ id: number; name: string; file_path: string; line_number: number | null; used_imports: string | null; is_exported: number }> = [];
+      let funcs: Array<{ id: number; name: string; file_path: string; line_number: number | null; is_exported: number }> = [];
       let edges: Array<{ node_key: string; neighbor_key: string }> = [];
       try {
-        funcs = ih.query('SELECT id, name, file_path, line_number, used_imports, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; line_number: number | null; used_imports: string | null; is_exported: number }>;
+        funcs = ih.query('SELECT id, name, file_path, line_number, is_exported FROM functions') as Array<{ id: number; name: string; file_path: string; line_number: number | null; is_exported: number }>;
         edges = ih.query("SELECT node_key, neighbor_key FROM graph_cache WHERE graph_type = 'call'") as Array<{ node_key: string; neighbor_key: string }>;
       } catch {
         // `functions`/`graph_cache` may not exist or be unpopulated — degrade.
@@ -585,13 +741,13 @@ export const CORPUS_PRODUCERS = {
           name: f.name,
           filePath: f.file_path,
           lineNumber: f.line_number ?? null,
-          usedImports: f.used_imports ?? null,
+          usedImports: usedImportsByFn.get(`${f.file_path}::${f.name}::${f.line_number}`) ?? [],
           isExported: f.is_exported === 1,
         })),
         callEdges,
       };
     },
-  } satisfies CorpusProcessor<'call-graph', readonly []>,
+  } satisfies CorpusProcessor<'call-graph', readonly ['function-index']>,
   // `hotspot` (R4 uncovered-risk) — the `hotspot_scores` rows the uncovered-risk
   // ranking LEFT-JOINs on (target = file_path || ':' || name, type = 'function').
   'hotspot': {
@@ -599,7 +755,7 @@ export const CORPUS_PRODUCERS = {
     produces: 'hotspot',
     needs: [],
     process(_facts, ctx): HotspotFact[] {
-      const ih = ctx?.indexHandle;
+      const ih: IndexHandle | undefined = ctx?.indexHandle;
       if (!ih) return [];
       let rows: Array<{ target: string; type: string; score: number }> = [];
       try {
@@ -619,7 +775,7 @@ export const CORPUS_PRODUCERS = {
     produces: 'coverage',
     needs: [],
     process(_facts, ctx): CoverageFact {
-      const ih = ctx?.indexHandle;
+      const ih: IndexHandle | undefined = ctx?.indexHandle;
       if (!ih) return { measuredCount: 0, source: null, importedAt: null, lastFullSync: null, entries: [] };
       try {
         const measuredRow = ih.query("SELECT COUNT(*) AS cnt FROM coverage_data WHERE basis = 'measured'")[0] as { cnt: number } | undefined;
@@ -648,7 +804,7 @@ export const CORPUS_PRODUCERS = {
     produces: 'clone-pair-history',
     needs: [],
     process(_facts, ctx): ClonePairHistoryFact {
-      const ih = ctx?.indexHandle;
+      const ih: IndexHandle | undefined = ctx?.indexHandle;
       if (!ih) return [];
       let rows: Array<{ pair_fingerprint: string; file1: string; file2: string; line1: number; line2: number; similarity: number; timestamp: string }> = [];
       try {
@@ -679,40 +835,59 @@ export const CORPUS_PRODUCERS = {
       }));
     },
   } satisfies CorpusProcessor<'clone-pair-history', readonly []>,
-  // `defined-classes` (styles/undefined-class) — the `style_defined_classes`
-  // catalog, one row per defined `.class` selector (MIN(file_path) per class name
-  // so a class defined in several files collapses to one entry). The rule resolves
-  // candidate class names against this set in memory and near-miss-suggests against
-  // it via Levenshtein. Degrades to an empty fact with no handle or an absent table.
+  // `defined-classes` (styles/undefined-class) — re-derived from the
+  // `style-declarations` phase fact rather than the `style_defined_classes`
+  // index table (Item 4 2b: style-declarations → defined-classes). Every writer
+  // of `style_defined_classes` (source CSS-in-JS, compiled CSS, other extractable
+  // files) derives the class name by the SAME regex `/\.([a-zA-Z0-9_-]+)/g` over
+  // the declaration's selector `context`, so the phase fact reproduces the table
+  // byte-for-byte: group by class name, keep MIN(file_path). `context`/`filePath`
+  // are plain data already on `StylesDeclaration`.
+  //
+  // Parity notes: (1) the index producer's MIN(file_path) used SQLite BINARY
+  // collation (UTF-8 byte order); JS `<` is UTF-16 code-unit order — identical
+  // for the ASCII paths these corpora use. (2) The catalog is sorted by
+  // `className` so the undefined-class near-miss tie-break (`dist < bestDist`,
+  // styles.ts) sees the same iteration order the `GROUP BY class_name` index scan
+  // produced (ascending class_name). Membership lookups are order-independent.
   'defined-classes': {
     id: 'defined-classes',
     produces: 'defined-classes',
-    needs: [],
-    process(_facts, ctx): DefinedClassesFact[] {
-      const ih = ctx?.indexHandle;
-      if (!ih) return [];
-      let rows: Array<{ class_name: string; file_path: string }> = [];
-      try {
-        rows = ih.query(
-          'SELECT class_name, MIN(file_path) AS file_path FROM style_defined_classes GROUP BY class_name',
-        ) as Array<{ class_name: string; file_path: string }>;
-      } catch {
-        // `style_defined_classes` may not exist — degrade to an empty fact.
+    needs: ['style-declarations'],
+    process(facts): DefinedClassesFact[] {
+      const byClass = new Map<string, string>(); // className -> MIN(file_path)
+      for (const f of facts['style-declarations']) {
+        for (const d of f.declarations) {
+          const ctx = d.context;
+          if (!ctx) continue;
+          for (const m of ctx.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
+            const className = m[1];
+            const fp = d.filePath;
+            const prev = byClass.get(className);
+            if (prev === undefined || fp < prev) byClass.set(className, fp);
+          }
+        }
       }
-      return rows.map((r) => ({ className: r.class_name, filePath: r.file_path }));
+      return [...byClass.entries()]
+        .map(([className, filePath]) => ({ className, filePath }))
+        .sort((a, b) => (a.className < b.className ? -1 : a.className > b.className ? 1 : 0));
     },
-  } satisfies CorpusProcessor<'defined-classes', readonly []>,
-  // `unread-style-sources` (styles/undefined-class) — the `style_unread_sources`
-  // catalog, one row per stylesheet the indexer could not read (Spec 45 R5). The
-  // rule carries the list as `details.incompleteDefinitions` so "undefined" reads
-  // as "not defined in any *read* stylesheet". Degrades to an empty fact with no
-  // handle or an absent table — mirroring the legacy `unreadStyleSources` [].
+  } satisfies CorpusProcessor<'defined-classes', readonly ['style-declarations']>,
+  // `unread-style-sources` (styles/undefined-class) — the content-level
+  // `<style lang="…">` catalog from `style_unread_sources`, one row per markup
+  // file whose embedded style block uses a dialect the regex path cannot read
+  // (Spec 45 R5). The rule carries the list as `details.incompleteDefinitions`
+  // so "undefined" reads as "not defined in any *read* stylesheet". The
+  // walk-level reasons (`.less`/`.styl`/`.sass` dialects, read failures, unknown
+  // extensions) are produced by the traverse phase and merged ahead of this in
+  // `buildFacts`; this producer contributes only the index-table half. Degrades
+  // to an empty fact with no handle or an absent table.
   'unread-style-sources': {
     id: 'unread-style-sources',
     produces: 'unread-style-sources',
     needs: [],
     process(_facts, ctx): UnreadStyleSourceFact[] {
-      const ih = ctx?.indexHandle;
+      const ih: IndexHandle | undefined = ctx?.indexHandle;
       if (!ih) return [];
       let rows: Array<{ file_path: string; reason: string }> = [];
       try {
@@ -725,6 +900,136 @@ export const CORPUS_PRODUCERS = {
       return rows.map((r) => ({ filePath: r.file_path, reason: r.reason }));
     },
   } satisfies CorpusProcessor<'unread-style-sources', readonly []>,
+  // `receiver-provenance` (Spec 70 Item 4, 2a) — the cross-file DB-receiver
+  // provenance fixed point, re-derived from the four additive file facts with no
+  // AST. This is the phase-side replacement for `resolveCorpusReceivers`'
+  // `fileProvenance` + `unresolvedImports` halves. `needs` forms the DAG edges
+  // {within-file-provenance, import-specifiers, export-symbols,
+  // go-package-bindings} → receiver-provenance. The core (`computeReceiverProvenance`)
+  // returns the legacy `FileProvenance`/`FileExports`/`UnresolvedImport` types so
+  // the parity assertion can diff it byte-for-byte against `resolveReceiverProvenance`;
+  // the fact itself projects only the two consumer-facing halves (`files` +
+  // `unresolvedImports`), dropping the Phase-2 `fileExports` intermediate no
+  // consumer reads.
+  'receiver-provenance': {
+    id: 'receiver-provenance',
+    produces: 'receiver-provenance',
+    needs: ['within-file-provenance', 'import-specifiers', 'export-symbols', 'go-package-bindings'],
+    process(facts, ctx?): ReceiverProvenanceFact {
+      const { fileProvenance, unresolvedImports } = computeReceiverProvenance(
+        facts['within-file-provenance'],
+        facts['import-specifiers'],
+        facts['export-symbols'],
+        facts['go-package-bindings'],
+        ctx?.projectRoot,
+      );
+      return {
+        files: [...fileProvenance.entries()].map(([file, prov]) => ({
+          file,
+          provenance: [...prov.values()].map(evidenceToFact),
+        })),
+        unresolvedImports: unresolvedImports.map((u) => ({ importer: u.importer, source: u.source, names: u.names })),
+      };
+    },
+  } satisfies CorpusProcessor<'receiver-provenance', readonly ['within-file-provenance', 'import-specifiers', 'export-symbols', 'go-package-bindings']>,
+  // Spec 70 Item 4 (step 3) — the first of the four receiver consumers converted
+  // to a corpus producer. The legacy `query-sites` producer did two jobs: locate
+  // each DB-query site (a provenance-free text + function scan) and gate the file
+  // on DB context (`passesFileGate`, which needs the cross-file `dbProvenanced`
+  // seed). The collapse splits them: `query-site-candidates` runs the location
+  // job un-gated while the AST lives, and this producer re-derives each file's
+  // `dbProvenanced` (via `classifyBuildProvenance`) from the `within-file-provenance`
+  // extract + the `receiver-provenance` fixed point + the `receiver-activity`
+  // inputs, then re-applies the gate. `needs` forms the DAG edges
+  // {query-site-candidates, within-file-provenance, receiver-provenance,
+  // receiver-activity} → query-sites.
+  'query-sites': {
+    id: 'query-sites',
+    produces: 'query-sites',
+    needs: ['query-site-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity'],
+    process(facts, ctx): QuerySiteFact[] {
+      return classifyQuerySites(
+        facts['query-site-candidates'],
+        facts['within-file-provenance'],
+        facts['receiver-provenance'],
+        facts['receiver-activity'],
+        ctx?.sqlDialect ?? null,
+      );
+    },
+  } satisfies CorpusProcessor<'query-sites', readonly ['query-site-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
+  // Spec 70 Item 4 (step 3) — the second of the four receiver consumers. The
+  // legacy `schema-usage` producer ran `findTableReferences` (six strategies) and
+  // re-homed each reference. The collapse splits it: `schema-usage-candidates`
+  // extracts the provenance-free references (ORM / query-builder /
+  // collection-adapter, already re-homed) plus raw tagged/DB-call candidates while
+  // the AST lives, and this producer re-derives each file's `dbProvenanced` (via
+  // `classifyBuildProvenance`), re-applies the gate, re-admits the two
+  // provenance-dependent strategies (`identifyHandle` over the re-derived
+  // provenance), and re-homes their references from the projected function +
+  // string-fragment spans. `needs` forms the DAG edges {schema-usage-candidates,
+  // within-file-provenance, receiver-provenance, receiver-activity} →
+  // schema-usage.
+  'schema-usage': {
+    id: 'schema-usage',
+    produces: 'schema-usage',
+    needs: ['schema-usage-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity'],
+    process(facts, ctx): SchemaUsageFact[] {
+      return classifySchemaUsage(
+        facts['schema-usage-candidates'],
+        facts['within-file-provenance'],
+        facts['receiver-provenance'],
+        facts['receiver-activity'],
+        ctx?.sqlDialect ?? null,
+      );
+    },
+  } satisfies CorpusProcessor<'schema-usage', readonly ['schema-usage-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
+  // Spec 70 Item 4 (step 3) — the third of the four receiver consumers. The
+  // legacy `data-access-calls` producer did two jobs: extract the resolved DB
+  // calls (an AST scan) and fold the provenance-dependent half of
+  // `buildDatabaseCall` (the `identifyHandle` admission verdict → the injection
+  // gate, and the per-site dialect → the SQL parse) over the cross-file
+  // `dbProvenanced` seed. The collapse splits them: `data-access-calls-candidates`
+  // extracts the provenance-free half while the AST lives, and this producer
+  // re-derives each file's `dbProvenanced` (TS via `classifyBuildProvenance`; Go
+  // via the fixed-point seed) and re-folds the discovery filter → line dedup →
+  // `buildDatabaseCall` with no AST. `needs` forms the DAG edges
+  // {data-access-calls-candidates, within-file-provenance, receiver-provenance,
+  // receiver-activity} → data-access-calls.
+  'data-access-calls': {
+    id: 'data-access-calls',
+    produces: 'data-access-calls',
+    needs: ['data-access-calls-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity'],
+    process(facts, ctx): ResolvedQuery[] {
+      return classifyDataAccessCalls(
+        facts['data-access-calls-candidates'],
+        facts['within-file-provenance'],
+        facts['receiver-provenance'],
+        facts['receiver-activity'],
+        ctx?.sqlDialect ?? null,
+      );
+    },
+  } satisfies CorpusProcessor<'data-access-calls', readonly ['data-access-calls-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
+  // Spec 70 Item 4 (step 3) — the fourth of the four receiver consumers. The
+  // legacy `loop-queries` producer ran `collectLoopQueryCandidates` (discovery +
+  // provenance-free discriminators + strict-handle filter + loop dedup + symbol)
+  // over the AST. The collapse splits it: `loop-query-candidates` runs the
+  // discovery + provenance-free discriminators while the AST lives, and this
+  // producer re-derives `dbProvenanced` and re-folds the strict-handle filter,
+  // the per-loop dedup, and the stable symbol with no AST.
+  'loop-queries': {
+    id: 'loop-queries',
+    produces: 'loop-queries',
+    needs: ['loop-query-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity'],
+    process(facts, ctx): LoopQueryFact[] {
+      return classifyLoopQueries(
+        facts['loop-query-candidates'],
+        facts['within-file-provenance'],
+        facts['receiver-provenance'],
+        facts['receiver-activity'],
+        ctx?.sqlDialect ?? null,
+      );
+    },
+  } satisfies CorpusProcessor<'loop-queries', readonly ['loop-query-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
 } satisfies CorpusProducerMap;
 
 /**
@@ -778,7 +1083,10 @@ export const FACT_KINDS = {
   'file-symbols': true,
   'function-index': true,
   'query-sites': true,
+  'query-site-candidates': true,
   'imports': true,
+  'import-specifiers': true,
+  'export-symbols': true,
   'export-form': true,
   'import-form': true,
   'string-literals': true,
@@ -786,14 +1094,17 @@ export const FACT_KINDS = {
   'security-candidates': true,
   'ddl-declarations': true,
   'schema-usage': true,
+  'schema-usage-candidates': true,
   'schema-objects': true,
   'style-declarations': true,
   'color-values': true,
   'cross-language-entities': true,
   'data-access-calls': true,
+  'data-access-calls-candidates': true,
   'loop-queries': true,
+  'loop-query-candidates': true,
   'dynamic-sql': true,
-  'table-catalog': true,
+  'resolution': true,
   'migration-history': true,
   'mined-conventions': true,
   'react-component': true,
@@ -805,6 +1116,10 @@ export const FACT_KINDS = {
   'reachability': true,
   'type-declarations': true,
   'go-functions': true,
+  'go-package-bindings': true,
+  'within-file-provenance': true,
+  'receiver-activity': true,
+  'receiver-provenance': true,
   'go-switches': true,
   'error-bindings': true,
   'concurrency-primitives': true,

@@ -44,7 +44,7 @@ import { goRules } from './goRules.js';
  *
  * The 2 schema rules (`unknown-table`, `table-naming-convention`) land once the
  * `.sql` DDL source (§5) and the provenance-aware `db.query("SELECT …")` string-
- * argument extraction are in: `unknown-table` reads `table-catalog` (now fed by
+ * argument extraction are in: `unknown-table` reads `resolution` (now fed by
  * `.sql` migration files via the `ddl-declarations.sql` producer), and
  * `table-naming-convention` reads `schema-usage` (now extracting string-arg
  * references). Their bucket is the one rule-level override in the both-paths

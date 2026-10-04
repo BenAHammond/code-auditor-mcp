@@ -144,12 +144,19 @@ function isJoinCondition(text: string, eqIndex: number): boolean {
 }
 
 /**
- * The tenant-scoping *predicate* detector — does this query text apply an
- * org/tenant filter? The predicate vocabulary is the SAME vocabulary discovery
- * uses (`orgFilterColumns`, via {@link orgPredicateVocabulary}), so a project
- * whose tenant column is `workspace_id`/`team_id`/… is recognized here as well
- * as by table discovery, and a correctly-scoped query on it never fires
- * `missing-org-filter`.
+ * The tenant-scoping *predicate* detector for ORM host-language shapes — does
+ * this query text apply an org/tenant filter through an ORM chain? The predicate
+ * vocabulary is the SAME vocabulary discovery uses (`orgFilterColumns`, via
+ * {@link orgPredicateVocabulary}), so a project whose tenant column is
+ * `workspace_id`/`team_id`/… is recognized here as well as by table discovery,
+ * and a correctly-scoped query on it never fires `missing-org-filter`.
+ *
+ * The raw-SQL comparison arm (`org_id = ?`, `tenant_id IN (...)`) is NOT here
+ * (Spec 70 R2 site #5): it is derived structurally from the parsed SQL AST by
+ * `whereColumnRefs` and threaded to the rule as the `sqlWhereColumns` fact. This
+ * function covers only the ORM shapes — comparison helpers (`eq(org_id, v)`),
+ * object-literal filters (`where({ org_id })`), and positional where
+ * (`where('org_id', x)`) — which have no SQL text to walk.
  *
  * The analyzer computes this during extraction; the migrated `missing-org-filter`
  * rule recomputes it at analysis time from the query text + its resolved
@@ -158,7 +165,7 @@ function isJoinCondition(text: string, eqIndex: number): boolean {
  *
  * @param text The query statement text (comments stripped, query-scoped).
  * @param config The org-filter predicate config (may be undefined).
- * @returns True when the query carries an org/tenant-scoping predicate.
+ * @returns True when the query carries an org/tenant-scoping predicate via an ORM shape.
  */
 export function hasOrganizationFilter(
   text: string,
@@ -167,27 +174,14 @@ export function hasOrganizationFilter(
   const candidates = orgPredicateVocabulary(config?.orgFilterColumns, config?.organizationPatterns);
 
   // An org-scoping column is a *filter* only when it is used as a predicate
-  // operand — the left-hand side of a comparison/IN/IS/LIKE (`org_id = ?`,
-  // `tenant_id IN (...)`), the key side of a filter object (`where({ org_id })`),
-  // or the column argument of a positional where (`where('org_id', x)`).
-  // A column that merely appears in the SELECT list (`SELECT org_id FROM …`) or
-  // an INSERT column list is NOT a filter. This replaces the old substring
-  // proxy that treated any occurrence of the column name — a SELECT column, a
-  // comment, a property name — as evidence of tenant isolation.
+  // operand — the key side of a filter object (`where({ org_id })`), the first
+  // argument of a predicate helper (`eq(org_id, v)`), or the column argument of
+  // a positional where (`where('org_id', x)`). A column that merely appears in a
+  // projection (`.select({ organizationId: col })`) is NOT a filter.
   // The candidates are joined with `|`; wrap them in `(?:…)` so the word
   // boundaries and the operator/key suffix below bind to EVERY alternative, not
-  // just the first (`\borganizationid`) and last (`company_id\b…`) of them. The
-  // un-grouped form let `\borganizationid` match a bare column name with no
-  // operator — which is exactly how a `.select({ organizationId: col })`
-  // projection was misread as a filter (Spec 68 Thing 2 `sample_ownership`).
+  // just the first (`\borganizationid`) and last (`company_id\b…`) of them.
   const alt = `(?:${candidates.map((c) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`;
-
-  // SQL comparison operand (`org_id = ?`, `tenant_id IN (...)`).
-  const comparisonRe = new RegExp(
-    `\\b${alt}\\b\\s*(?:=|!=|<>|<=|>=|<|>|\\bIS\\b|\\bIN\\b|\\bLIKE\\b)`,
-    'i',
-  );
-  if (comparisonRe.test(text)) return true;
 
   // ORM comparison-helper form: the org column as the FIRST argument of a
   // predicate helper — `eq(org_id, v)`, `inArray(org_id, vs)`, `lt(org_id, v)`.

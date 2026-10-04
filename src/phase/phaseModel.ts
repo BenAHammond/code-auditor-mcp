@@ -14,7 +14,7 @@
  *
  * The fact set is *derived* from the migrated rules' `needs`: the union of every
  * declared fact kind, transitively widened by corpus processors' upstream
- * `needs` (today that is the one `ddl-declarations → table-catalog` edge). File
+ * `needs` (today that is the one `ddl-declarations → resolution` edge). File
  * facts are built by parsing each file once and running every matching
  * per-(kind, format) producer over it; corpus facts are reduced in dependency
  * order. Each rule then runs against exactly the facts it declared — no more,
@@ -31,18 +31,30 @@ import { fileProducerFor, PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
 import { oracleShortfall } from './oracles.js';
 import { formatFor, parseOne, type InputFile } from './runner.js';
 import { loadTailwindConfig, tokensToStyleTokens } from '../styles/tailwindConfigLoader.js';
+import { findFiles, UNREAD_STYLE_EXTENSIONS, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileDiscovery.js';
 import type {
   CorpusContext,
+  DataAccessCallCandidate,
   ExternalTableDecl,
   FactKind,
   FileFactKind,
   Finding,
   OracleShortfall,
+  ReceiverActivityFact,
+  ReceiverProvenanceFact,
   RuleDefinition,
+  SchemaUsageCandidatesFact,
   ThresholdValues,
   StyleDeclarationsFile,
+  UnreadStyleSourceFact,
+  UnresolvedImportFact,
+  UnresolvedQuerySite,
+  WithinFileProvenanceFact,
 } from './types.js';
 import type { IndexHandle } from '../types.js';
+import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
+import type { Dialect } from '../mcp-tools/discoveryQueries.js';
+import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites } from './receiverConsumers.js';
 
 /**
  * The result of a phase-model run: the migrated rules' findings plus the
@@ -59,6 +71,23 @@ export interface PhaseModelResult {
    *  file, the processor, and both numbers. An empty list means every counted
    *  oracle met its expected count for every file. */
   oracleShortfalls: readonly OracleShortfall[];
+  /** Spec 70 2c — the unproven query-shaped DB-call sites, re-derived corpus-side
+   *  from the `data-access-calls-candidates` fact + the `receiver-provenance` fixed
+   *  point with no AST. Replaces the pre-pass's `unprovenQueryReceivers` half; the
+   *  `cannot-fire` coverage diagnostic is re-derived from these in the caller. Empty
+   *  when `receiver-provenance` was not needed (no receiver-consuming rule active). */
+  unprovenQueryReceivers: readonly UnprovenQueryReceiver[];
+  /** The `receiver-provenance` fixed point's unresolved DB-looking imports — the
+   *  pre-pass's `unresolvedImports` half, carried on the fact itself (never a
+   *  separate pre-pass field). Empty when `receiver-provenance` was not needed. */
+  unresolvedImports: readonly UnresolvedImportFact[];
+  /** Spec 70 1b — the re-admitted DB-calls whose SQL argument is held in an
+   *  unresolvable identifier, re-derived corpus-side from the raw
+   *  `schema-usage-candidates` fact + the `receiver-provenance` fixed point with
+   *  no AST (`identifyHandle` re-admits each, so only DB handles qualify). Feeds
+   *  the `unresolved-query` coverage diagnostic re-homed in the caller. Empty when
+   *  `schema-usage` was not needed. */
+  unresolvedQuerySites: readonly UnresolvedQuerySite[];
 }
 
 /**
@@ -73,6 +102,11 @@ export interface PhaseModelResult {
 export interface PhaseInfra {
   /** Absolute project root (Tailwind config + alias/entry resolution). */
   projectRoot?: string;
+  /** True for a scoped (changed/files/git) run. Gates the full-project unread
+   *  dialect walk (`.less`/`.styl`/`.sass`) to full runs only — the same
+   *  `if (!scoped)` the legacy `findUnreadStyleFiles` walk carried. Absent in
+   *  the slice tests (no project root, so the walk is skipped regardless). */
+  scoped?: boolean;
   /** Full corpus discovery list (unfiltered) for alias resolution. */
   corpusFiles?: readonly string[];
   /** Virtual-module specifiers (config, default DEFAULT_VIRTUAL_MODULES). */
@@ -105,8 +139,18 @@ export interface PhaseInfra {
    *  begin until every file has been parsed and every processor level has
    *  completed: a slow `beforeProcess` must finish before this fires. */
   beforeAnalyze?: () => void | Promise<void>;
+  /** Spec 70 2b — invoked once after every file fact is merged (so the
+   *  `code-block` fact is assembled) and before any corpus fact is reduced (so
+   *  the `clone-pair-history` read sees the write). Named for its one job, not
+   *  its timing: it persists the dry-pair history to the index. Persisting the
+   *  `dry_pair_history` write (`seedDryPairs` over the `code-block` fact → the
+   *  `dry_pair_history` table) is its ONLY legitimate use — a general-purpose
+   *  "after file facts" hook is how declared-input discipline erodes, so this
+   *  seam is deliberately single-purpose and single-consumer. Absent in the
+   *  slice tests (single fixture, no index). */
+  persistDryPairHistory?: (facts: ReadonlyMap<FactKind, unknown>) => void | Promise<void>;
   /** Config-declared external tables (schema analyzer's `knownTables` +
-   *  `schemas`), threaded to the `table-catalog` corpus producer so its
+   *  `schemas`), threaded to the `resolution` corpus producer so its
    *  known-table set matches the legacy reducer (see {@link ExternalTableDecl}). */
   externalTables?: ReadonlyArray<ExternalTableDecl>;
   /** §6.6 — the bounded work queue's width: how many files parse/process
@@ -114,6 +158,10 @@ export interface PhaseInfra {
    *  the pool to `max(1, cpus - 1)`. A threshold, not a selection gate: the
    *  fact merge is file-sorted, so the value never reorders findings (§6.4). */
   workerCount?: number;
+  /** Spec 70 R1 — the corpus's named SQL dialect (or null when unnamed). Threaded
+   *  to every parsed file so the `data-access-calls` producer parses SQL-content
+   *  facts rather than regex. Absent in the slice tests (single fixture). */
+  sqlDialect?: Dialect | null;
 }
 
 /**
@@ -131,10 +179,10 @@ export async function runPhaseModel(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra?: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [] };
+  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [] };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [] };
+  if (active.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [] };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -142,25 +190,52 @@ export async function runPhaseModel(
   }
   // Widen to the formats that supply the transitively-needed *file* facts: a
   // rule names only the formats it evaluates (`needs.formats`), not the formats
-  // its facts come from. `unknown-table` declares `table-catalog`, whose
+  // its facts come from. `unknown-table` declares `resolution`, whose
   // upstream `ddl-declarations` is supplied by `sql` (migration files) as well
   // as TS/JS — so `.sql` files must be read even though no rule declares `sql`.
-  for (const kind of neededFactKinds(active)) {
+  const neededKinds = neededFactKinds(active);
+  for (const kind of neededKinds) {
     const producers = (PRODUCERS as Partial<Record<FactKind, Record<string, unknown>>>)[kind];
     if (producers) for (const format of Object.keys(producers)) neededFormats.add(format);
   }
 
-  const files: InputFile[] = [];
-  for (const p of filePaths) {
-    if (!neededFormats.has(formatFor(p))) continue;
-    try {
-      files.push({ path: p, content: await fs.readFile(p, 'utf8') });
-    } catch {
-      // Unreadable — the discovery layer already dropped it; skip, don't fail.
+  // Spec 70 — the traverse phase is now the source of the three *walk-level*
+  // unread reasons (`unsupported style dialect`, `read failed`, `unsupported
+  // source extension`), each byte-identical to the legacy string it replaces.
+  // The content-level `<style lang="…">` reason still comes from the index
+  // table (via the corpus producer), so the fact is their merge in `buildFacts`.
+  const unread: UnreadStyleSourceFact[] = [];
+
+  // Dialect walk (`.less`/`.styl`/`.sass`) — full runs only, matching the legacy
+  // `if (!scoped)` around `findUnreadStyleFiles`.
+  if (infra?.projectRoot && !infra.scoped && neededKinds.has('unread-style-sources')) {
+    for (const p of await findFiles(infra.projectRoot, { extensions: UNREAD_STYLE_EXTENSIONS })) {
+      const ext = p.slice(p.lastIndexOf('.') + 1);
+      unread.push({ filePath: p, reason: `unsupported style dialect: ${ext}` });
     }
   }
 
-  return runPhaseModelOverFiles(files, thresholdsByRule, infra);
+  const files: InputFile[] = [];
+  for (const p of filePaths) {
+    // Unknown source extension → unread (the legacy `extractForFile` backstop),
+    // and skip the parse — `formatFor` would map it to `typescript` and mis-parse
+    // it as TS rather than leaving it unhandled.
+    const ext = p.includes('.') ? p.slice(p.lastIndexOf('.')) : '';
+    if (ext && !KNOWN_SOURCE_EXTENSIONS.includes(ext)) {
+      unread.push({ filePath: p, reason: `unsupported source extension: ${ext}` });
+      continue;
+    }
+    if (!neededFormats.has(formatFor(p))) continue;
+    try {
+      files.push({ path: p, content: await fs.readFile(p, 'utf8') });
+    } catch (err) {
+      // Unreadable — the traverse's own read attempt records the reason (the
+      // legacy read-failure push moved here); skip, don't fail.
+      unread.push({ filePath: p, reason: `read failed: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  return runPhaseModelOverFiles(files, thresholdsByRule, infra, unread);
 }
 
 /**
@@ -169,18 +244,26 @@ export async function runPhaseModel(
  * @param files - The already-read input files to parse, process, and analyze.
  * @param thresholdsByRule - The resolved per-rule threshold map.
  * @param infra - The optional corpus-level inputs (project root, index, workers).
+ * @param unread - The traverse phase's walk-level unread-source reasons (dialect,
+ *   read-failure, unknown-extension), merged into the `unread-style-sources`
+ *   fact ahead of the corpus producer's table-derived content-level reasons.
  * @returns The migrated rules' findings and the per-file fact completeness map.
  */
 export async function runPhaseModelOverFiles(
   files: readonly InputFile[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra?: PhaseInfra,
+  unread: readonly UnreadStyleSourceFact[] = [],
 ): Promise<PhaseModelResult> {
-  const { facts, incompleteFacts, oracleShortfalls } = await buildFacts(files, infra);
+  const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites } = await buildFacts(files, infra, unread);
+  const findings = await analyzeAll(facts, thresholdsByRule, infra);
   return {
-    findings: await analyzeAll(facts, thresholdsByRule, infra),
+    findings,
     incompleteFacts,
     oracleShortfalls,
+    unprovenQueryReceivers,
+    unresolvedImports,
+    unresolvedQuerySites,
   };
 }
 
@@ -196,7 +279,7 @@ function neededFactKinds(active: readonly RuleDefinition<any>[] = MIGRATED_RULES
   for (const rule of active) {
     for (const f of rule.needs.facts) needed.add(f);
   }
-  // Corpus producers pull in their upstream facts (ddl-declarations → table-catalog).
+  // Corpus producers pull in their upstream facts (ddl-declarations → resolution).
   let grew = true;
   while (grew) {
     grew = false;
@@ -210,6 +293,14 @@ function neededFactKinds(active: readonly RuleDefinition<any>[] = MIGRATED_RULES
       }
     }
   }
+  // Spec 70 2c — `classifyUnprovenQueryReceivers` (the fifth receiver consumer)
+  // reads the raw `data-access-calls-candidates` fact, which is only an upstream
+  // of `data-access-calls`. When `receiver-provenance` is needed through another
+  // consumer (e.g. a `loop-queries`-only run) but `data-access-calls` is not, that
+  // candidate fact would be absent and the cannot-fire surface would silently read
+  // empty — matching the pre-pass, which always scanned for unproven receivers
+  // whenever any receiver consumer was present.
+  if (needed.has('receiver-provenance')) needed.add('data-access-calls-candidates');
   return needed;
 }
 
@@ -217,7 +308,8 @@ function neededFactKinds(active: readonly RuleDefinition<any>[] = MIGRATED_RULES
 async function buildFacts(
   files: readonly InputFile[],
   infra?: PhaseInfra,
-): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[] }> {
+  unread: readonly UnreadStyleSourceFact[] = [],
+): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[]; unprovenQueryReceivers: UnprovenQueryReceiver[]; unresolvedImports: UnresolvedImportFact[]; unresolvedQuerySites: UnresolvedQuerySite[] }> {
   const projectRoot = infra?.projectRoot;
   const active = activeRules(infra?.enabledRules);
   const needed = neededFactKinds(active);
@@ -230,7 +322,7 @@ async function buildFacts(
   );
 
   // Every needed file fact starts empty so a corpus producer whose upstream
-  // no file produced sees `[]`, not `undefined` (table-catalog's
+  // no file produced sees `[]`, not `undefined` (resolution's
   // ddl-declarations edge on a corpus with no code DDL — e.g. a styles-only
   // audit, or DDL declared in .sql migrations the code parser never sees).
   for (const kind of fileKinds) {
@@ -296,6 +388,12 @@ async function buildFacts(
     }
   }
 
+  // Spec 70 2b — the dry-pair seed write: after the file facts are merged (the
+  // `code-block` fact is complete) but before the corpus facts reduce (so
+  // `clone-pair-history` reads the freshly-written `dry_pair_history` rows, the
+  // same write-before-read ordering `persistDryPairs`-then-`runPhaseModel` had).
+  await infra?.persistDryPairHistory?.(facts);
+
   // Corpus facts, reduced from upstream facts (single shallow level today).
   const corpusKinds = [...needed].filter(
     (k): k is keyof typeof CORPUS_PRODUCERS =>
@@ -309,14 +407,111 @@ async function buildFacts(
     packageEntryPoints: infra?.packageEntryPoints,
     indexHandle: infra?.indexHandle,
     externalTables: infra?.externalTables,
+    sqlDialect: infra?.sqlDialect,
   };
-  for (const kind of corpusKinds) {
+  // §5 DAG — topological sort. A corpus producer's `needs` may reference other
+  // corpus kinds (e.g. the four receiver consumers depend on `receiver-provenance`,
+  // which itself depends on file facts). File-fact needs are already satisfied by
+  // the per-file pass above; only the corpus→corpus edges require ordering, so the
+  // sort runs over `corpusKinds` alone (a `needs` entry naming a file fact is
+  // simply already present in `facts`). Kahn's algorithm; a cycle falls back to
+  // the unsorted order rather than looping (no cycle exists in the declared DAG).
+  const sortedCorpusKinds = topoSortCorpusKinds(corpusKinds);
+  for (const kind of sortedCorpusKinds) {
     const producer = CORPUS_PRODUCERS[kind];
     const upstream = Object.fromEntries(producer.needs.map((n) => [n, facts.get(n)]));
     facts.set(kind, producer.process(upstream as never, corpusCtx));
   }
 
-  return { facts, incompleteFacts, oracleShortfalls };
+  // Spec 70 — merge the traverse phase's walk-level unread reasons ahead of the
+  // corpus producer's table-derived content-level reasons (`<style lang>`). The
+  // walk-level half is the traverse's own read/dialect record; the table half is
+  // what `syncStyleIndex` still persists for embedded style blocks.
+  if (needed.has('unread-style-sources')) {
+    const table = (facts.get('unread-style-sources') as UnreadStyleSourceFact[] | undefined) ?? [];
+    facts.set('unread-style-sources', [...unread, ...table]);
+  }
+
+  // Spec 70 2c — the fifth receiver consumer (a plain reduction, not a registry
+  // fact kind): re-derive the unproven query-shaped call sites from the raw
+  // `data-access-calls-candidates` fact + the `receiver-provenance` fixed point,
+  // and surface the fixed point's unresolved imports. Both replace the deleted
+  // pre-pass's `unprovenQueryReceivers` / `unresolvedImports` halves; they exist
+  // only to feed the `cannot-fire` coverage diagnostic (re-homed in the caller),
+  // never a rule's declared facts.
+  let unprovenQueryReceivers: UnprovenQueryReceiver[] = [];
+  let unresolvedImports: UnresolvedImportFact[] = [];
+  let unresolvedQuerySites: UnresolvedQuerySite[] = [];
+  const receiverProvenanceFact = facts.get('receiver-provenance') as ReceiverProvenanceFact | undefined;
+  if (receiverProvenanceFact) {
+    unresolvedImports = [...receiverProvenanceFact.unresolvedImports];
+    unprovenQueryReceivers = classifyUnprovenQueryReceivers(
+      (facts.get('data-access-calls-candidates') as DataAccessCallCandidate[] | undefined) ?? [],
+      (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
+      receiverProvenanceFact,
+      (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
+      infra?.sqlDialect ?? null,
+    );
+    // Spec 70 1b — the `unresolved-query` half (a third coverage signal, alongside
+    // the two above): re-derive the re-admitted unresolvable-SQL DB-calls from the
+    // raw `schema-usage-candidates` fact + the provenance fixed point. Only runs
+    // when `schema-usage` was needed (its raw fact is present); otherwise empty.
+    const schemaUsageCandidates = facts.get('schema-usage-candidates') as SchemaUsageCandidatesFact[] | undefined;
+    if (schemaUsageCandidates) {
+      unresolvedQuerySites = classifyUnresolvedQuerySites(
+        schemaUsageCandidates,
+        (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
+        receiverProvenanceFact,
+        (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
+        infra?.sqlDialect ?? null,
+      );
+    }
+  }
+
+  return { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites };
+}
+
+/**
+ * §5 DAG — topological sort over the corpus kinds requested, so a corpus producer
+ * whose `needs` names another corpus kind runs after it. A `needs` entry naming a
+ * file fact is ignored here (file facts are already in `facts` by the time corpus
+ * producers run). Kahn's algorithm keyed on the `CORPUS_PRODUCERS[].needs` edges;
+ * the result preserves the input order among independent kinds (the determinism
+ * anchor), and a cycle (none exists in the declared DAG) falls back to the input
+ * order rather than looping forever.
+ */
+function topoSortCorpusKinds(
+  kinds: readonly (keyof typeof CORPUS_PRODUCERS)[],
+): (keyof typeof CORPUS_PRODUCERS)[] {
+  const corpusSet = new Set<string>(kinds as readonly string[]);
+  const inDegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const kind of kinds) inDegree.set(kind, 0);
+  for (const kind of kinds) {
+    for (const need of CORPUS_PRODUCERS[kind].needs) {
+      if (!corpusSet.has(need)) continue; // file fact — already satisfied.
+      inDegree.set(kind, (inDegree.get(kind) ?? 0) + 1);
+      const list = dependents.get(need) ?? [];
+      list.push(kind);
+      dependents.set(need, list);
+    }
+  }
+
+  // Seed the queue with the zero-in-degree kinds in input order (stability).
+  const queue: string[] = kinds.filter((k) => (inDegree.get(k) ?? 0) === 0);
+  const sorted: string[] = [];
+  while (queue.length > 0) {
+    const kind = queue.shift()!;
+    sorted.push(kind);
+    for (const dep of dependents.get(kind) ?? []) {
+      const next = (inDegree.get(dep) ?? 1) - 1;
+      inDegree.set(dep, next);
+      if (next === 0) queue.push(dep);
+    }
+  }
+  // A cycle leaves some kinds unsorted; fall back to the input order for them.
+  if (sorted.length !== kinds.length) return [...kinds];
+  return sorted as (keyof typeof CORPUS_PRODUCERS)[];
 }
 
 /** §6.5 — bounded work queue: run `fn` over `items` with at most `limit` in
@@ -353,7 +548,12 @@ async function processFile(
   projectRoot: string | undefined,
   infra?: PhaseInfra,
 ): Promise<{ file: string; fragments: Map<FileFactKind, unknown[]>; incomplete: FileFactKind[]; shortfalls: OracleShortfall[] }> {
-  const parsed = await parseOne(input, projectRoot);
+  let parsed = await parseOne(input, projectRoot);
+  // Spec 70 R1 — attach the corpus dialect to the parsed file so the
+  // data-access producer's SQL facts parse rather than regex.
+  if (parsed && infra?.sqlDialect) {
+    parsed = { ...parsed, sqlDialect: infra.sqlDialect };
+  }
   const fragments = new Map<FileFactKind, unknown[]>();
   const incomplete: FileFactKind[] = [];
   const shortfalls: OracleShortfall[] = [];

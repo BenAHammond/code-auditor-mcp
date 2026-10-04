@@ -10,21 +10,32 @@ import type { Violation, Resolution } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, DynamicPart } from '../../languages/types.js';
 import {
   buildProvenanceContext,
-  isDBProvenanced,
   getCallExpressionCallee,
-  DB_CALL_METHODS,
-  ORM_METHODS,
+  getMemberExpressionReceiver,
+  extractMemberExpressionProperty,
+  resolveSiteDialect,
   type ProvenanceContext,
+  type ProvenanceEvidence,
   type DetectionMode,
 } from '../provenance.js';
+import { DB_CALL_METHODS, isOrmMethod } from '../tsEcosystem.js';
+import { identifyHandle, type HandleVerdict } from '../handleIdentification.js';
 import {
-  DB_RECEIVER_NAMES,
-  DB_CALL_METHOD_NAMES,
+  buildBindingEnv,
+  resolveReceiverRoot,
+  type RootResolutionEnv,
+} from '../receiverRoot.js';
+import {
+  buildGoBindingEnv,
+  buildGoImportMap,
+  type GoResolutionEnv,
+} from '../../languages/go/goResolution.js';
+import {
   DB_BINDING_NAMES,
   DB_WRAPPER_NAMES,
   SQL_TAG_NAMES,
 } from './UniversalSchemaAnalyzer.js';
-import { isSqlKeyword, extractAliasIdentifiers, findEnclosingFunctionIdentity, functionIdentityLabel } from './schema/codeAnalysis.js';
+import { findEnclosingFunctionIdentity, functionIdentityLabel } from './schema/codeAnalysis.js';
 import { isTestOrSpecPath } from '../../languages/testConventions.js';
 import {
   buildOrgFilterTierSet,
@@ -33,16 +44,29 @@ import {
   hasOrganizationFilter,
 } from '../orgFilterTiers.js';
 import { resolveWhereBinding } from '../../phase/localBinding.js';
-import type { ResolvedWhere } from '../../phase/types.js';
+import type { ResolvedWhere, DataAccessCallCandidate, LoopQueryRawCandidate } from '../../phase/types.js';
+import type { Dialect } from '../../mcp-tools/discoveryQueries.js';
+import type { AST as SqlAst } from 'node-sql-parser';
+import {
+  parseSql,
+  DEFAULT_SQL_DIALECT,
+  extractTableNames,
+  whereFacts,
+  isWriteStatement,
+  isMassWriteStatement,
+  isUpsertStatement,
+  whereColumnRefs,
+} from '../../languages/sql/sqlAst.js';
 
 /**
- * SQL keywords recognized as evidence that a string is a SQL query.
- * Includes DML verbs (SELECT/INSERT/UPDATE/DELETE) and DDL verbs
- * (CREATE/DROP/ALTER/TRUNCATE) so DDL injection — e.g. a raw schema
- * migration built by concatenating an interpolated identifier — is
- * recognized as SQL rather than silently passing the keyword gate.
- * Single source of truth for both containsSQLKeywords and
- * containsSQLStructure to prevent drift.
+ * SQL keywords recognized as evidence that a *dynamically-constructed* string is
+ * an injection surface — the host-language dataflow gate in `checkQuerySecurity`
+ * (site #11, not converted by R2). This list is NOT the SQL-ness admission gate:
+ * that decision is provenance/shape/tag-based (see `isSqlPosition` in
+ * `buildDatabaseCall`), and a keyword name list must not decide whether a string
+ * is SQL — it would silently drop keyword-less SQL (`PRAGMA`, `VACUUM`,
+ * `ANALYZE`) that provenance already establishes as SQL. `containsSQLStructure`
+ * is gone (R2 site #4); this list now feeds only `checkQuerySecurity`.
  */
 const SQL_KEYWORDS = [
   'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'FROM', 'WHERE', 'JOIN',
@@ -62,17 +86,6 @@ export interface DataAccessAnalyzerConfig {
    *  the oracle fixtures, which assert positive loop-query detections). */
   skipTestFiles?: boolean;
 
-
-  // Database configurations
-  databases?: {
-    [key: string]: {
-      name: string;
-      importPatterns: string[];
-      queryPatterns: string[];
-      ormPatterns?: string[];
-    };
-  };
-
   // Organization/tenant filtering patterns
   organizationPatterns?: string[];
 
@@ -90,10 +103,11 @@ export interface DataAccessAnalyzerConfig {
     }>;
   }>;
 
-  // Table extraction patterns
+  // Table extraction patterns — host-language ORM/query-builder shape only.
+  // SQL-content table names come from the parsed AST (Spec 70 R2, site #1); the
+  // `sql` regex list is deleted, not kept as a fallback.
   tablePatterns?: {
     orm?: RegExp[];
-    sql?: RegExp[];
     queryBuilder?: RegExp[];
   };
 
@@ -115,14 +129,6 @@ export interface DataAccessAnalyzerConfig {
    *  .prepare().bind() but expressed as a simple function call rather than a method chain. */
   dbWrapperNames?: string[];
 
-  /** DB receiver variable names for provenance detection (e.g. db, database, sql, stmt).
-   *  Defaults to the same canonical list as the schema analyzer (DB_RECEIVER_NAMES),
-   *  but lives in THIS analyzer's namespace so the two never share config keys. */
-  dbReceiverNames?: string[];
-
-  /** DB call method names for provenance detection (e.g. exec, prepare, batch, run, all, first). */
-  dbCallMethods?: string[];
-
   /** DB binding names for provenance detection (e.g. env.DB — Cloudflare D1 bindings). */
   dbBindingNames?: string[];
 
@@ -135,6 +141,17 @@ export interface DataAccessAnalyzerConfig {
   /** Provenance detection mode: 'hybrid' | 'provenance' | 'names'. */
   detection?: { mode: DetectionMode };
 
+  /**
+   * Spec 70 R1 — the corpus's named SQL dialect, or null when undetermined.
+   * SQL-content facts (tables, filter, write-verb, tenant predicate) are derived
+   * from a parsed SQL AST; when the dialect is null the argument cannot be parsed
+   * and those facts `cannot-fire` (empty / false) rather than falling back to a
+   * regex over text. ORM-shape table extraction (`.from('users')`, Kysely verbs,
+   * Drizzle `db.<table>.<method>()`) is host-language shape, not SQL, and does
+   * not consult this field.
+   */
+  dialect?: Dialect | null;
+
   /** SQL sanitizer function names — interpolation wrapped in one of these
    *  (e.g. escapeSql(x)) is not raw.  Kept in sync with the provenance system's
    *  dbWrapperNames: any list the detector learns about, the FP guards must also consult. */
@@ -146,14 +163,6 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   checkSQLInjection: true,
   skipTestFiles: true,
 
-  databases: {
-    'primary': {
-      name: 'Primary Database',
-      importPatterns: ['/database/', '/db/', './db', './schema', 'drizzle', 'prisma', 'typeorm', 'knex', 'sequelize'],
-      queryPatterns: ['select', 'insert', 'update', 'delete', 'query', 'execute'],
-      ormPatterns: ['from', 'where', 'join', 'orderBy', 'groupBy']
-    }
-  },
   organizationPatterns: [...DEFAULT_ORG_PREDICATE_PATTERNS],
   // Spec 21 R6.2: three-tier org-filter detection
   orgFilterTables: [],  // Tier 1: empty — user must declare
@@ -169,7 +178,6 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
       /rightJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,
       /innerJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu
     ],
-    sql: [/\b(?:INSERT(?:\s+OR\s+(?:IGNORE|REPLACE))?|REPLACE)\s+INTO\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /DELETE\s+FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /FROM\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /JOIN\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu, /UPDATE\s+["'`]?([\p{L}\p{N}_]+)["'`]?/giu],
     queryBuilder: [/\.from\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu]
   },
   performanceThresholds: {
@@ -187,11 +195,12 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   dbWrapperNames: [...DB_WRAPPER_NAMES],
   // DB detection patterns — values shared with the schema analyzer, but owned by
   // THIS analyzer's namespace (no cross-analyzer fallback in analyzeAST).
-  dbReceiverNames: [...DB_RECEIVER_NAMES],
-  dbCallMethods: [...DB_CALL_METHOD_NAMES],
   dbBindingNames: [...DB_BINDING_NAMES],
   sqlTagNames: [...SQL_TAG_NAMES],
   detection: { mode: 'hybrid' },
+  // Spec 70 R1 — no dialect until the corpus names one; the SQL-content facts
+  // then `cannot-fire` rather than being regex-derived.
+  dialect: null,
   // SQL sanitizer functions — interpolation via escapeSql(x) is not raw.
   sanitizerNames: ['escapeSql'],
 };
@@ -213,6 +222,16 @@ export interface DatabaseCall {
    *  broader than the tenant-isolation org filter, used for the performance
    *  `unfiltered-query` rule. */
   hasFilter: boolean;
+  /** Spec 70 R2 — AST-derived SQL facts, parsed from the call's static SQL
+   *  argument. Each is absent (false / empty / null) when the corpus named no
+   *  dialect or the argument failed to parse: that is `cannot-fire`, not a
+   *  negative verdict. */
+  isWrite: boolean;
+  isMassWrite: boolean;
+  isUpsert: boolean;
+  isRawInsert: boolean;
+  insertColumns: string[] | null;
+  sqlWhereColumns: string[] | null;
   hasParameterizedQuery: boolean;
   hasSqlInjectionRisk: boolean;
   /** True when the injection risk is defended (manual quote-escaping) rather
@@ -223,6 +242,12 @@ export interface DatabaseCall {
   /** Spec 69 R3 — the resolved WHERE predicate when the `.where(...)` spreads a
    *  local array binding (`and(...conditions)`); null/undefined otherwise. */
   resolvedWhere?: ResolvedWhere;
+  /** Spec 70 R1.2 — the handle verdict from `identifyHandle` (`handle` with its
+   *  `via`, or `unproven` with its reason). Present only when the call was
+   *  admitted through handle identification; absent for shape-only / ORM /
+   *  tagged-template / variable-assignment candidates. A `not-handle` site is
+   *  rejected at admission and never reaches a DatabaseCall. */
+  handleVerdict?: HandleVerdict;
 }
 
 interface QueryAnalysis {
@@ -251,17 +276,22 @@ interface DataAccessViolationClassification {
 
 /**
  * Per-file analysis context threaded through the data-access helper chain.
- * Bundles `adapter` / `sourceCode` / `dbImports` / `config` / `provenanceContext`
- * into one object so the helpers that previously took 5–6 positional params
+ * Bundles `adapter` / `sourceCode` / `config` / `provenanceContext` into one
+ * object so the helpers that previously took 5–6 positional params
  * (buildDatabaseCall, extractDatabaseCalls, checkQuerySecurity, …) clear the
  * 4-parameter gate without each defining its own bespoke context type.
  */
 interface DataAccessScanContext {
   adapter: LanguageAdapter;
   sourceCode: string;
-  dbImports: Map<string, { hasImports: boolean; patterns: string[] }>;
   config: DataAccessAnalyzerConfig;
   provenanceContext?: ProvenanceContext;
+  /** Per-file TypeScript binding environment `identifyHandle` reads for
+   *  declaration resolution. Built once per file; absent for Go / non-code. */
+  handleEnv?: RootResolutionEnv;
+  /** Per-file Go binding environment `identifyHandle` reads for Go declaration
+   *  resolution. Built once per file; absent for TS / non-code. */
+  goEnv?: GoResolutionEnv;
 }
 
 /**
@@ -300,29 +330,6 @@ function makeViolation(
   if (classification.symbol) v.symbol = classification.symbol;
   if (classification.resolution) v.resolution = classification.resolution;
   return v;
-}
-
-/**
- * Map imports to database types
- */
-function mapDatabaseImports(
-  imports: Array<{ source: string }>,
-  config: DataAccessAnalyzerConfig
-): Map<string, { hasImports: boolean; patterns: string[] }> {
-  const dbImports = new Map<string, { hasImports: boolean; patterns: string[] }>();
-
-  Object.entries(config.databases || {}).forEach(([dbType, dbConfig]) => {
-    const hasImports = imports.some(imp =>
-      dbConfig.importPatterns.some(pattern => imp.source.includes(pattern))
-    );
-
-    dbImports.set(dbType, {
-      hasImports,
-      patterns: [...dbConfig.queryPatterns, ...(dbConfig.ormPatterns || [])]
-    });
-  });
-
-  return dbImports;
 }
 
 /**
@@ -481,7 +488,7 @@ function isPrismaObjectForm(
  *   2. Prisma object form — {@link isPrismaObjectForm}.
  *
  * A third admitter — catalog-resolved argument (a bare `.from(table)` /
- * `.query(table)` whose verb argument resolves to a `table-catalog` table) —
+ * `.query(table)` whose verb argument resolves to a `resolution` table) —
  * was evaluated and REJECTED. The residual gap after admitter 1+2 contains no
  * such chain: the real misses are *variable-split* builders (the companion verb
  * lives in a prior statement, e.g. `const q = baseQuery.where(…)`), which
@@ -503,26 +510,216 @@ function isQueryBuilderShape(
 }
 
 /**
+ * The single admission seam for a candidate node: resolve its handle-ness through
+ * `identifyHandle` (Spec 70 R1.2) and return the tri-state verdict, or `null`
+ * when the node is not a query-shaped DB/ORM call in the TypeScript family.
+ *
+ * The candidate *filter* (a DB/ORM method, or a provenanced wrapper name) is
+ * query-shape vocabulary — the same surface `isDBMethodCall` admitted — not a
+ * handle test. Handle-ness is decided once, here: a `handle` verdict admits the
+ * site (carrying `via`); `not-handle` rejects it; `unproven` admits it *as
+ * unproven* (carrying the reason) so downstream rules see the site and report
+ * `cannot-fire` rather than never seeing it. Admission is tri-state, not boolean.
+ */
+function handleVerdictForCall(
+  node: ASTNode,
+  scan: DataAccessScanContext,
+): HandleVerdict | null {
+  const { adapter, sourceCode, config, provenanceContext, handleEnv } = scan;
+  if (!provenanceContext) return null;
+
+  // Go: declaration resolution runs through Go's own binding/import environment
+  // (provenance seed + bindings + imports), routed through the same
+  // `identifyHandle` seam. `classifyGoRootIdentifier` checks the provenance seed
+  // first, so a cross-file-resolved `db *sql.DB` proves `handle`; the seed also
+  // carries the receiver's package, so an unrecognized import stays `unproven`
+  // (cannot-fire) rather than being guessed `not-handle` (Spec 70 R4).
+  if (adapter.name === 'go') {
+    return goHandleVerdictForCall(node, scan);
+  }
+
+  if (!handleEnv) return null;
+
+  // A template literal is admitted via the call whose argument it is.
+  const callNode = isTemplateLiteral(node, adapter) ? enclosingCallOf(node, adapter) : node;
+  if (!callNode || !isFunctionCall(callNode, adapter)) return null;
+
+  // A constructor call (`new Pool()`) is an instantiation — how a handle is
+  // *created* — not a data-access call itself. Its provenanced constructor
+  // proves the *binding* (`const db = new Pool()`); the constructor expression
+  // is never a query site, so admit nothing here. (Spec 70 R4)
+  if (callNode.type === 'new_expression') return null;
+
+  const callee = getCallExpressionCallee(callNode, adapter);
+  if (!callee) return null;
+
+  const dialect =
+    resolveSiteDialect(callNode, adapter, sourceCode, provenanceContext) ??
+    config.dialect ?? null;
+
+  const facts = (): Parameters<typeof identifyHandle>[1] => ({
+    imports: new Map(),
+    typeAnnotations: new Map(),
+    bindings: new Map(),
+    withinFileProvenance: new Map(),
+    sqlDialect: dialect,
+    resolution: { dialect: 'ts', env: handleEnv },
+  });
+
+  // Bare-identifier call (`query(…)` / `d1(…)`): admit a provenanced wrapper or a
+  // type-annotated handle (`const query: D1Database = …`), and let `identifyHandle`
+  // decide handle / not-handle / unproven on the one entry point. A truly unbound
+  // name (an ambient global like `someFunction`) is rejected here — not because its
+  // name proves non-handle, but because its SQL argument must not be allowed to
+  // *prove* handle-ness (R3) on a name with no DB signal at all. The candidate
+  // filter is a DB/ORM *shape* test (provenance or an explicit type annotation),
+  // never a handle decision.
+  if (callee.type === 'identifier') {
+    const name = adapter.getNodeText(callee, sourceCode);
+    if (!name) return null;
+    const binding = handleEnv.bindings.get(name);
+    const isProvenanced = provenanceContext.dbProvenanced.has(name);
+    const isTypeAnnotated =
+      !!binding &&
+      (binding.kind === 'variable' || binding.kind === 'field' || binding.kind === 'parameter') &&
+      !!binding.typeText;
+    if (!isProvenanced && !isTypeAnnotated) return null;
+    return identifyHandle(
+      {
+        format: 'typescript',
+        root: name,
+        receiver: name,
+        method: name,
+        sqlArgument: extractStaticSql(callNode, adapter, sourceCode),
+        thisField: false,
+      },
+      facts(),
+    );
+  }
+
+  if (callee.type !== 'member_expression' && callee.type !== 'selector_expression') {
+    return null;
+  }
+
+  const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+  if (!method) return null;
+  const m = method.toLowerCase();
+  // `DB_CALL_METHODS` is all-lowercase (match `m`); `isOrmMethod` matches
+  // camelCase ORM verbs (`findUnique`, `selectFrom`, …), so it must read the RAW
+  // name — lowercasing first turned `findUnique` into `findunique` and dropped
+  // every camelCase ORM finder (the same false negative `dbMethodInMemberChain`
+  // guarded against by testing `ORM_METHODS.has(propName)`).
+  if (!DB_CALL_METHODS.has(m) && !isOrmMethod(method)) return null;
+
+  const root = resolveReceiverRoot(callee, adapter, sourceCode);
+  if (root === null) return null;
+  const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
+
+  return identifyHandle(
+    {
+      format: 'typescript',
+      root,
+      receiver,
+      method,
+      sqlArgument: extractStaticSql(callNode, adapter, sourceCode),
+      thisField: receiverIsThisRooted(callee, adapter),
+    },
+    facts(),
+  );
+}
+
+/**
+ * The Go arm of the admission seam: resolve a Go `selector_expression` call
+ * (`db.Query(…)`) through `identifyHandle` with Go's own resolution environment,
+ * instead of abstaining. The candidate *filter* (`DB_CALL_METHODS`) is the same
+ * query-shape vocabulary `collectGoUnprovenQueryReceivers` applies; handle-ness
+ * is then decided once by the seam (`handle` via provenance seed, `unproven` via
+ * an unrecognized package, `not-handle` via a non-DB binding), never by a name
+ * list here.
+ */
+function goHandleVerdictForCall(
+  node: ASTNode,
+  scan: DataAccessScanContext,
+): HandleVerdict | null {
+  const { adapter, sourceCode, config, goEnv } = scan;
+  if (!goEnv) return null;
+  if (!isFunctionCall(node, adapter)) return null;
+
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee || callee.type !== 'selector_expression') return null;
+
+  const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+  if (!method) return null;
+  const m = method.toLowerCase();
+  if (!DB_CALL_METHODS.has(m)) return null;
+
+  const root = resolveReceiverRoot(callee, adapter, sourceCode);
+  if (root === null) return null;
+  const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
+
+  return identifyHandle(
+    {
+      format: 'go',
+      root,
+      receiver,
+      method,
+      sqlArgument: extractStaticSql(node, adapter, sourceCode),
+      thisField: false,
+    },
+    {
+      imports: new Map(),
+      typeAnnotations: new Map(),
+      bindings: new Map(),
+      withinFileProvenance: new Map(),
+      sqlDialect: config.dialect ?? null,
+      resolution: { dialect: 'go', env: goEnv },
+    },
+  );
+}
+
+/** Walk parents until an enclosing call/new expression, or null. */
+function enclosingCallOf(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  let cur = adapter.getParent(node);
+  while (cur) {
+    const t = adapter.getNodeType(cur);
+    if (t === 'call_expression' || t === 'new_expression') return cur;
+    cur = adapter.getParent(cur);
+  }
+  return null;
+}
+
+/** True when a receiver chain bottoms out at `this`/`super` (a field reference). */
+function receiverIsThisRooted(callee: ASTNode, adapter: LanguageAdapter): boolean {
+  let current: ASTNode = callee;
+  while (current.type === 'member_expression' || current.type === 'selector_expression') {
+    const children = adapter.getChildren(current);
+    const firstChild = children.find(
+      (c) => c.type !== '.' && c.type !== 'property_identifier' && c.type !== 'field_identifier',
+    );
+    if (!firstChild) return false;
+    current = firstChild;
+  }
+  return current.type === 'this' || current.type === 'super';
+}
+
+/**
  * Predicate for the node-discovery pass of extractDatabaseCalls.  A node is a
- * candidate when it is a DB-provenanced function call, a tagged-template SQL
- * call, a template literal in a DB-provenanced call's arguments, a variable
- * assignment holding SQL-shaped text (Spec 17 R2 — content scanning is removed
- * in favour of provenance), or a query-builder chain discovered by shape
- * (Spec 68 Thing 2, #312).
+ * candidate when it is a DB/ORM-method call whose receiver is handle-or-unproven,
+ * a tagged-template SQL call, a variable assignment holding SQL-shaped text
+ * (Spec 17 R2 — content scanning is removed in favour of provenance), or a
+ * query-builder chain discovered by shape (Spec 68 Thing 2, #312).
  */
 function isDbCallCandidate(
   node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  provenanceContext?: ProvenanceContext,
+  scan: DataAccessScanContext,
   tagNames: readonly string[] = SQL_TAG_NAMES,
 ): boolean {
-  const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
+  const { adapter, sourceCode } = scan;
 
-  // Check if it's a function call whose callee is DB-related
-  if (provenanceContext && isDBProvenancedFunctionCall(node, adapter, sourceCode, provenanceContext)) {
-    return true;
-  }
+  // Spec 70 R1.2: a DB/ORM-method call whose receiver resolves handle-or-unproven.
+  // `not-handle` (e.g. lodash `get`) and `null` (not query-shaped) are rejected.
+  const verdict = handleVerdictForCall(node, scan);
+  if (verdict !== null && verdict.kind !== 'not-handle') return true;
 
   // A query-builder chain is discovered by shape, not receiver name.
   if (isQueryBuilderShape(node, adapter, sourceCode)) {
@@ -534,17 +731,12 @@ function isDbCallCandidate(
     return true;
   }
 
-  // Spec 17 R2: Template literals are SQL candidates because of where they sit
-  // (DB-provenanced call arguments), not what their body contains.
-  if (isTemplateLiteral(node, adapter)) {
-    return isTemplateInDBProvenancedCall(node, adapter, sourceCode, provenanceContext);
-  }
-
-  // Variable assignment with SQL structure — no child template check: the
-  // template-literal path is now provenance-only (Spec 17 R2), so there is no
-  // overlap risk from child template detection.
+  // Variable assignment whose RHS is a static string/template literal — the
+  // string parses as a statement or it does not (Spec 70 R2 site #4, obviated):
+  // the candidate check is now the presence of a static literal, and
+  // `buildDatabaseCall` parses it. No SQL-keyword content scan here.
   if (isVariableAssignment(node, adapter)) {
-    return containsSQLStructure(nodeText);
+    return extractStaticSql(node, adapter, sourceCode) !== null;
   }
 
   return false;
@@ -583,6 +775,123 @@ function dedupeCandidateNodes(nodes: ASTNode[], adapter: LanguageAdapter): ASTNo
 }
 
 /**
+ * The static SQL argument of a candidate node, or null when it carries none.
+ *
+ * Spec 70 R2 — the single extraction point for the SQL-content facts: a call's
+ * string/template argument (unquoted), a tagged template's body, or a variable
+ * assignment's RHS literal. A template carrying a `${…}` substitution is
+ * dynamic and yields null (its shape is interpolated, not a parseable literal);
+ * that is `cannot-fire`, not a negative verdict.
+ */
+function extractStaticSql(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const type = adapter.getNodeType(node);
+
+  // Tagged template (sql`…`) or a template literal found as a call argument.
+  // Go's string literals are `interpreted_string_literal` / `raw_string_literal`.
+  if (isSqlStringLiteralType(type)) {
+    return staticLiteralText(node, adapter, sourceCode);
+  }
+  // Variable assignment: the static RHS literal, if one.
+  if (type === 'variable_declaration') {
+    const value = adapter.getChildren(node).find((c) => {
+      const t = adapter.getNodeType(c);
+      return isSqlStringLiteralType(t);
+    });
+    return value ? staticLiteralText(value, adapter, sourceCode) : null;
+  }
+  // Call/new expression: the first static string/template argument.
+  if (type === 'call_expression' || type === 'new_expression') {
+    const argListType = adapter.name === 'go' ? 'argument_list' : 'arguments';
+    const children = adapter.getChildren(node);
+    const args = children.find((c) => adapter.getNodeType(c) === argListType);
+    // A tagged template (`sql\`…\`` / `this.sql\`…\``) carries its template as a
+    // DIRECT child — there is no `arguments` node. Extract that body (or null when
+    // the template is interpolated, i.e. dynamic).
+    if (!args) {
+      const template = children.find((c) => isTemplateLiteral(c, adapter));
+      return template ? staticLiteralText(template, adapter, sourceCode) : null;
+    }
+    for (const arg of adapter.getChildren(args)) {
+      const t = adapter.getNodeType(arg);
+      if (t === '(' || t === ')' || t === ',') continue;
+      if (isSqlStringLiteralType(t)) return staticLiteralText(arg, adapter, sourceCode);
+      // A tagged-template first argument (`db.execute(sql\`…\`)`) — recurse into
+      // its body. Only a SQL tag (recognized by name) qualifies; a non-SQL tag is
+      // `cannot-fire`.
+      if (t === 'call_expression' && isTaggedTemplateSqlCall(arg, adapter, sourceCode, SQL_TAG_NAMES)) {
+        return extractStaticSql(arg, adapter, sourceCode);
+      }
+      return null; // first arg is not a literal → cannot-fire
+    }
+    return null;
+  }
+  return null;
+}
+
+/** The literal node types that carry static SQL text — TS/JS `string` /
+ *  `template_string` and Go's `interpreted_string_literal` / `raw_string_literal`. */
+function isSqlStringLiteralType(type: string): boolean {
+  return type === 'string' ||
+    type === 'template_string' ||
+    type === 'interpreted_string_literal' ||
+    type === 'raw_string_literal';
+}
+
+/** Unquote a string/template literal node's text; null when the template is
+ *  dynamic (carries a `${…}` substitution). */
+function staticLiteralText(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  if (adapter.getNodeType(node) === 'template_string') {
+    const children = adapter.getChildren(node) ?? [];
+    if (children.some((c) => adapter.getNodeType(c) === 'template_substitution')) return null;
+  }
+  const raw = adapter.getNodeText(node, sourceCode) ?? '';
+  return stripSqlQuotes(raw);
+}
+
+/** Strip the surrounding quote delimiters of a string/template literal. */
+function stripSqlQuotes(text: string): string {
+  if (text.length >= 2 && (text[0] === '"' || text[0] === "'" || text[0] === '`')) {
+    return text.slice(1, -1);
+  }
+  return text;
+}
+
+/** The explicit lowercased column list of a raw-SQL INSERT/REPLACE, or null for
+ *  a positional INSERT (`INSERT INTO t VALUES (…)`, no column list). Mirrors
+ *  sqlAst's `insertColumns` but preserves the null-vs-empty distinction the
+ *  tenant-predicate rule needs. */
+export function rawInsertColumnsFromAst(sqlAst: SqlAst): string[] | null {
+  if (sqlAst.type !== 'insert' && sqlAst.type !== 'replace') return null;
+  const columns = (sqlAst as { columns?: unknown }).columns;
+  if (!Array.isArray(columns)) return null;
+  return columns.filter((c): c is string => typeof c === 'string').map((c) => c.toLowerCase());
+}
+
+/** The Kysely builder write verb carried as a camelCase method name — a
+ *  host-language chain shape, not SQL.  `selectFrom`/`selectAll` are reads. */
+function builderWriteVerb(text: string): 'insert' | 'update' | 'delete' | null {
+  if (/\.insertInto\s*\(/.test(text)) return 'insert';
+  if (/\.updateTable\s*\(/.test(text)) return 'update';
+  if (/\.deleteFrom\s*\(/.test(text)) return 'delete';
+  return null;
+}
+
+/** True when an ORM chain carries a row-limiting shape (`.where(...)`, `.having(...)`,
+ *  `.limit(...)`, `.andWhere(...)`, `.orWhere(...)`) — the host-language analog of
+ *  SQL's WHERE/HAVING/LIMIT that the AST walk cannot see because there is no SQL. */
+function hasOrmFilterShape(text: string): boolean {
+  return /\.(?:where|andWhere|orWhere|having|limit)\s*\(/.test(text);
+}
+
+/**
  * Classify a single candidate node into a DatabaseCall, or null when it does not
  * look like a DB-related query.
  */
@@ -591,7 +900,7 @@ function buildDatabaseCall(
   ast: AST,
   scan: DataAccessScanContext,
 ): DatabaseCall | null {
-  const { adapter, sourceCode, dbImports, config } = scan;
+  const { adapter, sourceCode, config, provenanceContext } = scan;
   const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
   if (!nodeText || nodeText.trim().length < 10) return null;
 
@@ -599,17 +908,84 @@ function buildDatabaseCall(
   // its template argument (path 2) — the template string is the precise target.
   if (shouldSkipCallForTemplateArg(node, adapter)) return null;
 
-  const isSqlQuery = containsSQLKeywords(nodeText);
+  // The candidate's static SQL argument (unquoted), or null when it has none
+  // or is dynamically interpolated.
+  const sqlArg = extractStaticSql(node, adapter, sourceCode);
+
+  // Spec 70 R2 — parse the static SQL once and derive every SQL-content fact from
+  // the AST. The dialect is per-call-site (Spec 70): `pool.query(…)` where `pool`
+  // resolves to `pg` parses as postgres even in a repo that also names `mysql2`;
+  // the repo-level detection result is only the fallback when the receiver
+  // doesn't resolve to a single-dialect package. R2 does not condition parsing on
+  // proving the dialect, so when none resolves the static SQL is still attempted
+  // under {@link DEFAULT_SQL_DIALECT}; a literal that parses yields its facts, and
+  // only a genuine parse failure (under the resolved dialect, or the default with
+  // the dialect undetermined) leaves the facts absent (`cannot-fire`).
+  const siteDialect = resolveSiteDialect(node, adapter, sourceCode, provenanceContext);
+  const dialect = siteDialect ?? config.dialect ?? null;
+  const parsed = sqlArg !== null ? parseSql(sqlArg, dialect ?? DEFAULT_SQL_DIALECT) : null;
+  const sqlOk = parsed && parsed.ok ? parsed : null;
+
   const isOrmCall = isOrmPattern(nodeText);
+  const tagNames = config.sqlTagNames ?? SQL_TAG_NAMES;
+  // A tagged-template SQL call (`sql\`…\`` / `this.sql\`…\``) is a SQL query by
+  // tag name, whether its template is static or interpolated. Its static body
+  // parses normally; an interpolated body is `cannot-fire` on the SQL facts but
+  // is still the injection surface sql-injection-risk (site #11) reads.
+  const isTaggedSqlCall = isTaggedTemplateSqlCall(node, adapter, sourceCode, tagNames);
+  // A call is a SQL candidate when its static argument parsed as a statement, or
+  // it sits in a SQL position — a handle-or-unproven receiver, a query-builder
+  // chain, or a tagged template — regardless of whether its argument is static or
+  // dynamically interpolated. A parse-failed static argument in a SQL position is
+  // `cannot-fire` (facts absent), never silently dropped. (Spec 70 R2 — the
+  // keyword name-list gate `containsSQLKeywords` is deleted from this decision: it
+  // dropped keyword-less SQL like `PRAGMA`/`VACUUM`/`ANALYZE` that provenance
+  // already establishes as SQL, the opposite of honest `cannot-fire`.)
+  //
+  // Spec 70 R1.2 — handle-ness is decided once, by `identifyHandle`, and the site
+  // is admitted on the tri-state verdict: `handle` and `unproven` both admit (the
+  // latter carrying its reason, recorded on the call below); only `not-handle`
+  // rejects. `null` means "not a query-shaped DB/ORM call", not "not a handle" —
+  // a type-annotated `db: D1Database` with a dynamic template argument now stays
+  // visible instead of being dropped before the rules can see it.
+  const handleVerdict = handleVerdictForCall(node, scan);
+  const handleAdmits = handleVerdict !== null && handleVerdict.kind !== 'not-handle';
+  const isSqlPosition = handleAdmits || isQueryBuilderShape(node, adapter, sourceCode);
+  const isSqlQuery = sqlOk !== null || isSqlPosition || isTaggedSqlCall;
+
   if (!isSqlQuery && !isOrmCall) return null;
 
-  const tables = extractTables(nodeText, config);
+  const sqlAstNode = sqlOk ? sqlOk.ast : null;
+  const builderVerb = sqlAstNode ? null : builderWriteVerb(nodeText);
+
+  // Tables: SQL relations from the AST ∪ ORM-shaped references from the text.
+  const sqlTables = sqlAstNode ? extractTableNames(sqlAstNode) : [];
+  const ormTables = isOrmCall ? extractOrmTables(nodeText, config) : [];
+  const tables = [...new Set([...sqlTables, ...ormTables])];
+
+  // Row-limiting filter: SQL WHERE/HAVING/LIMIT from the AST, or the ORM chain
+  // shape when there is no SQL to walk.
+  const facts = sqlAstNode ? whereFacts(sqlAstNode) : null;
+  const hasFilter = (facts
+    ? (facts.hasWhere && !facts.whereIsTautology) || facts.hasHaving || facts.hasLimit
+    : false)
+    || (isOrmCall && hasOrmFilterShape(nodeText));
+
   const hasOrgFilter = hasOrganizationFilter(nodeText, config);
-  const hasFilter = hasQueryFilter(nodeText);
+
   const security = withRuleTiming('sql-injection-risk', () =>
     checkQuerySecurity(node, nodeText, ast, scan));
 
-  const callType = classifyCallType(isSqlQuery, isOrmCall, dbImports);
+  // Spec 70 R4 — a sql-injection finding asserts the receiver is actually a DB
+  // handle. `unproven` (resolution reached a declaration whose origin it cannot
+  // tie to a database client, e.g. a Worker env binding like `D1Database`) is
+  // `cannot-fire`: the site stays visible but no vulnerability is asserted. Only
+  // a proven `handle` — a parsed SQL argument (R3) or a package in the manifest
+  // (R4) — fires. A type name proves nothing under criterion 9, so there is no
+  // type-annotation signal to consult.
+  const injectionRisk = security.injectionRisk && handleVerdict?.kind === 'handle';
+
+  const callType = classifyCallType(isSqlQuery, isOrmCall);
 
   return {
     type: callType,
@@ -621,30 +997,32 @@ function buildDatabaseCall(
     queryText: nodeText,
     hasOrganizationFilter: hasOrgFilter,
     hasFilter,
+    isWrite: sqlAstNode ? isWriteStatement(sqlAstNode) : builderVerb !== null,
+    isMassWrite: sqlAstNode ? isMassWriteStatement(sqlAstNode) : builderVerb === 'update',
+    isUpsert: sqlAstNode
+      ? isUpsertStatement(sqlAstNode) || sqlOk?.conflictClauseTruncated === true
+      : false,
+    isRawInsert: sqlAstNode ? (sqlAstNode.type === 'insert' || sqlAstNode.type === 'replace') : false,
+    insertColumns: sqlAstNode ? rawInsertColumnsFromAst(sqlAstNode) : null,
+    sqlWhereColumns: sqlAstNode ? [...whereColumnRefs(sqlAstNode)] : null,
     hasParameterizedQuery: security.parameterized,
-    hasSqlInjectionRisk: security.injectionRisk,
+    hasSqlInjectionRisk: injectionRisk,
     sqlEscaped: security.escaped,
     enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
     resolvedWhere: resolveWhereBinding(node, sourceCode, adapter) ?? undefined,
+    handleVerdict: handleVerdict ?? undefined,
   };
 }
 
 /**
- * Classify a SQL/ORM candidate as the concrete database call type: `sql` for a
- * raw SQL query, or the ORM type name (e.g. `knex`) resolved from the first
- * imported DB driver; `unknown` when neither applies.
+ * Classify a SQL/ORM candidate as a broad call-type label: `sql` for a raw SQL
+ * query, `orm` for a query-builder-shaped call, `unknown` otherwise. This is a
+ * non-decision label (no rule reads it); the receiver's DB provenance — resolved
+ * separately — is what decides whether the call is a data-access violation.
  */
-function classifyCallType(
-  isSqlQuery: boolean,
-  isOrmCall: boolean,
-  dbImports: Map<string, { hasImports: boolean; patterns: string[] }>,
-): string {
+function classifyCallType(isSqlQuery: boolean, isOrmCall: boolean): string {
   if (isSqlQuery) return 'sql';
-  if (isOrmCall) {
-    for (const [dbType, importInfo] of dbImports) {
-      if (importInfo.hasImports) return dbType;
-    }
-  }
+  if (isOrmCall) return 'orm';
   return 'unknown';
 }
 
@@ -668,10 +1046,10 @@ function extractDatabaseCalls(
   ast: AST,
   scan: DataAccessScanContext,
 ): DatabaseCall[] {
-  const { adapter, sourceCode, provenanceContext, config } = scan;
+  const { adapter, config } = scan;
   const tagNames = config.sqlTagNames ?? SQL_TAG_NAMES;
   const allNodes = adapter.findNodes(ast, {
-    custom: (node) => isDbCallCandidate(node, adapter, sourceCode, provenanceContext, tagNames),
+    custom: (node) => isDbCallCandidate(node, scan, tagNames),
   });
 
   const uniqueNodes = dedupeCandidateNodes(allNodes, adapter);
@@ -944,61 +1322,6 @@ function stripComments(text: string): string {
 }
 
 /**
- * Spec 22 R4.2: Requires ≥2 SQL keywords for variable-assignment detection.
- *
- * Single-keyword substring matches (e.g. "FROM" inside "Array.from") produce
- * ~120 false positives on the recall corpus. Genuine SQL in variable
- * assignments (string literals, ORM chains) almost always has ≥2 keywords
- * (SELECT+FROM, INSERT+INTO, DELETE+FROM, etc.).
- *
- * This is only used for the variable-assignment fallback path — template
- * literals and function calls use separate, context-aware gating.
- */
-function containsSQLStructure(text: string): boolean {
-  const upperText = text.toUpperCase();
-  const found = SQL_KEYWORDS.filter(keyword => upperText.includes(keyword));
-  return found.length >= 2;
-}
-
-/**
- * Spec 17 R2 provenance gate: a template literal is a SQL candidate
- * because of where it sits (inside a DB-provenanced call's arguments),
- * NOT because its body contains SQL-shaped substrings.
- *
- * Content scanning with substring matching is removed — template bodies
- * containing natural-language words like "from" or "select" are no longer
- * misclassified. The cost: template literals assigned to variables whose
- * values eventually flow to DB calls are not detected (requires dataflow
- * analysis, which is outside the product's stated scope per Spec 15 R3).
- */
-function isTemplateInDBProvenancedCall(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  provenanceContext?: ProvenanceContext,
-): boolean {
-  const parent = adapter.getParent(node);
-  if (!parent) return false;
-  const parentType = adapter.getNodeType(parent);
-
-  // Only the arguments-of-DB-call path survives the Spec 17 R2 cut.
-  // Variable-assignment and statement-level conservative passes are
-  // removed — they were the primary source of false positives.
-  if (parentType === 'arguments') {
-    const callExpr = adapter.getParent(parent);
-    if (!callExpr || adapter.getNodeType(callExpr) !== 'call_expression') return false;
-    if (provenanceContext) {
-      return isDBProvenanced(callExpr, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS });
-    }
-    // Without provenance context, can't determine DB association —
-    // do not speculate.
-    return false;
-  }
-
-  return false;
-}
-
-/**
  * Detect that a node sits inside a D1 .prepare() call — the standard safe
  * pattern for SQL in Cloudflare Workers.
  *
@@ -1205,7 +1528,7 @@ function isSqlStringConstruction(
 ): boolean {
   const method = dbCallMethodName(node, adapter, sourceCode);
   if (!method || EAGER_DB_METHODS.has(method)) return false;
-  if (!ORM_METHODS.has(method)) return false;
+  if (!isOrmMethod(method)) return false;
 
   const call = resolveDbCallNode(node, adapter);
   if (!call) return false;
@@ -1321,19 +1644,29 @@ function isInExecChain(
 }
 
 /**
- * Detect D1's convenience SQL methods — .all(), .first(), .run() —
- * called with bind parameters as a second argument.
+ * Detect eager execution methods called with bind parameters as a second
+ * argument — D1's `.all()`/`.first()`/`.run()`, plus the parameterized
+ * `.query()`/`.execute()` form shared by node-postgres/mysql2 and the tool's
+ * own `IndexHandle`.
  *
- * `db.all(query, ...params)` is shorthand for
- * `db.prepare(query).bind(...params).all()`.  If there's a second argument
- * (the bind params), the call is fully parameterized and safe.
+ * `db.run(query, ...params)` is shorthand for
+ * `db.prepare(query).bind(...params).run()`.  If there's a second argument
+ * (the bind params), the call is fully parameterized and safe — the `${}`
+ * interpolations in the SQL are structural (placeholder fragments, identifiers,
+ * fixed value-lists), never bound values.
+ *
+ * `IndexHandle.query(sql, params)` (the tool's own parameterized index-query
+ * abstraction, `src/types.ts`) is this exact contract: the interpolations carry
+ * `?`-placeholder clauses (`${fp.clause}`, `${inList(types)}`) and `params`
+ * binds the values out-of-band. A single-arg `.query(\`…${input}\`)` — the raw
+ * injection shape — stays flagged because it carries no bind argument.
  */
 function isD1ConvenienceCall(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
 ): boolean {
-  const D1_CONVENIENCE = new Set(['all', 'first', 'run']);
+  const D1_CONVENIENCE = new Set(['all', 'first', 'run', 'query', 'execute']);
 
   const call = findCallFromEntry(node, adapter);
   if (!call) return false;
@@ -1560,29 +1893,27 @@ function collectPatternTables(
 }
 
 /**
- * Extract the set of table names referenced in a SQL/ORM fragment, via the
- * configured `tablePatterns` plus the `.from(...)` / `db.<table>.<method>()`
- * ORM shapes. SQL keywords and aggregates captured in passing are filtered out.
- * @param text The SQL/ORM fragment to scan.
+ * Extract the set of table names referenced by the ORM chain shapes — the
+ * configured `orm` table patterns plus the `.from(...)` /
+ * `db.<table>.<method>()` / Kysely builder-verb shapes. This is the
+ * host-language shape detector only; SQL relations are derived structurally by
+ * sqlAst's `extractTableNames`, not here (Spec 70 R2 site #1).
+ * @param text The ORM/query-builder fragment to scan.
  * @param config The data-access analyzer config holding table patterns.
- * @returns The set of table names referenced in the fragment.
+ * @returns The set of table names referenced by ORM shapes.
  */
-export function extractTables(text: string, config: DataAccessAnalyzerConfig): string[] {
+export function extractOrmTables(text: string, config: DataAccessAnalyzerConfig): string[] {
   // JS `.from(...)` construction (Array.from / Buffer.from / Uint8Array.from)
   // and Drizzle `sql.join(...)` are not SQL table references; blank them out
   // first so their arguments aren't read as tables.
   const scrubbed = scrubNonTableCalls(text);
   const tables = new Set<string>();
 
-  // Check ORM and SQL patterns
   collectPatternTables(scrubbed, config.tablePatterns?.orm, tables);
-  collectPatternTables(scrubbed, config.tablePatterns?.sql, tables);
 
-  // Additional check for common ORM patterns that might be missed
   // Handle patterns like db.select().from(users) where 'users' is a variable
   const ormVariablePattern = /\.from\s*\(\s*([\p{L}_][\p{L}\p{N}_]*)\s*\)/gu;
-  const ormMatches = scrubbed.matchAll(ormVariablePattern);
-  for (const match of ormMatches) {
+  for (const match of scrubbed.matchAll(ormVariablePattern)) {
     if (match[1] && !match[1].includes('"') && !match[1].includes("'")) {
       tables.add(match[1]);
     }
@@ -1592,142 +1923,32 @@ export function extractTables(text: string, config: DataAccessAnalyzerConfig): s
   // selectFrom('users') / deleteFrom('users') / insertInto('users') /
   // updateTable('users'). The SQL-keyword path can't see camelCase verbs.
   const kyselyTablePattern = /\.(?:selectFrom|deleteFrom|insertInto|updateTable)\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu;
-  const kyselyMatches = scrubbed.matchAll(kyselyTablePattern);
-  for (const match of kyselyMatches) {
+  for (const match of scrubbed.matchAll(kyselyTablePattern)) {
     if (match[1]) tables.add(match[1]);
   }
 
   // Handle patterns like db.users.find() or db.orders.findOne()
   const dbTablePattern = /db\.([\p{L}_][\p{L}\p{N}_]*)\.\p{L}[\p{L}\p{N}_]*\s*\(/gu;
-  const dbMatches = scrubbed.matchAll(dbTablePattern);
-  for (const match of dbMatches) {
+  for (const match of scrubbed.matchAll(dbTablePattern)) {
     if (match[1]) {
       tables.add(match[1]);
     }
   }
 
-  // Drop SQL keywords/aggregates captured as tables — `FROM MIN(...)` in
-  // `EXTRACT(YEAR FROM MIN(...))` yields `MIN`, and `FOR UPDATE SKIP LOCKED`
-  // yields `SKIP`; neither is a table.
-  //
-  // Also drop CTE/table aliases: `WITH recent_orders AS (…) … FROM recent_orders`
-  // captures the CTE name `recent_orders` via the generic FROM pattern, but a
-  // CTE name is a named result set, not a stored table — counting it inflates
-  // the table count (`complex-query`) and the org-filter/unknown-table lookups.
-  // `extractAliasIdentifiers` is the same alias scan the schema analyzer uses
-  // (CTE incl. RECURSIVE/column-list/comma-siblings, explicit `AS t`, bare and
-  // subquery aliases, RENAME TO targets), so the two table counts cannot drift.
-  const aliasIds = extractAliasIdentifiers(text);
-  return Array.from(tables)
-    .filter(t => !isSqlKeyword(t))
-    .filter(t => !aliasIds.has(t.toLowerCase()));
-}
-
-/**
- * True when a query applies a *row-limiting* filter: a WHERE carrying a real
- * predicate, a HAVING, or a LIMIT.  The `unfiltered-query` rule flags a write
- * (DELETE/UPDATE) that lacks such a clause — a mass mutation that touches every
- * row.  A `JOIN ... ON` predicate scopes *how* rows match, not *which* rows come
- * back, so it is not a filter; and a tautological `WHERE 1=1` (the placeholder
- * prepended so callers can append `AND x = ?`) limits nothing, so it is not a
- * filter either.  Evaluated on comment-stripped text so prose in `//` or `/* *`/
- * comments cannot fabricate a filter.
- */
-function hasQueryFilter(text: string): boolean {
-  const upper = text.toUpperCase();
-  return (/\bWHERE\b/.test(upper) && !whereClauseIsTautology(text))
-    || /\bHAVING\b/.test(upper)
-    || /\bLIMIT\b/.test(upper);
-}
-
-/**
- * True when the WHERE clause is a bare tautology — `WHERE 1=1` (or `1 = 1`,
- * `TRUE`, or the same repeated under `AND`) — that limits nothing.  A WHERE
- * body carrying any real predicate (`WHERE id = ?`, or `WHERE 1=1 AND
- * active = ?`) is not a tautology.
- */
-function whereClauseIsTautology(text: string): boolean {
-  const upper = text.toUpperCase();
-  const whereMatch = /\bWHERE\b/.exec(upper);
-  if (!whereMatch) return false;
-  const afterWhere = upper.slice(whereMatch.index + 'WHERE'.length);
-  // Body up to the next row-limiting clause keyword.
-  const body = afterWhere.split(/\b(?:GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT|OFFSET|UNION)\b/)[0];
-  // Drop the SQL-string terminator + call-argument closer (`"), "); …) so the
-  // predicate is judged on the clause text alone.
-  const stripped = body.replace(/["'`)\s;]+$/g, '').replace(/^\s+/, '').replace(/\s+$/, '');
-  // A dangling AND/OR left by a dynamic builder still filters nothing.
-  const clean = stripped.replace(/^(?:AND|OR)\s+/i, '').replace(/\s+(?:AND|OR)$/i, '');
-  const alwaysTrue = '(?:1\\s*=\\s*1|TRUE)';
-  return new RegExp(`^${alwaysTrue}(?:\\s+AND\\s+${alwaysTrue})*$`, 'i').test(clean);
-}
-
-/**
- * True when a SQL statement carries a write verb (INSERT/DELETE/UPDATE/REPLACE).
- * Spec 52 R2: `REPLACE INTO` is an upsert write — matched as a two-word clause
- * (not a bare `REPLACE` word) so the `REPLACE()` string function is not misread
- * as a write.
- * @param text The SQL statement text.
- * @returns True when the statement carries a write verb.
- */
-export function hasWriteVerb(text: string): boolean {
-  const upper = text.toUpperCase();
-  return /\bINSERT\b/.test(upper) || /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
-    || /\bREPLACE\s+INTO\b/.test(upper)
-    // Kysely builder verbs are camelCase SQL — the word-boundary keyword test
-    // above cannot see `deleteFrom`/`updateTable`/`insertInto` as a write.
-    || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper) || /\bINSERTINTO\b/.test(upper);
-}
-
-/**
- * True when a statement mass-mutates existing rows without a row-limiting
- * clause — `UPDATE … SET`. `DELETE` is deliberately *not* a mass write here
- * (Spec 68 disposition (a)): a bare `DELETE FROM t` with no WHERE is whole-table
- * maintenance (the clear-and-rebuild idiom), not a missing-filter defect.
- * `INSERT` / `REPLACE INTO` always target specific rows and are not "unfiltered"
- * in the dangerous sense.
- */
-function hasMassWriteVerb(text: string): boolean {
-  const upper = text.toUpperCase();
-  // Statement-aware: `UPDATE <table> SET` names the DML verb. The bare
-  // `\bUPDATE\b` word test misreads a `CREATE TRIGGER`'s event clause
-  // (`… AFTER UPDATE ON t`) as a mass write — the word sits in DDL, not a
-  // statement. `UPDATE ON` therefore no longer matches, while `UPDATE x SET`
-  // still does.
-  return /\bUPDATE\s+\S+\s+SET\b/.test(upper)
-    // Kysely `updateTable` is a mass write with no SQL keyword word boundary —
-    // the camelCase form must be recognized explicitly.
-    || /\bUPDATETABLE\b/.test(upper);
-}
-
-/**
- * True when a statement is an upsert — one of the four write spellings Spec 52
- * R2 taught the write classifier, plus MySQL's `ON DUPLICATE KEY UPDATE`.  An
- * upsert is keyed by construction: its conflict target / unique key is what
- * scopes the row, and an `INSERT` has no `WHERE` by definition.  So an upsert is
- * never an "unfiltered" mass write, even though `INSERT … ON CONFLICT … DO UPDATE`
- * carries the word `UPDATE` (in `DO UPDATE`) with no WHERE clause.
- */
-function isUpsertForm(text: string): boolean {
-  const upper = text.toUpperCase();
-  return /\bINSERT\s+OR\s+(?:IGNORE|REPLACE)\b/.test(upper)
-    || /\bREPLACE\s+INTO\b/.test(upper)
-    || /\bON\s+CONFLICT\b/.test(upper)
-    || /\bON\s+DUPLICATE\s+KEY\b/.test(upper);
+  return Array.from(tables);
 }
 
 /**
  * True when a call should be surfaced by the `unfiltered-query` rule (Spec 55
- * R5, Spec 56 R1): a write statement (`DELETE` / `UPDATE`) with no row-limiting
- * clause (WHERE carrying a real predicate, HAVING, or LIMIT).  `DELETE FROM t` or
- * `UPDATE t SET …` with no filter mutates/deletes every row — the classic SQL
- * foot-gun.  Unfiltered *reads* (`SELECT` without WHERE) are often intentional
- * full-set loads and are therefore out of scope, and an upsert (any of the four
- * spellings) is keyed by construction, so it never fires.
+ * R5, Spec 56 R1): a mass-write statement (`UPDATE … SET`) with no row-limiting
+ * clause.  The write/upsert facts are AST-derived (Spec 70 R2 sites #2/#3): a
+ * Kysely `updateTable` builder verb is folded into `isWrite`/`isMassWrite` by
+ * the producer (host-language shape, not SQL).  `DELETE FROM t` is not a mass
+ * write (disposition (a)); an upsert is keyed by construction, so it never fires.
  */
 function isUnfilteredWrite(call: DatabaseCall): boolean {
-  return !isUpsertForm(call.queryText)
-    && hasMassWriteVerb(call.queryText)
+  return !call.isUpsert
+    && call.isMassWrite
     && !call.hasFilter;
 }
 
@@ -1737,14 +1958,12 @@ function isUnfilteredWrite(call: DatabaseCall): boolean {
  * table that carries declared tenancy.  A filterless full-table read of a
  * tenant table is the same tenant-leak surface the write rule guards — it
  * sweeps every tenant's rows.  Non-tenant tables (lookups, config) stay out of
- * scope, which is precisely what kept the Spec 55 narrowing's false positives
- * (non-tenant full-set loads) from returning.  Reuses `requiresOrgFilter` for
- * the tenancy determination so the write case and this read case cannot drift
- * to two different tenancy definitions.
+ * scope.  Reuses `requiresOrgFilter` for the tenancy determination so the write
+ * case and this read case cannot drift to two different tenancy definitions.
  */
 function isUnfilteredRead(call: DatabaseCall, config: DataAccessAnalyzerConfig): boolean {
   return !call.hasFilter
-    && !hasWriteVerb(call.queryText)
+    && !call.isWrite
     && requiresOrgFilter(call.tables, config);
 }
 
@@ -2138,20 +2357,21 @@ function collectLoopQueryCandidates(
   ast: AST,
   scan: DataAccessScanContext,
 ): LoopQueryCandidate[] {
-  const { adapter, sourceCode, provenanceContext } = scan;
+  const { adapter, sourceCode } = scan;
   const candidates: LoopQueryCandidate[] = [];
 
   // Spec 21: provenance-gated detection of database calls.
   const dbNodes = adapter.findNodes(ast, {
-    custom: (node) => isDbCallNode(node, adapter, sourceCode, provenanceContext),
+    custom: (node) => isDbCallNode(node, scan),
   });
 
   const reported = new Set<string>();
   const loopOrdinals = new Map<string, number>();
 
-  // §13.1: methods this file invokes inside a `db.transaction(fn)` callback have
-  // their writes already batched by the caller's transaction (see the helper).
-  const transactionWrappedMethods = collectTransactionWrappedMethods(ast, adapter, sourceCode);
+  // §13.1: functions/methods this file invokes inside a `db.transaction(fn)`
+  // callback have their writes already batched by the caller's transaction (see
+  // the helper) — provided their statements were prepared outside the loop.
+  const transactionWrappedFunctions = collectTransactionWrappedFunctions(ast, adapter, sourceCode);
 
   for (const node of dbNodes) {
     // A DB call and its template-literal SQL argument both satisfy isDbCallNode —
@@ -2178,24 +2398,68 @@ function collectLoopQueryCandidates(
     const loopInfo = findEnclosingLoop(node, adapter, sourceCode);
     if (!loopInfo) continue;
 
-    // §13.1 (transaction-batched discriminator): a loop already wrapped in a
-    // `db.transaction(fn)` callback is already batched — better-sqlite3 defers
-    // every write in the callback to a single commit, which is exactly the
-    // "batch the queries" remediation the finding would prescribe. Flagging it as
-    // an N+1 is a false positive: the code already follows the advice. (A
-    // per-iteration `db.transaction(() => …)` *inside* the loop would still fire —
-    // that does not wrap the loop, and each iteration commits separately.)
-    if (isInsideDbTransaction(loopInfo.loopNode, adapter, sourceCode)) continue;
+    // §13.3 (for-of-iterable discriminator): a DB call in the iterable/header of
+    // a `for…of` loop — `for (const c of loadCatalog())` where `loadCatalog`
+    // memoizes a single `indexHandle.query` — is evaluated once to produce the
+    // iterated array, then the body iterates it in memory. That is not
+    // per-iteration I/O, so it is not an N+1 — the same subject-vs-callback
+    // distinction `isIteratorCallback` draws for `db.all().map(…)`. (A DB call in
+    // the *body* still fires; only the header position is exempted.)
+    if (isForOfIterableDbCall(node, loopInfo.loopNode, adapter)) {
+      continue;
+    }
 
-    // §13.1 (transaction-wrapped-helper): the loop sits in a method that this
-    // file invokes inside a `db.transaction(fn)` callback — its writes are
-    // already batched by the caller's transaction, so it is not a batchable N+1.
+    // §13.1 (hoisted-reuse discriminator): a prepared statement executed inside a
+    // loop is not an N+1 when the statement is prepared *outside* the loop — the
+    // loop re-runs one compiled statement with bound parameters, which is exactly
+    // the "batch the queries" remediation the finding would prescribe, so flagging
+    // it is a false positive. Two shapes of "prepared outside the loop" are
+    // recognized, both keyed on the *prepare* (a relation between two located
+    // facts), never on a property of the call shape:
+    //   (1) transaction-batched — the loop is enclosed by a single
+    //       `db.transaction(fn)` callback (lexically, or via a helper invoked
+    //       inside it), so every write defers to one commit;
+    //   (2) hoisted re-run without a transaction — the loop re-runs a statement
+    //       object prepared outside it (`const stmt = db.prepare(…);
+    //       for (…) stmt.run(x)` or `stmt.bind(x).run()`). The in-loop call must
+    //       be a member call whose base identifier is bound to a `.prepare()`
+    //       result declared *outside* the loop (see `isHoistedStatementReRun`).
+    // Both require the loop body to NOT `.prepare(...)` per iteration — a loop that
+    // still calls `.prepare(...)` re-prepares every pass and remains a genuine N+1,
+    // so it keeps firing. Crucially, shape (2) does NOT key on "no SQL string
+    // argument": an ORM builder chain (`db.select().from(…).where(…)`,
+    // `prisma.user.findUnique({ where: … })`) and a connection call whose SQL is a
+    // hoisted variable both carry no SQL literal, yet the builder is a genuine
+    // per-iteration N+1 and the receiver is not prepare-bound, so neither is a
+    // statement re-run — they keep firing. (A per-iteration
+    // `db.transaction(() => …)` *inside* the loop also still fires — that does not
+    // wrap the loop, and each iteration commits separately.)
     const enclosingFnName = findEnclosingFunctionIdentity(
       loopInfo.loopNode,
       adapter,
       ast.filePath,
     ).name;
-    if (enclosingFnName && transactionWrappedMethods.has(enclosingFnName)) continue;
+    const transactionEnclosesLoop =
+      isInsideDbTransaction(loopInfo.loopNode, adapter, sourceCode) ||
+      (enclosingFnName !== null && transactionWrappedFunctions.has(enclosingFnName));
+    const preparesInLoop = loopBodyContainsPrepare(loopInfo.loopNode, adapter, sourceCode);
+    const hoistedReuse =
+      !preparesInLoop &&
+      (transactionEnclosesLoop ||
+        isHoistedStatementReRun(node, loopInfo.loopNode, adapter, sourceCode));
+    if (hoistedReuse) {
+      continue;
+    }
+
+    // §13.2 (per-batch binding discriminator): a DB call whose bound parameters
+    // are a *spread of a collection-derived expression* (a `.slice()`/`.map()`/
+    // chunk of the iterated set) executes one statement per batch, not per row —
+    // a chunked `id IN (…)` write is not an N+1 at any chunk size. Only a scalar
+    // or property read off a single loop element (`run(row.id)`) is per-row. See
+    // `bindsBatchArgument`.
+    if (bindsBatchArgument(node, loopInfo.loopNode, adapter, sourceCode)) {
+      continue;
+    }
 
     // R4.1 (Spec 46): LLM-pipeline discriminator. A loop whose body invokes an
     // LLM/agent (embedding, model completion, corpus extraction) is an intentional
@@ -2291,6 +2555,230 @@ function loopBodyContainsMessageLifecycleCall(
 }
 
 /**
+ * §13.1 (prepare-outside-loop guard): true when the loop's subtree issues a
+ * `.prepare(...)` call — i.e. the statement is (re)built on every iteration, not
+ * prepared once outside the loop. This is the second half of the
+ * transaction-batched discriminator: a loop wrapped in a transaction is only a
+ * non-N+1 when it reuses a statement prepared outside; a per-iteration
+ * `db.prepare(sql).run(…)` (or `const stmt = db.prepare(…); stmt.run(…)`) still
+ * re-prepares every pass and remains a genuine N+1 under a transaction. Walking
+ * the whole loop subtree (header + body) is safe: a `.prepare` is only ever in
+ * the body, never the header.
+ */
+function loopBodyContainsPrepare(
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  let found = false;
+  walkSubtree(loopNode, adapter, (node) => {
+    if (found || adapter.getNodeType(node) !== 'call_expression') return;
+    if (dbCallMethodName(node, adapter, sourceCode) === 'prepare') found = true;
+  });
+  return found;
+}
+
+/**
+ * §13.1 (hoisted-reuse discriminator, non-transaction shape): true when the
+ * in-loop DB call re-runs a statement object prepared *outside* the loop —
+ * `const stmt = db.prepare(…); for (…) stmt.run(x)` or `stmt.bind(x).run()`.
+ *
+ * The signal is the *prepare* — a relation between two located facts — not a
+ * property of the call shape. The in-loop eager call's member chain must be
+ * rooted at an identifier (`stmt`) that is declared, in an enclosing scope
+ * *outside* the loop, with a `.prepare()` initializer. An ORM builder chain
+ * (`db.select().from(…).where(…)`, `prisma.user.findUnique({ where: … })`),
+ * a direct connection call (`db.exec("…")`), a bare DB-provenanced helper
+ * (`resolveHero(db, slug)`), and a Map/Array method that provenance over-matched
+ * (`counts.get(x)`, `adjudication.find(x)`) are all rooted at an identifier that
+ * is NOT prepare-bound, so none of them reads as a statement re-run and each
+ * keeps firing.
+ */
+function isHoistedStatementReRun(
+  node: ASTNode,
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const base = memberChainBaseIdentifier(node, adapter, sourceCode);
+  if (base && identifierBoundToPrepareOutsideLoop(base, loopNode, adapter, sourceCode)) {
+    return true;
+  }
+  return isBarePrepareBoundHelperCall(node, loopNode, adapter, sourceCode);
+}
+
+/**
+ * §13.1 (hoisted-reuse discriminator, bare-wrapper shape): true when the in-loop
+ * DB call is a bare local-helper invocation (`deleteFileEntries(clears, path)`)
+ * whose argument is an identifier bound, outside the loop, to a prepare result —
+ * `clears = prepareStyleClearStatements(rawDb)`, then the loop body forwards
+ * `clears` into a helper that runs `clears.decl.run(path)` on every pass. The
+ * helper re-runs pre-prepared statements; the prepare is the signal, located via
+ * the *argument's* binding rather than the call's own member chain (a bare
+ * identifier callee has none). Member-shape re-runs are handled above; this is
+ * the bare-call complement.
+ */
+function isBarePrepareBoundHelperCall(
+  node: ASTNode,
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const call = resolveDbCallNode(node, adapter);
+  if (!call) return false;
+  const callee = getCallExpressionCallee(call, adapter);
+  if (!callee || adapter.getNodeType(callee) !== 'identifier') return false;
+  const argsNode = adapter.getChildren(call).find(
+    (c) => adapter.getNodeType(c) === 'arguments',
+  );
+  if (!argsNode) return false;
+  for (const arg of adapter.getChildren(argsNode)) {
+    if (adapter.getNodeType(arg) !== 'identifier') continue;
+    if (identifierBoundToPrepareOutsideLoop(adapter.getNodeText(arg, sourceCode), loopNode, adapter, sourceCode)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The base identifier a member-call chain is rooted at — `stmt` for `stmt.run(x)`
+ * and for `stmt.bind(x).run()` (the `.bind()` call's receiver), `db` for
+ * `db.select().from(…).where(…)`, `prisma` for `prisma.user.findUnique(…)`.
+ * Returns null when the chain is not a member call (a bare `helper(db, …)`) or
+ * has no identifier root (an indexed access `x[i]()`).
+ */
+function memberChainBaseIdentifier(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const eagerCall = findEagerExecutionCall(node, adapter, sourceCode);
+  if (!eagerCall) return null;
+  const memberExpr = findMemberCallee(eagerCall, adapter);
+  if (!memberExpr) return null;
+  return baseIdentifierOfMemberExpr(memberExpr, adapter, sourceCode);
+}
+
+/**
+ * Recurse down a member_expression's object side to the base identifier: the
+ * object of `a.b.c` is `a.b`, whose object is `a`; the object of `stmt.bind(x)`
+ * is the call, whose own member callee is `stmt.bind`, whose object is `stmt`.
+ */
+function baseIdentifierOfMemberExpr(
+  memberExpr: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const object = adapter.getChildren(memberExpr).find((c) => {
+    const t = adapter.getNodeType(c);
+    return t !== 'property_identifier' && t !== 'field_identifier' && t !== '.';
+  });
+  if (!object) return null;
+  const type = adapter.getNodeType(object);
+  if (type === 'identifier') return adapter.getNodeText(object, sourceCode);
+  if (type === 'member_expression') return baseIdentifierOfMemberExpr(object, adapter, sourceCode);
+  if (type === 'call_expression') {
+    const inner = findMemberCallee(object, adapter);
+    return inner ? baseIdentifierOfMemberExpr(inner, adapter, sourceCode) : null;
+  }
+  return null;
+}
+
+/**
+ * True when `name` is declared, in the enclosing function (or program), with a
+ * `.prepare()` initializer, at a position *outside* the loop. Walking the whole
+ * enclosing function is safe for this signal: the caller has already established
+ * `preparesInLoop` is false, so the only `.prepare()` sites are outside the loop,
+ * and requiring the declarator to sit before the loop excludes any same-named
+ * declaration in a sibling scope after it. (A same-named variable in a *nested*
+ * function would be a false match; that shadowing shape is not present in the
+ * measured corpora and is recorded here rather than silently dropped.)
+ */
+function identifierBoundToPrepareOutsideLoop(
+  name: string,
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const scope = findEnclosingFunctionNode(loopNode, adapter) ?? loopNode;
+  const loopStart = loopNode.range[0];
+  let found = false;
+  walkSubtree(scope, adapter, (n) => {
+    if (found) return;
+    if (n === loopNode) return;
+    if (adapter.getNodeType(n) !== 'variable_declarator') return;
+    if (n.range[0] >= loopStart) return;
+    const { name: declaredName, value } = splitDeclarator(n, adapter, sourceCode);
+    if (declaredName !== name) return;
+    if (value && subtreeContainsPrepare(value, adapter, sourceCode)) found = true;
+  });
+  if (found) return true;
+  // A parameter typed as a prepared-statement bundle (`stmts: StyleStatements`,
+  // `stmt: SqliteStatement`) is prepare-bound by construction — its members are
+  // the `.prepare()` results the caller hoisted before the loop. Re-running
+  // `stmts.decl.run(x)` is therefore the same hoisted-reuse signal as a local
+  // `const stmt = db.prepare(…)` re-run. A handle parameter (`SqliteDatabase`,
+  // `IndexHandle`, `any`) does not name a Statement type and keeps firing.
+  return scope !== loopNode && parameterBoundToStatementType(name, scope, adapter, sourceCode);
+}
+
+/**
+ * True when `name` is a parameter of `fnNode` whose type annotation names a
+ * prepared-statement type. The type is the signal (mirroring how a local
+ * declarator's `.prepare()` initializer is), never the parameter's name: a
+ * `*Statement`/`*Statements` annotation means the value is a compiled statement
+ * (or a bundle of them), so a loop that re-runs it re-runs pre-prepared SQL.
+ */
+function parameterBoundToStatementType(
+  name: string,
+  fnNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const params = adapter.getChildren(fnNode).find((c) => adapter.getNodeType(c) === 'formal_parameters');
+  if (!params) return false;
+  for (const p of adapter.getChildren(params)) {
+    const t = adapter.getNodeType(p);
+    if (t !== 'required_parameter' && t !== 'optional_parameter') continue;
+    const text = adapter.getNodeText(p, sourceCode);
+    if (!text) continue;
+    // `stmts: StyleStatements` → name `stmts`, type `StyleStatements`. Ignore a
+    // default-value tail (`stmts: StyleStatements = …`); a statement bundle has
+    // no default.
+    const m = text.match(/^([A-Za-z_$][\w$]*)\s*:\s*([^=]+)/);
+    if (!m) continue;
+    // Match `Statement`, `StyleStatements` (plural), `SqliteStatement`, etc.
+    // No `\b` prefix: `StyleStatements` embeds "Statement" after a word char.
+    if (m[1] === name && /Statement\w*/.test(m[2])) return true;
+  }
+  return false;
+}
+
+/** True when a subtree contains a `.prepare()` call (an initializer that is or
+ *  chains into `db.prepare(…)`, e.g. `db.prepare(sql).bind(…)`) or a `prepare*`
+ *  factory call (`prepareStyleClearStatements(rawDb)`) — a function whose whole
+ *  job is to return pre-prepared statement objects, so its name carries the same
+ *  "statement prepared here" signal the `.prepare()` member call does. */
+function subtreeContainsPrepare(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  let found = false;
+  walkSubtree(node, adapter, (n) => {
+    if (found || adapter.getNodeType(n) !== 'call_expression') return;
+    if (dbCallMethodName(n, adapter, sourceCode) === 'prepare') { found = true; return; }
+    const callee = getCallExpressionCallee(n, adapter);
+    if (callee && adapter.getNodeType(callee) === 'identifier') {
+      const name = adapter.getNodeText(callee, sourceCode);
+      if (name && /^prepare/i.test(name)) found = true;
+    }
+  });
+  return found;
+}
+
+/**
  * §13.1: True when `node` sits inside a `db.transaction(fn)` callback. Walks the
  * parent chain looking for a `call_expression` whose callee is a
  * `member_expression` with a `transaction` property. The loop is the input (not
@@ -2322,18 +2810,22 @@ function isInsideDbTransaction(
 }
 
 /**
- * §13.1 (transaction-wrapped-helper discriminator): method names that this file
- * invokes *inside* a `db.transaction(fn)` callback — `this.db.transaction(() =>
- * this.syncFileIndexRow(...))`. A private helper written to run inside the
- * caller's transaction has its per-iteration writes already batched into the
- * caller's single commit, so its internal loops are not a batchable N+1. This
- * mirrors the textual {@link isInsideDbTransaction} check but bridges the call
- * boundary: the loop lives in the helper's body while the transaction wraps the
- * *call*, which the purely lexical check cannot see. A per-iteration
- * `db.transaction(() => …)` *inside* a loop is unaffected — the helper is only
- * recognized when it is the thing being invoked within a transaction callback.
+ * §13.1 (transaction-wrapped-helper discriminator): names of the functions this
+ * file invokes *inside* a `db.transaction(fn)` callback — either as a
+ * `this.method(...)` call (`this.db.transaction(() => this.syncFileIndexRow(...))`)
+ * or as a free function reference/call (`rawDb.transaction(insertAll)`, or
+ * `rawDb.transaction(() => { … insertOne(…) })`). A private helper written to run
+ * inside the caller's transaction has its per-iteration writes already batched
+ * into the caller's single commit, so its internal loops are not a batchable N+1
+ * *provided their statements are prepared outside the loop* (see the
+ * no-`.prepare()`-in-loop guard at the call site). This mirrors the textual
+ * {@link isInsideDbTransaction} check but bridges the call boundary: the loop
+ * lives in the helper's body while the transaction wraps the *call*, which the
+ * purely lexical check cannot see. A per-iteration `db.transaction(() => …)`
+ * *inside* a loop is unaffected — the helper is only recognized when it is the
+ * thing being invoked within a transaction callback.
  */
-function collectTransactionWrappedMethods(
+function collectTransactionWrappedFunctions(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
@@ -2346,11 +2838,34 @@ function collectTransactionWrappedMethods(
       (c) => adapter.getNodeType(c) === 'member_expression',
     );
     if (!callee || memberPropertyName(callee, adapter, sourceCode) !== 'transaction') continue;
+
+    // (1) A bare function reference handed straight to `transaction` — the
+    // reducer shape `rawDb.transaction(insertAll)()`. The callback argument is
+    // the helper's name, not a call inside it.
+    const args = adapter.getChildren(callNode).find(
+      (c) => adapter.getNodeType(c) === 'arguments',
+    );
+    if (args) {
+      for (const arg of adapter.getChildren(args)) {
+        if (adapter.getNodeType(arg) !== 'identifier') continue;
+        const name = adapter.getNodeText(arg, sourceCode);
+        if (name) wrapped.add(name);
+      }
+    }
+
+    // (2) Calls inside the callback: `this.method(...)` and free-function calls
+    // (`insertOne(...)`).
     walkSubtree(callNode, adapter, (n) => {
       if (n === callNode) return;
       if (adapter.getNodeType(n) !== 'call_expression') return;
       const innerCallee = getCallExpressionCallee(n, adapter);
-      if (!innerCallee || adapter.getNodeType(innerCallee) !== 'member_expression') return;
+      if (!innerCallee) return;
+      if (adapter.getNodeType(innerCallee) === 'identifier') {
+        const name = adapter.getNodeText(innerCallee, sourceCode);
+        if (name) wrapped.add(name);
+        return;
+      }
+      if (adapter.getNodeType(innerCallee) !== 'member_expression') return;
       const obj = adapter.getChildren(innerCallee).find(
         (c) => adapter.getNodeType(c) !== 'property_identifier',
       );
@@ -2373,6 +2888,276 @@ function walkSubtree(
   for (const child of adapter.getChildren(node)) {
     walkSubtree(child, adapter, visitor);
   }
+}
+
+/**
+ * Array methods that transform one collection into another collection (a batch):
+ * the elements of a `.slice()`/`.splice()`/`.map()`/`.filter()`/`.concat()`/
+ * `.flatMap()` result are a *sub*-collection, not a single row.
+ */
+const COLLECTION_TRANSFORM_METHODS = new Set(['slice', 'splice', 'map', 'filter', 'concat', 'flatMap']);
+
+/**
+ * Free-function callee names that chunk a collection into batches — `chunk(ids,
+ * n)`, `chunkArray(ids, n)`, `partition(rows, p)`. Recognized by name (not by a
+ * slice call) because a chunking helper is a user-written function whose internal
+ * shape the analyzer cannot see; the name is the only stable signal.
+ */
+const CHUNK_HELPER_RE = /^(chunk|chunks|chunkArray|chunkBy|partition|paginate|paged)$/i;
+
+/** Split a `variable_declarator` into its name text and initializer (value) node. */
+function splitDeclarator(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): { name: string | null; value: ASTNode | null } {
+  let name: string | null = null;
+  let value: ASTNode | null = null;
+  let pastEquals = false;
+  for (const child of adapter.getChildren(node)) {
+    const t = adapter.getNodeType(child);
+    if (t === '=' || t === 'equals') { pastEquals = true; continue; }
+    if (t === ':' || t === 'type_annotation') continue;
+    if (!pastEquals && !name && (t === 'identifier' || t === 'object_pattern' || t === 'array_pattern')) {
+      name = adapter.getNodeText(child, sourceCode);
+      continue;
+    }
+    if ((pastEquals || name) && !value) value = child;
+  }
+  return { name, value };
+}
+
+/**
+ * §13.2: resolve a bare identifier to the initializer of the `const`/`let` that
+ * declares it inside the loop subtree (`const chunk = ids.slice(…)` → the slice
+ * call). Scoped to the loop so a same-named variable elsewhere in the function is
+ * not mistaken for the loop's chunk. Returns null when the identifier is the
+ * loop's own element (declared in a `for…of` header, not a `variable_declarator`).
+ */
+function resolveLoopLocalBinding(
+  identifierNode: ASTNode,
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): ASTNode | null {
+  const target = adapter.getNodeText(identifierNode, sourceCode);
+  if (!target) return null;
+  let result: ASTNode | null = null;
+  walkSubtree(loopNode, adapter, (n) => {
+    if (result) return;
+    if (adapter.getNodeType(n) !== 'variable_declarator') return;
+    const { name, value } = splitDeclarator(n, adapter, sourceCode);
+    if (name === target) result = value;
+  });
+  return result;
+}
+
+/**
+ * §13.2: true when `expr` denotes a collection-derived array — a batch of rows —
+ * rather than a single row's scalar. Three shapes qualify:
+ *   (a) a call to an array-transform method (`ids.slice(…)`, `rows.map(…)`);
+ *   (b) a call to a chunking helper (`chunkArray(ids, n)`);
+ *   (c) a local `const chunk = <one of the above>` bound inside the loop.
+ */
+function isCollectionDerivedExpression(
+  expr: ASTNode,
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const type = adapter.getNodeType(expr);
+  if (type === 'call_expression') {
+    const memberExpr = findMemberCallee(expr, adapter);
+    if (memberExpr) {
+      const method = memberPropertyName(memberExpr, adapter, sourceCode);
+      if (method && COLLECTION_TRANSFORM_METHODS.has(method)) return true;
+    }
+    const callee = getCallExpressionCallee(expr, adapter);
+    if (callee && adapter.getNodeType(callee) === 'identifier') {
+      const name = adapter.getNodeText(callee, sourceCode);
+      if (name && CHUNK_HELPER_RE.test(name)) return true;
+    }
+    return false;
+  }
+  if (type === 'identifier') {
+    const value = resolveLoopLocalBinding(expr, loopNode, adapter, sourceCode);
+    return value !== null && isCollectionDerivedExpression(value, loopNode, adapter, sourceCode);
+  }
+  return false;
+}
+
+/**
+ * §13.3: true when a DB call sits in the iterable/header of a `for…of` loop
+ * rather than its body. `for (const c of loadCatalog())` runs `loadCatalog` once
+ * (it memoizes the query) and iterates the returned array in memory — the query
+ * is not per-iteration. Only the header position qualifies; a DB call in the
+ * `statement_block` body still executes once per pass and keeps firing.
+ */
+function isForOfIterableDbCall(
+  node: ASTNode,
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+): boolean {
+  if (adapter.getNodeType(loopNode) !== 'for_in_statement') return false;
+  let body: ASTNode | null = null;
+  for (const child of adapter.getChildren(loopNode)) {
+    if (adapter.getNodeType(child) === 'statement_block') { body = child; break; }
+  }
+  if (!body) return false;
+  return !isDescendantOf(node, body, adapter);
+}
+
+/** True when `node` is `ancestor` or a descendant of it (parent-chain walk). */
+function isDescendantOf(
+  node: ASTNode,
+  ancestor: ASTNode,
+  adapter: LanguageAdapter,
+): boolean {
+  let cur: ASTNode | null = node;
+  while (cur) {
+    if (cur === ancestor) return true;
+    cur = adapter.getParent(cur);
+  }
+  return false;
+}
+
+/**
+ * §13.2: the element and iterated-collection shape of a `for…of` loop. Needed to
+ * distinguish `for (const chunk of chunkArray(ids)) { run(…chunk) }` — spreading
+ * the loop element is a *batch* here because the collection itself is chunked —
+ * from `for (const row of rows) { run(…row) }` — spreading the element is a
+ * per-row write because the collection is a plain array.
+ */
+function forOfIteration(
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): { elementNames: Set<string>; iteratesChunkedCollection: boolean } {
+  const elementNames = new Set<string>();
+  let iteratesChunkedCollection = false;
+  if (adapter.getNodeType(loopNode) !== 'for_in_statement') {
+    return { elementNames, iteratesChunkedCollection };
+  }
+  let element: ASTNode | null = null;
+  let collection: ASTNode | null = null;
+  for (const child of adapter.getChildren(loopNode)) {
+    const t = adapter.getNodeType(child);
+    if (t === 'statement_block') break; // the body — nothing after it matters
+    if (!element && (t === 'identifier' || t === 'object_pattern' || t === 'array_pattern')) {
+      element = child;
+    } else if (element && !collection) {
+      collection = child;
+    }
+  }
+  if (element) {
+    const name = adapter.getNodeText(element, sourceCode);
+    if (name) elementNames.add(name);
+  }
+  if (collection) {
+    iteratesChunkedCollection = isCollectionDerivedExpression(collection, loopNode, adapter, sourceCode);
+  }
+  return { elementNames, iteratesChunkedCollection };
+}
+
+/**
+ * §13.2 (per-batch binding discriminator): true when the DB call executes I/O
+ * that binds a *batch* — a spread of a collection-derived expression — rather
+ * than per-row scalars, so it is not an N+1. The eager call (`stmt.run(…)`, or
+ * the `.run(…)` chained off `db.prepare(…)`) is where parameters are bound; its
+ * arguments decide the row-vs-batch question.
+ */
+function bindsBatchArgument(
+  node: ASTNode,
+  loopNode: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const eagerCall = findEagerExecutionCall(node, adapter, sourceCode);
+  if (!eagerCall) return false;
+  const argsNode = adapter.getChildren(eagerCall).find(
+    (c) => adapter.getNodeType(c) === 'arguments',
+  );
+  if (!argsNode) return false;
+  const { elementNames, iteratesChunkedCollection } = forOfIteration(loopNode, adapter, sourceCode);
+
+  for (const arg of adapter.getChildren(argsNode)) {
+    if (adapter.getNodeType(arg) === 'spread_element') {
+      const operand = adapter.getChildren(arg).find((c) => adapter.getNodeType(c) !== '...');
+      if (!operand) continue;
+      // Spreading the loop's own element is per-row (`…row`) unless the element
+      // is itself a chunk of a chunked collection (`for (const chunk of chunkArray(ids))`).
+      if (
+        adapter.getNodeType(operand) === 'identifier' &&
+        elementNames.has(adapter.getNodeText(operand, sourceCode))
+      ) {
+        if (iteratesChunkedCollection) return true;
+        continue;
+      }
+      if (isCollectionDerivedExpression(operand, loopNode, adapter, sourceCode)) return true;
+      continue;
+    }
+    // A bare collection-derived argument (no spread) is also a batch:
+    // `run(rows.map(…))`, or a chunk bound inside the loop (`const chunk =
+    // rows.slice(…)` then `run(chunk)` — the identifier resolves to the slice).
+    // A bare loop-element identifier (`for (const row of rows) run(row)`) is NOT
+    // collection-derived: `resolveLoopLocalBinding` only sees `variable_declarator`
+    // bindings, and a `for…of` element is declared in the header, so `row` stays
+    // unresolved and the call keeps firing as per-row.
+    if (
+      (adapter.getNodeType(arg) === 'call_expression' ||
+        adapter.getNodeType(arg) === 'identifier') &&
+      isCollectionDerivedExpression(arg, loopNode, adapter, sourceCode)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * §13.2: the eager I/O call that actually binds parameters for a DB call — the
+ * call itself when it is eager (`stmt.run(…)`, `db.query(…)`), or the eager call
+ * chained off a statement-construction call (`db.prepare(sql).run(…)`). Returns
+ * null when the call never executes I/O (already filtered upstream).
+ */
+function findEagerExecutionCall(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): ASTNode | null {
+  const call = resolveDbCallNode(node, adapter);
+  if (!call) return null;
+  const direct = dbCallMethodName(call, adapter, sourceCode);
+  if (direct && EAGER_DB_METHODS.has(direct)) {
+    const memberExpr = findMemberCallee(call, adapter);
+    if (!(memberExpr && isPromiseAllMember(memberExpr, adapter, sourceCode))) return call;
+  }
+  let cur = adapter.getParent(call);
+  while (cur) {
+    const type = adapter.getNodeType(cur);
+    if (type === 'call_expression') {
+      const memberExpr = findMemberCallee(cur, adapter);
+      const name = memberExpr ? memberPropertyName(memberExpr, adapter, sourceCode) : null;
+      if (name && EAGER_DB_METHODS.has(name) && !isPromiseAllMember(memberExpr!, adapter, sourceCode)) {
+        return cur;
+      }
+    }
+    if (
+      type === 'expression_statement' ||
+      type === 'variable_declarator' ||
+      type === 'return_statement' ||
+      type === 'lexical_declaration' ||
+      type === 'for_statement' ||
+      type === 'for_in_statement' ||
+      type === 'while_statement' ||
+      type === 'statement_block' ||
+      type === 'block'
+    ) {
+      break;
+    }
+    cur = adapter.getParent(cur);
+  }
+  return null;
 }
 
 /**
@@ -2418,48 +3203,28 @@ function isLlmCallNode(
   return false;
 }
 
-/** True when `node` is a function call whose callee is DB-provenanced. */
-function isDBProvenancedFunctionCall(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  provenanceContext: ProvenanceContext,
-): boolean {
-  return isFunctionCall(node, adapter) &&
-    isDBProvenanced(node, { adapter, sourceCode, context: provenanceContext, methods: DB_CALL_METHODS });
-}
-
 /**
  * R4.1: Determine if a node is a database call expression.
  * Spec 21: When provenance context is available, uses provenance-based detection
  * (conjunctive guard — never name alone). In names mode or without context,
  * falls back to the legacy dbPatterns text match.
+ *
+ * Spec 70 R3/R4: handle-ness is decided once, by `identifyHandle` (via
+ * `handleVerdictForCall`); only a proven `handle` — a parsed SQL argument (R3)
+ * or a package in the manifest (R4) — is a DB node for the loop walk. `unproven`
+ * is `cannot-fire` (visible, never a finding), so a `map.delete()` / `set.join()`
+ * on an unresolved receiver does not read as a DB call inside a loop.
  */
 function isDbCallNode(
   node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  provenanceContext?: ProvenanceContext,
+  scan: DataAccessScanContext,
 ): boolean {
+  const { adapter, sourceCode, provenanceContext } = scan;
+
   // Spec 21: Provenance-first detection when context is available
   if (provenanceContext && provenanceContext.mode !== 'names') {
-    // In provenance or hybrid mode, use provenance check
-    if (isDBProvenancedFunctionCall(node, adapter, sourceCode, provenanceContext)) {
-      return true;
-    }
-    // Spec 17 R2: Template literal is a DB node only when it sits
-    // inside a DB-provenanced call's arguments — no content scan.
-    if (isTemplateLiteral(node, adapter)) {
-      const parent = adapter.getParent(node);
-      if (parent && adapter.getNodeType(parent) === 'arguments') {
-        const callExpr = adapter.getParent(parent);
-        if (callExpr && adapter.getNodeType(callExpr) === 'call_expression') {
-          return isDBProvenancedFunctionCall(callExpr, adapter, sourceCode, provenanceContext);
-        }
-      }
-      return false;
-    }
-    return false;
+    const verdict = handleVerdictForCall(node, scan);
+    return verdict !== null && verdict.kind === 'handle';
   }
 
   // Legacy fallback: name-based matching for names mode / no context.
@@ -2629,23 +3394,32 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
     // Spec 21 R1: provenance-primary detection (names owned by THIS analyzer).
     const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
     const p0 = performance.now();
+    const seedProvenance = (config as any)?._receiverProvenance as
+      | Map<string, ProvenanceEvidence>
+      | undefined;
     const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
       mode: detectionMode,
-      dbReceiverNames: finalConfig.dbReceiverNames,
       dbBindingNames: finalConfig.dbBindingNames,
-      dbCallMethods: finalConfig.dbCallMethods,
       dbWrapperNames: finalConfig.dbWrapperNames,
+      seedProvenance,
+      // Spec 70 criterion 8 — thread the corpus's dialect so R3 proves a receiver
+      // whose (now-deleted) type annotation was its only signal, and so wrapper
+      // detection (detectDbWrappers) sees the proven receiver in helper bodies.
+      // This is the analyzeWithFacts path (the pipeline's real scan); the parallel
+      // buildDataAccessScan path threads the same dialect at its own call site.
+      sqlDialect: finalConfig.dialect ?? null,
     });
-    const timingAcc: { totalMs: number } | undefined = (config as any)._provenanceTiming;
+    const timingAcc: { totalMs: number } | undefined = (config as any)?._provenanceTiming;
     if (timingAcc) timingAcc.totalMs += performance.now() - p0;
 
     // Spec 34: bundle per-file context to stay under the 4-parameter gate.
     const scan: DataAccessScanContext = {
       adapter,
       sourceCode,
-      dbImports: mapDatabaseImports(adapter.extractImports(ast), finalConfig),
       config: finalConfig,
       provenanceContext,
+      handleEnv: buildHandleEnv(ast, adapter, sourceCode, provenanceContext),
+      goEnv: buildGoEnv(ast, adapter, sourceCode, provenanceContext),
     };
 
     // Spec 55 R3 — test/spec files are excluded from the query-shape rules
@@ -2679,6 +3453,48 @@ export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
 }
 
 /** Build the shared data-access scan context (config + provenance + imports). */
+/**
+ * Build the TypeScript binding environment `identifyHandle` reads for declaration
+ * resolution, keyed to the file's own imports/declarations plus the within-file
+ * provenance set. Absent (undefined) for Go, which resolves cross-file and has no
+ * `RootResolutionEnv`.
+ */
+function buildHandleEnv(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceContext: ProvenanceContext,
+): RootResolutionEnv | undefined {
+  if (adapter.name === 'go') return undefined;
+  return {
+    provenance: provenanceContext.dbProvenanced,
+    bindings: buildBindingEnv(ast, adapter, sourceCode),
+    adapter,
+    sourceCode,
+  };
+}
+
+/** Build the Go binding environment `identifyHandle` reads for Go declaration
+ *  resolution. The provenance seed (cross-file `db *sql.DB` resolution) is what
+ *  proves `handle`; bindings + imports let `classifyGoRootIdentifier` dispose a
+ *  non-seeded receiver (`unproven` for an unrecognized package, `not-handle` for
+ *  a non-DB binding). Absent (undefined) for non-Go formats. */
+function buildGoEnv(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceContext: ProvenanceContext,
+): GoResolutionEnv | undefined {
+  if (adapter.name !== 'go') return undefined;
+  return {
+    provenance: provenanceContext.dbProvenanced,
+    bindings: buildGoBindingEnv(ast, adapter, sourceCode),
+    imports: buildGoImportMap(ast, adapter),
+    adapter,
+    sourceCode,
+  };
+}
+
 function buildDataAccessScan(
   ast: AST,
   adapter: LanguageAdapter,
@@ -2687,19 +3503,26 @@ function buildDataAccessScan(
 ): DataAccessScanContext {
   const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
   const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
+  const seedProvenance = (config as any)?._receiverProvenance as
+    | Map<string, ProvenanceEvidence>
+    | undefined;
   const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
     mode: detectionMode,
-    dbReceiverNames: finalConfig.dbReceiverNames,
     dbBindingNames: finalConfig.dbBindingNames,
-    dbCallMethods: finalConfig.dbCallMethods,
     dbWrapperNames: finalConfig.dbWrapperNames,
+    seedProvenance,
+    // Spec 70 criterion 8 — thread the corpus's dialect so R3 proves a receiver
+    // whose (now-deleted) type annotation was its only signal, and so wrapper
+    // detection (detectDbWrappers) sees the proven receiver in helper bodies.
+    sqlDialect: finalConfig.dialect ?? null,
   });
   return {
     adapter,
     sourceCode,
-    dbImports: mapDatabaseImports(adapter.extractImports(ast), finalConfig),
     config: finalConfig,
     provenanceContext,
+    handleEnv: buildHandleEnv(ast, adapter, sourceCode, provenanceContext),
+    goEnv: buildGoEnv(ast, adapter, sourceCode, provenanceContext),
   };
 }
 
@@ -2746,4 +3569,409 @@ export function extractLoopQueries(
   config?: DataAccessAnalyzerConfig,
 ): LoopQueryCandidate[] {
   return collectLoopQueryCandidates(ast, buildDataAccessScan(ast, adapter, sourceCode, config));
+}
+
+// ── Spec 70 Item 4 (step 3) — raw candidate extractors ───────────────────────
+//
+// The two remaining receiver consumers (`data-access-calls`, `loop-queries`) are
+// converted to corpus producers: while the AST lives, these extractors project the
+// *provenance-free* half of `buildDatabaseCall` / `collectLoopQueryCandidates` into
+// serializable candidates, and the corpus producers re-fold the provenance-dependent
+// half (the `identifyHandle` verdict → admission + injection-risk gate, the site
+// dialect → the SQL parse, and the loop dedup) over the re-derived `dbProvenanced`.
+// They run on an EMPTY-provenance scan so `checkQuerySecurity`'s wrapper arm sees
+// only `config.dbWrapperNames` (the learned wrappers are corrected corpus-side).
+
+/** Build a scan with an empty provenance context — the raw producer's discovery and
+ *  static-security arms must not read the cross-file seed (which only the corpus
+ *  producer sees), so every provenance-dependent signal is captured as an identity
+ *  and re-folded later. `handleEnv`/`goEnv` still build their provenance-free
+ *  bindings/imports, which the structural discovery predicates read. */
+function buildCandidateScan(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  config?: DataAccessAnalyzerConfig,
+): DataAccessScanContext {
+  const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
+  const provenanceContext: ProvenanceContext = {
+    dbProvenanced: new Map(),
+    validatorProvenanced: new Map(),
+    mode: finalConfig.detection?.mode ?? 'hybrid',
+    dbActivity: new Set(),
+  };
+  return {
+    adapter,
+    sourceCode,
+    config: finalConfig,
+    provenanceContext,
+    handleEnv: buildHandleEnv(ast, adapter, sourceCode, provenanceContext),
+    goEnv: buildGoEnv(ast, adapter, sourceCode, provenanceContext),
+  };
+}
+
+// ── Structural discovery (empty-provenance supersets) ────────────────────────
+
+/** True when `node` is a bare-identifier call whose callee name has any binding —
+ *  the raw-side superset of `handleVerdictForCall`'s identifier arm. A provenanced
+ *  wrapper, a type-annotated handle, or a propagated local are all *bound*, so a
+ *  name with no binding is provably not a handle candidate and is dropped here. */
+function isBoundIdentifierCall(node: ASTNode, scan: DataAccessScanContext): boolean {
+  const { adapter, sourceCode, handleEnv } = scan;
+  if (!handleEnv) return false;
+  if (adapter.getNodeType(node) !== 'call_expression') return false;
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee || callee.type !== 'identifier') return false;
+  const name = adapter.getNodeText(callee, sourceCode);
+  return !!name && handleEnv.bindings.has(name);
+}
+
+/** True when `node` is a member/selector call with a DB/ORM method and a resolvable
+ *  receiver root — the structural superset of `handleVerdictForCall`'s member arm
+ *  (and Go's selector arm, which is the same shape minus the ORM method set). */
+function isMemberShapeCall(node: ASTNode, scan: DataAccessScanContext): boolean {
+  const { adapter, sourceCode } = scan;
+  if (adapter.getNodeType(node) !== 'call_expression') return false;
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee || (callee.type !== 'member_expression' && callee.type !== 'selector_expression')) return false;
+  const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+  if (!method) return false;
+  if (!DB_CALL_METHODS.has(method.toLowerCase()) && !isOrmMethod(method)) return false;
+  return resolveReceiverRoot(callee, adapter, sourceCode) !== null;
+}
+
+/** True when `node` is a template literal whose enclosing call is a bound-identifier
+ *  or member-shape call — the raw-side superset of `handleVerdictForCall`'s template
+ *  branch (`callNode = enclosingCallOf(template)`). */
+function isTemplateOfDbCall(node: ASTNode, scan: DataAccessScanContext): boolean {
+  const { adapter } = scan;
+  if (!isTemplateLiteral(node, adapter)) return false;
+  const callNode = enclosingCallOf(node, adapter);
+  if (!callNode) return false;
+  return isBoundIdentifierCall(callNode, scan) || isMemberShapeCall(callNode, scan);
+}
+
+/** The broadened data-access discovery — a strict superset of `isDbCallCandidate`
+ *  over the same pre-order. The three shape arms (query-builder, tagged template,
+ *  variable assignment) are provenance-free; the identifier/member/template arms
+ *  cover every `handleVerdictForCall` shape with the empty seed. */
+function isBroadenedDataAccessCandidate(
+  node: ASTNode,
+  scan: DataAccessScanContext,
+  tagNames: readonly string[],
+): boolean {
+  const { adapter, sourceCode } = scan;
+  if (isQueryBuilderShape(node, adapter, sourceCode)) return true;
+  if (isTaggedTemplateSqlCall(node, adapter, sourceCode, tagNames)) return true;
+  if (isVariableAssignment(node, adapter) && extractStaticSql(node, adapter, sourceCode) !== null) return true;
+  if (isBoundIdentifierCall(node, scan)) return true;
+  if (isMemberShapeCall(node, scan)) return true;
+  if (isTemplateOfDbCall(node, scan)) return true;
+  return false;
+}
+
+/** The broadened loop-query discovery — a strict superset of `isDbCallNode` (which
+ *  is `handleVerdictForCall(node).kind === 'handle'`). The template-literal branch is
+ *  skipped later (as in `collectLoopQueryCandidates`), so only the two structural
+ *  call arms remain. */
+function isBroadenedLoopCandidate(node: ASTNode, scan: DataAccessScanContext): boolean {
+  return isBoundIdentifierCall(node, scan) || isMemberShapeCall(node, scan);
+}
+
+// ── Identity extraction (the provenance-dependent halves travel as identity) ──
+
+/** The handle-verdict identity of `handleVerdictForCall`'s `CallSite` — the
+ *  enclosing-call callee for a template, the node's own callee otherwise — captured
+ *  raw-side so the corpus producer re-folds `identifyHandle` over the re-derived
+ *  `dbProvenanced`. `sqlArg` is `extractStaticSql(callNode)` (the verdict's
+ *  sql-argument source); `siteReceiver` is the raw nullable `getMemberExpressionReceiver`
+ *  of the callee (the `resolveSiteDialect` member arm's input, distinct from
+ *  `receiver` which is `receiver ?? root`). */
+interface HandleCallSiteIdentity {
+  calleeType: 'identifier' | 'member' | null;
+  name: string | null;
+  root: string | null;
+  receiver: string | null;
+  method: string | null;
+  thisField: boolean;
+  sqlArg: string | null;
+  siteReceiver: string | null;
+}
+
+const NULL_HANDLE_IDENTITY: HandleCallSiteIdentity = {
+  calleeType: null, name: null, root: null, receiver: null, method: null,
+  thisField: false, sqlArg: null, siteReceiver: null,
+};
+
+/** Project `handleVerdictForCall`'s structural gates (without `identifyHandle`) into
+ *  the identity the corpus producer re-folds. Mirrors the TS identifier/member arms
+ *  and the Go selector arm exactly — same method/root gates, same template → enclosing
+ *  call resolution, same `extractStaticSql(callNode)` argument. */
+function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): HandleCallSiteIdentity {
+  const { adapter, sourceCode } = scan;
+
+  if (adapter.name === 'go') {
+    // Go selector arm (goHandleVerdictForCall) — node is always a call_expression.
+    if (!isFunctionCall(node, adapter)) return NULL_HANDLE_IDENTITY;
+    const callee = getCallExpressionCallee(node, adapter);
+    if (!callee || callee.type !== 'selector_expression') return NULL_HANDLE_IDENTITY;
+    const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+    if (!method) return NULL_HANDLE_IDENTITY;
+    if (!DB_CALL_METHODS.has(method.toLowerCase())) return NULL_HANDLE_IDENTITY;
+    const root = resolveReceiverRoot(callee, adapter, sourceCode);
+    if (root === null) return NULL_HANDLE_IDENTITY;
+    const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
+    return {
+      calleeType: 'member', name: null, root, receiver, method, thisField: false,
+      sqlArg: extractStaticSql(node, adapter, sourceCode),
+      siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
+    };
+  }
+
+  const callNode = isTemplateLiteral(node, adapter) ? enclosingCallOf(node, adapter) : node;
+  if (!callNode || !isFunctionCall(callNode, adapter)) return NULL_HANDLE_IDENTITY;
+  if (callNode.type === 'new_expression') return NULL_HANDLE_IDENTITY;
+  const callee = getCallExpressionCallee(callNode, adapter);
+  if (!callee) return NULL_HANDLE_IDENTITY;
+
+  if (callee.type === 'identifier') {
+    const name = adapter.getNodeText(callee, sourceCode);
+    if (!name) return NULL_HANDLE_IDENTITY;
+    return {
+      calleeType: 'identifier', name, root: name, receiver: name, method: name,
+      thisField: false,
+      sqlArg: extractStaticSql(callNode, adapter, sourceCode),
+      siteReceiver: null,
+    };
+  }
+
+  if (callee.type !== 'member_expression' && callee.type !== 'selector_expression') {
+    return NULL_HANDLE_IDENTITY;
+  }
+  const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+  if (!method) return NULL_HANDLE_IDENTITY;
+  if (!DB_CALL_METHODS.has(method.toLowerCase()) && !isOrmMethod(method)) return NULL_HANDLE_IDENTITY;
+  const root = resolveReceiverRoot(callee, adapter, sourceCode);
+  if (root === null) return NULL_HANDLE_IDENTITY;
+  const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
+  return {
+    calleeType: 'member', name: null, root, receiver, method,
+    thisField: receiverIsThisRooted(callee, adapter),
+    sqlArg: extractStaticSql(callNode, adapter, sourceCode),
+    siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
+  };
+}
+
+/** The `resolveSiteDialect` input identity — the node's *own* callee (null for a
+ *  template string), distinct from the handle identity's enclosing-call callee. */
+interface SiteDialectIdentity {
+  calleeType: 'identifier' | 'member' | null;
+  name: string | null;
+  receiver: string | null;
+}
+
+function siteDialectIdentity(node: ASTNode, scan: DataAccessScanContext): SiteDialectIdentity {
+  const { adapter, sourceCode } = scan;
+  const callee = getCallExpressionCallee(node, adapter);
+  if (!callee) return { calleeType: null, name: null, receiver: null };
+  if (callee.type === 'identifier') {
+    return { calleeType: 'identifier', name: adapter.getNodeText(callee, sourceCode) || null, receiver: null };
+  }
+  if (callee.type === 'member_expression' || callee.type === 'selector_expression') {
+    return { calleeType: 'member', name: null, receiver: getMemberExpressionReceiver(callee, adapter, sourceCode) };
+  }
+  return { calleeType: null, name: null, receiver: null };
+}
+
+/** The bare-identifier callee name of a template's enclosing call, only when the
+ *  call carries ≥2 real args — the `isWrapperFunctionWithBindParams` shape's identity
+ *  (arm 4). Captured raw-side so the corpus producer can correct the static-security
+ *  result once it learns the name as a DB wrapper (`reason: 'wrapper'`). */
+function wrapperCalleeNameForTemplate(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string | null {
+  if (adapter.getNodeType(node) !== 'template_string') return null;
+  const args = adapter.getParent(node);
+  if (!args || adapter.getNodeType(args) !== 'arguments') return null;
+  const call = adapter.getParent(args);
+  if (!call || adapter.getNodeType(call) !== 'call_expression') return null;
+  const callee = getCallExpressionCallee(call, adapter);
+  if (!callee || adapter.getNodeType(callee) !== 'identifier') return null;
+  const realArgs = adapter.getChildren(args).filter(
+    (c) => !['(', ')', ','].includes(adapter.getNodeType(c)),
+  );
+  if (realArgs.length < 2) return null;
+  return adapter.getNodeText(callee, sourceCode) || null;
+}
+
+// ── The `data-access-calls-candidates` extractor ─────────────────────────────
+
+/** Project one broadened candidate into the raw, provenance-free `DataAccessCallCandidate`
+ *  the corpus `data-access-calls` producer re-folds. The static-security arms run here
+ *  on the empty-provenance scan; only `arm4CalleeName` is corrected corpus-side. */
+function buildDataAccessCallCandidate(
+  node: ASTNode,
+  ast: AST,
+  scan: DataAccessScanContext,
+): DataAccessCallCandidate | null {
+  const { adapter, sourceCode, config } = scan;
+  const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
+  if (!nodeText || nodeText.trim().length < 10) return null;
+
+  const sqlArg = extractStaticSql(node, adapter, sourceCode);
+  const isOrmCall = isOrmPattern(nodeText);
+  const tagNames = config.sqlTagNames ?? SQL_TAG_NAMES;
+  const isTaggedSqlCall = isTaggedTemplateSqlCall(node, adapter, sourceCode, tagNames);
+  const isQueryBuilder = isQueryBuilderShape(node, adapter, sourceCode);
+  const isVariableAssignmentSql = isVariableAssignment(node, adapter) && sqlArg !== null;
+  const isTemplate = isTemplateLiteral(node, adapter);
+
+  const handle = handleCallSiteIdentity(node, scan);
+  const site = siteDialectIdentity(node, scan);
+  const security = checkQuerySecurity(node, nodeText, ast, scan);
+
+  return {
+    file: ast.filePath,
+    line: node.location.start.line,
+    column: node.location.start.column,
+    format: adapter.name === 'go' ? 'go' : 'typescript',
+    nodeText,
+    method: extractMethodName(node, adapter, sourceCode),
+    sqlArg,
+    isOrmCall,
+    isTaggedSqlCall,
+    isQueryBuilderShape: isQueryBuilder,
+    isVariableAssignmentSql,
+    isTemplateLiteral: isTemplate,
+    handleCalleeType: handle.calleeType,
+    handleName: handle.name,
+    handleRoot: handle.root,
+    handleReceiver: handle.receiver,
+    handleMethod: handle.method,
+    handleThisField: handle.thisField,
+    handleSqlArg: handle.sqlArg,
+    handleSiteReceiver: handle.siteReceiver,
+    skipCallForTemplateArg: shouldSkipCallForTemplateArg(node, adapter),
+    siteCalleeType: site.calleeType,
+    siteName: site.name,
+    siteReceiver: site.receiver,
+    hasOrganizationFilter: hasOrganizationFilter(nodeText, config),
+    enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
+    resolvedWhere: resolveWhereBinding(node, sourceCode, adapter),
+    ormTables: isOrmCall ? extractOrmTables(nodeText, config) : [],
+    builderVerb: builderWriteVerb(nodeText),
+    ormHasFilter: hasOrmFilterShape(nodeText),
+    staticParameterized: security.parameterized,
+    staticInjectionRisk: security.injectionRisk,
+    staticEscaped: security.escaped,
+    arm4CalleeName: wrapperCalleeNameForTemplate(node, adapter, sourceCode),
+  };
+}
+
+/**
+ * Extract the raw, provenance-free `data-access-calls-candidates` for one file —
+ * the extract half of the corpus `data-access-calls` reduction (Spec 70 Item 4,
+ * step 3). No dedup happens here: the broadened discovery can perturb line-dedup
+ * (a bound bare call and a member call on the same line), so the corpus producer
+ * dedups after re-folding admission. Config is the §10 tuning surface; omitted
+ * here, extraction runs on {@link DEFAULT_DATA_ACCESS_CONFIG}.
+ */
+export function extractDataAccessCallCandidates(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  config?: DataAccessAnalyzerConfig,
+): DataAccessCallCandidate[] {
+  const scan = buildCandidateScan(ast, adapter, sourceCode, config);
+  const tagNames = scan.config.sqlTagNames ?? SQL_TAG_NAMES;
+  const nodes = adapter.findNodes(ast, {
+    custom: (node) => isBroadenedDataAccessCandidate(node, scan, tagNames),
+  });
+  const out: DataAccessCallCandidate[] = [];
+  for (const node of nodes) {
+    const cand = buildDataAccessCallCandidate(node, ast, scan);
+    if (cand) out.push(cand);
+  }
+  return out;
+}
+
+// ── The `loop-query-candidates` extractor ────────────────────────────────────
+
+/**
+ * Extract the raw, provenance-free `loop-query-candidates` for one file — the
+ * extract half of the corpus `loop-queries` reduction. Mirrors `collectLoopQueryCandidates`
+ * with the broadened discovery and without the three provenance-dependent steps
+ * (the strict-handle filter, the per-loop dedup, the stable symbol), which the
+ * corpus producer re-folds once `dbProvenanced` is re-derived. The provenance-free
+ * discriminators (statement-construction, sql-string-construction, for-of-iterable,
+ * hoisted-reuse, batch-argument, LLM/queue suppression) already ran here.
+ */
+export function extractLoopQueryRawCandidates(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  config?: DataAccessAnalyzerConfig,
+): LoopQueryRawCandidate[] {
+  const scan = buildCandidateScan(ast, adapter, sourceCode, config);
+  const candidates: LoopQueryRawCandidate[] = [];
+
+  const dbNodes = adapter.findNodes(ast, {
+    custom: (node) => isBroadenedLoopCandidate(node, scan),
+  });
+
+  const transactionWrappedFunctions = collectTransactionWrappedFunctions(ast, adapter, sourceCode);
+
+  for (const node of dbNodes) {
+    // A DB call and its template-literal SQL argument both satisfy the structural
+    // discovery — collapse to the call node, exactly as `collectLoopQueryCandidates`
+    // does (isDbCallNode only admits a literal whose enclosing call is provenanced,
+    // so skipping the literal loses nothing).
+    if (isTemplateLiteral(node, adapter)) continue;
+
+    const nodeText = adapter.getNodeText(node, sourceCode);
+    if (!nodeText || nodeText.trim().length < 10) continue;
+
+    if (isStatementConstructionOnly(node, adapter, sourceCode)) continue;
+    if (isSqlStringConstruction(node, adapter, sourceCode)) continue;
+
+    const loopInfo = findEnclosingLoop(node, adapter, sourceCode);
+    if (!loopInfo) continue;
+
+    if (isForOfIterableDbCall(node, loopInfo.loopNode, adapter)) continue;
+
+    const enclosingFnName = findEnclosingFunctionIdentity(loopInfo.loopNode, adapter, ast.filePath).name;
+    const transactionEnclosesLoop =
+      isInsideDbTransaction(loopInfo.loopNode, adapter, sourceCode) ||
+      (enclosingFnName !== null && transactionWrappedFunctions.has(enclosingFnName));
+    const preparesInLoop = loopBodyContainsPrepare(loopInfo.loopNode, adapter, sourceCode);
+    const hoistedReuse =
+      !preparesInLoop &&
+      (transactionEnclosesLoop || isHoistedStatementReRun(node, loopInfo.loopNode, adapter, sourceCode));
+    if (hoistedReuse) continue;
+
+    if (bindsBatchArgument(node, loopInfo.loopNode, adapter, sourceCode)) continue;
+    if (loopBodyContainsLlmCall(loopInfo.loopNode, adapter, sourceCode)) continue;
+    if (loopBodyContainsMessageLifecycleCall(loopInfo.loopNode, adapter, sourceCode)) continue;
+
+    const handle = handleCallSiteIdentity(node, scan);
+    const anchor = getCallExpressionCallee(node, adapter) ?? node;
+
+    candidates.push({
+      file: ast.filePath,
+      line: anchor.location.start.line,
+      column: anchor.location.start.column,
+      enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
+      loopStartOffset: loopInfo.loopNode.range[0],
+      loopLine: loopInfo.loopNode.location.start.line,
+      depth: loopInfo.depth,
+      handleCalleeType: handle.calleeType,
+      handleName: handle.name,
+      handleRoot: handle.root,
+      handleReceiver: handle.receiver,
+      handleMethod: handle.method,
+      handleThisField: handle.thisField,
+      handleSiteReceiver: handle.siteReceiver,
+      sqlArg: handle.sqlArg,
+    });
+  }
+
+  return candidates;
 }

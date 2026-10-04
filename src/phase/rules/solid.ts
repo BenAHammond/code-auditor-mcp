@@ -32,6 +32,7 @@ import type {
   GoFunctionFact,
   GoSwitchFact,
   AnalysisContext,
+  ResolutionClass,
 } from '../types.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
@@ -56,6 +57,14 @@ type GoNeeds = {
 type InterfaceSizeNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript', 'go'];
   readonly facts: readonly ['file-symbols', 'type-declarations'];
+};
+
+/** `open-closed` reads the resolution fact's class declarations to resolve an
+ *  `instanceof` target's `extends` chain (criterion 7c) alongside the
+ *  `file-symbols` fact it fires from. */
+type OpenClosedNeeds = {
+  readonly formats: readonly ['typescript', 'tsx', 'javascript'];
+  readonly facts: readonly ['file-symbols', 'resolution'];
 };
 
 /** The Go-only function-metric rules (`function-size`, `liskov-substitution`)
@@ -326,14 +335,15 @@ const BUILTIN_ERRORS = new Set([
 ]);
 
 /** True when `name` is an Error subclass, resolved transitively against the
- *  corpus-wide class declarations. Resolution is unique-global (case-insensitive):
- *  a name that matches zero or many classes does not resolve, so a missing or
- *  ambiguous declaration is "not an error" and the `instanceof` still fires —
- *  the conservative direction (a missing edge is safer than a fabricated one).
- *  This is NOT a `/Error$/` name test: it walks the `extends` chain, so a
- *  domain class whose name merely ends in "Error" does not pass, and an error
- *  whose name does not (e.g. a custom `extends Error`) does. */
-function isErrorSubclass(name: string, classes: FileClassSymbol[]): boolean {
+ *  corpus-wide class declarations in the resolution fact. Resolution is
+ *  unique-global (case-insensitive): a name that matches zero or many classes
+ *  does not resolve, so a missing or ambiguous declaration is "not an error" and
+ *  the `instanceof` still fires — the conservative direction (a missing edge is
+ *  safer than a fabricated one). This is NOT a `/Error$/` name test: it walks
+ *  the `extends` chain, so a domain class whose name merely ends in "Error" does
+ *  not pass, and an error whose name does not (e.g. a custom `extends Error`)
+ *  does. */
+function isErrorSubclass(name: string, classes: ReadonlyArray<ResolutionClass>): boolean {
   const seen = new Set<string>();
   let current = name;
   while (current) {
@@ -348,10 +358,10 @@ function isErrorSubclass(name: string, classes: FileClassSymbol[]): boolean {
   return false;
 }
 
-const openClosed: RuleDefinition<SolidNeeds> = {
+const openClosed: RuleDefinition<OpenClosedNeeds> = {
   id: 'solid/open-closed',
   analyzer: 'solid',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['file-symbols', 'resolution'] },
   severity: 'high',
   message: META['solid/open-closed'].message,
   docs: META['solid/open-closed'].docs,
@@ -361,13 +371,14 @@ const openClosed: RuleDefinition<SolidNeeds> = {
     const out: Finding[] = [];
     const symbols = visibleSymbols(ctx.facts['file-symbols'], ctx.thresholds);
     const classes = symbols.filter((s): s is FileClassSymbol => s.kind === 'class');
+    const resolutionClasses = ctx.facts['resolution'].classes;
 
     for (const cls of classes) {
       if (cls.instanceofTargets.length === 0) continue;
       // An `instanceof` against an Error subclass is a catch-dispatch guard
       // (resolve the target up its extends chain), not an OCP violation. Only a
       // remaining domain type fires.
-      const domainTargets = cls.instanceofTargets.filter((t) => !isErrorSubclass(t, classes));
+      const domainTargets = cls.instanceofTargets.filter((t) => !isErrorSubclass(t, resolutionClasses));
       if (domainTargets.length === 0) continue;
       out.push(finding({
         ruleId: 'solid/open-closed', severity: 'high',

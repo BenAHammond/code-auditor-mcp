@@ -583,11 +583,11 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: [],
     samples: {
       valid: [
-        { code: 'db.query("SELECT * FROM users WHERE id = ?", [userId])', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM users WHERE id = ?", [userId])', nearMiss: true },
       ],
       invalid: [
         {
-          code: 'db.query("SELECT * FROM users WHERE id = " + userId)',
+          code: 'import { Pool } from "pg";\nconst db = new Pool();\ndb.query("SELECT * FROM users WHERE id = " + userId)',
           resolution: { action: 'parameterize', summary: 'Replace the string-concatenated SQL with a parameterized query using the driver\'s placeholder form.', symbols: ['query'] },
         },
       ],
@@ -628,11 +628,11 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: ['performanceThresholds.joinedTableCount'],
     samples: {
       valid: [
-        { code: 'db.query("SELECT COUNT(*) FROM users")', nearMiss: true },
-        { code: 'db.query("SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)")', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT COUNT(*) FROM users")', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)")', nearMiss: true },
       ],
       invalid: [
-        { code: 'db.query("SELECT * FROM a JOIN b JOIN c JOIN d JOIN e JOIN f JOIN g JOIN h JOIN i")' },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM a JOIN b JOIN c JOIN d JOIN e JOIN f JOIN g JOIN h JOIN i")' },
       ],
     },
   },
@@ -644,11 +644,11 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: [],
     samples: {
       valid: [
-        { code: 'db.query("SELECT * FROM users")', nearMiss: true },
-        { code: 'db.query("UPDATE users SET active = 0 WHERE id = ?")', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM users")', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\ndb.query("UPDATE users SET active = 0 WHERE id = ?")', nearMiss: true },
       ],
       invalid: [
-        { code: 'db.query("UPDATE users SET active = 0")' },
+        { code: 'const db: D1Database = getDb();\ndb.query("UPDATE users SET active = 0")' },
       ],
     },
   },
@@ -678,7 +678,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
         { code: 'for (const id of ids) {\n  cache.set(id, lookup(id));\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'for (const id of ids) {\n  db.query("SELECT * FROM users WHERE id = ?", [id]);\n}' },
+        { code: 'const db: D1Database = getDb();\nfor (const id of ids) {\n  db.query("SELECT * FROM users WHERE id = ?", [id]);\n}' },
       ],
     },
   },
@@ -1086,10 +1086,10 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: [],
     samples: {
       valid: [
-        { code: 'db.query("SELECT * FROM t WHERE id = ?", [id])', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM t WHERE id = ?", [id])', nearMiss: true },
       ],
       invalid: [
-        { code: 'db.query("SELECT * FROM t WHERE id = " + id)' },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM t WHERE id = " + id)' },
       ],
     },
   },
@@ -1119,11 +1119,11 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: [],
     samples: {
       valid: [
-        { code: 'db.query("SELECT * FROM users")', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM users")', nearMiss: true },
       ],
       invalid: [
         {
-          code: 'db.query("SELECT * FROM user")',
+          code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM user")',
           resolution: { action: 'use-known-table', summary: 'Rename the table reference "user" to the nearest known table "users".', symbols: ['users'] },
         },
       ],
@@ -1142,7 +1142,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: [],
     samples: {
       valid: [
-        { code: 'db.query("SELECT * FROM users")', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\ndb.query("SELECT * FROM users")', nearMiss: true },
       ],
       invalid: [
         {
@@ -1164,10 +1164,10 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     thresholds: [],
     samples: {
       valid: [
-        { code: 'function getUser(id) {\n  return db.query("SELECT * FROM users WHERE id = ?", [id]);\n}', nearMiss: true },
+        { code: 'const db: D1Database = getDb();\nfunction getUser(id) {\n  return db.query("SELECT * FROM users WHERE id = ?", [id]);\n}', nearMiss: true },
       ],
       invalid: [
-        { code: 'function loadDashboard() {\n  db.query("SELECT * FROM users");\n  db.query("SELECT * FROM orders");\n  db.query("SELECT * FROM products");\n  db.query("SELECT * FROM reviews");\n  db.query("SELECT * FROM events");\n  db.query("SELECT * FROM alerts");\n}' },
+        { code: 'const db: D1Database = getDb();\nfunction loadDashboard() {\n  db.query("SELECT * FROM users");\n  db.query("SELECT * FROM orders");\n  db.query("SELECT * FROM products");\n  db.query("SELECT * FROM reviews");\n  db.query("SELECT * FROM events");\n  db.query("SELECT * FROM alerts");\n}' },
       ],
     },
   },
@@ -1389,7 +1389,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     message: 'Tight coupling detected between {a} and {b}.',
     docs: 'tight-coupling',
     thresholds: [],
-    thresholdRationale: 'Cohesion (internal edges / incident edges) > 0.7 — 70% of a cluster\'s edges staying internal is genuinely tight. A density ratio, not a "size" number; fires once per corpus. Kept at 0.7.',
+    thresholdRationale: 'Pairwise coupling (cross-cluster edges / (cross + internal edges)) > 0.7 with ≥ 3 cross edges — two packages are tightly coupled when their mutual edges dominate the edges that stay inside either package. The prior metric measured single-cluster cohesion (internal / incident edges), which inverted the concept and flagged well-factored packages; this measures actual coupling between distinct clusters.',
     samples: {
       valid: [
         { code: 'import { one } from "./m";', nearMiss: true },

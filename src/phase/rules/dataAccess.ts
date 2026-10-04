@@ -30,7 +30,7 @@ import type {
   Finding,
   ResolvedQuery,
   ThresholdValues,
-  TableCatalog,
+  ResolutionFact,
 } from '../types.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
@@ -51,112 +51,72 @@ type DataAccessNeeds = {
   readonly facts: readonly ['data-access-calls'];
 };
 
-/** `missing-org-filter` additionally reads the `table-catalog` corpus fact for
+/** `missing-org-filter` additionally reads the `resolution` corpus fact for
  *  Tier 3 (DDL-discovered) tenancy. */
 type MissingOrgFilterNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript', 'go'];
-  readonly facts: readonly ['data-access-calls', 'table-catalog'];
+  readonly facts: readonly ['data-access-calls', 'resolution'];
 };
 
 const META = RULE_REGISTRY;
 
 // ── Write/read classifiers (re-homed from UniversalDataAccessAnalyzer) ──────
+//
+// Spec 70 R2 — the write/upsert/insert facts are AST-derived by the producer
+// (sites #3/#6): the regex bodies (`hasWriteVerb`, `hasMassWriteVerb`,
+// `isUpsertForm`, `isRawSqlInsert`, `rawInsertColumnList`) are gone. The rule
+// reads `call.isWrite` / `call.isMassWrite` / `call.isUpsert` / `call.isRawInsert`
+// / `call.insertColumns` / `call.sqlWhereColumns` — each absent (false/empty/null)
+// when the corpus named no dialect or the argument failed to parse, which is
+// `cannot-fire`, not a negative verdict.
 
-/** True when a SQL statement carries a write verb (INSERT/DELETE/UPDATE/REPLACE). */
-function hasWriteVerb(text: string): boolean {
-  const upper = text.toUpperCase();
-  return /\bINSERT\b/.test(upper) || /\bDELETE\b/.test(upper) || /\bUPDATE\b/.test(upper)
-    || /\bREPLACE\s+INTO\b/.test(upper)
-    || /\bDELETEFROM\b/.test(upper) || /\bUPDATETABLE\b/.test(upper) || /\bINSERTINTO\b/.test(upper);
-}
-
-/** True when a statement is an upsert (keyed by construction — never unfiltered). */
-function isUpsertForm(text: string): boolean {
-  const upper = text.toUpperCase();
-  return /\bINSERT\s+OR\s+(?:IGNORE|REPLACE)\b/.test(upper)
-    || /\bREPLACE\s+INTO\b/.test(upper)
-    || /\bON\s+CONFLICT\b/.test(upper)
-    || /\bON\s+DUPLICATE\s+KEY\b/.test(upper);
-}
-
-/** True when a statement mass-mutates existing rows without a row-limiting
- *  clause (`UPDATE … SET`) — the TypeScript `unfiltered-query` mass-write set.
- *  `DELETE` is deliberately *not* a mass write here (Spec 68 disposition (a)): a
- *  bare `DELETE FROM t` with no WHERE is whole-table maintenance (the clear-and-
- *  rebuild idiom), not a missing-filter defect. INSERT is not a mass write
- *  (row-adding) either (Spec 55 R5 / Spec 56 R1).
- *
- *  Statement-aware: a mass write is a *leading* `UPDATE <table> SET` clause. The
- *  bare `\bUPDATE\b` word test this once used misread the DDL trigger spelling
- *  `… AFTER UPDATE ON t` inside a `CREATE TRIGGER` block as a mass write — the
- *  word sits in the trigger's event clause, not a statement. `UPDATE <table> SET`
- *  (vs `UPDATE ON`) names the DML verb, so the DDL case no longer matches; the
- *  camelCase `updateTable` builder verb is kept via its own spelling below. */
-function hasMassWriteVerb(text: string): boolean {
-  const upper = text.toUpperCase();
-  return /\bUPDATE\s+\S+\s+SET\b/.test(upper) || /\bUPDATETABLE\b/.test(upper);
-}
-
-/** True when the statement is a raw-SQL row-adding statement — `INSERT … INTO`
- *  (optionally `OR IGNORE`/`OR REPLACE`) or `REPLACE … INTO`. Unlike the loose
- *  `\bINSERT\b` word test this replaces, it does *not* match the ORM builder verb
- *  `.insert(table)` (`db.insert(users).values(...)`), whose tenant column rides in
- *  the values object rather than a SQL column list. */
-function isRawSqlInsert(text: string): boolean {
-  const upper = text.toUpperCase();
-  return /\bINSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO\b/.test(upper)
-    || /\bREPLACE\s+INTO\b/.test(upper);
-}
-
-/** The explicit column list of a raw-SQL INSERT/REPLACE, lowercased, or `null`
- *  when the statement has none. A positional `INSERT INTO t VALUES (…)` with no
- *  column list sets every column — tenant included — so the caller treats `null`
- *  as "sets the tenant column" (conservative: no finding). */
-function rawInsertColumnList(text: string): string[] | null {
-  const m =
-    /\bINSERT\s+(?:OR\s+(?:IGNORE|REPLACE)\s+)?INTO\s+\S+\s*\(([^)]*)\)/i.exec(text)
-    || /\bREPLACE\s+INTO\s+\S+\s*\(([^)]*)\)/i.exec(text);
-  if (!m) return null;
-  return m[1].split(',').map((c) => c.trim().toLowerCase()).filter(Boolean);
-}
-
-/** True when a call is an unfiltered write: a mass-write verb (`UPDATE … SET`)
- *  with no row-limiting filter. The write set is UPDATE-only for every format —
- *  a bare `DELETE FROM t` is whole-table maintenance (disposition (a)) and INSERT
- *  is row-adding, so neither is a missing-filter defect, Go or TypeScript (§9
- *  serves both from this one rule). Upsert forms are excluded by `isUpsertForm`. */
+/** True when a call is an unfiltered write: a mass-write fact (`isMassWrite`)
+ *  with no row-limiting filter. A Kysely `updateTable` builder verb is folded
+ *  into `isMassWrite` by the producer; upserts are excluded by `isUpsert`. */
 function isUnfilteredWrite(call: ResolvedQuery): boolean {
-  if (isUpsertForm(call.queryText)) return false;
-  return hasMassWriteVerb(call.queryText) && !call.hasFilter;
+  if (call.isUpsert) return false;
+  return call.isMassWrite && !call.hasFilter;
 }
 
 /**
  * True when a call is an unfiltered *read* of a tenant table: a filterless read
  * against a table carrying declared tenancy across all three tiers — config
- * (Tiers 1–2) AND DDL discovery (Tier 3, from the `table-catalog` fact). The
+ * (Tiers 1–2) AND DDL discovery (Tier 3, from the `resolution` fact). The
  * read half once read Tiers 1–2 only, so a DDL-only tenant table's filterless
  * read was missed (§69 Fix 4).
  */
 function isUnfilteredRead(
   call: ResolvedQuery,
   thresholds: ThresholdValues,
-  catalog: TableCatalog,
+  resolution: ResolutionFact,
 ): boolean {
   return !call.hasFilter
-    && !hasWriteVerb(call.queryText)
-    && tableRequiresOrgFilter(call.tables, buildTierSet(thresholds, catalog));
+    && !call.isWrite
+    && tableRequiresOrgFilter(call.tables, buildTierSet(thresholds, resolution));
 }
 
 /**
- * The tenant-scoping tier set from config thresholds + the `table-catalog` fact
+ * True when the query's parsed WHERE tree names one of the tenant columns as a
+ * predicate operand — the AST form of site #5's SQL comparison arm. `null`
+ * means no SQL was parsed (cannot-fire), in which case the ORM text shapes in
+ * `hasOrganizationFilter` still apply.
+ */
+function hasSqlTenantPredicate(call: ResolvedQuery, tenantColumns: ReadonlySet<string>): boolean {
+  const cols = call.sqlWhereColumns;
+  if (cols == null) return false;
+  return cols.some((c) => tenantColumns.has(c));
+}
+
+/**
+ * The tenant-scoping tier set from config thresholds + the `resolution` fact
  * (Tier 3 DDL discovery). Both `unfiltered-query` (read half) and
  * `missing-org-filter` derive their tier set here, so Tier 3 is never dropped
  * from one and not the other (§69 Fix 4).
  */
-function buildTierSet(thresholds: ThresholdValues, catalog: TableCatalog) {
+function buildTierSet(thresholds: ThresholdValues, resolution: ResolutionFact) {
   const ddlTableColumns: Record<string, string[]> = {};
-  for (const table of catalog.tables) {
-    ddlTableColumns[table.name] = [...table.columns];
+  for (const table of resolution.tables) {
+    ddlTableColumns[table.name] = table.columns.map((c) => c.name);
   }
   return buildOrgFilterTierSet(
     {
@@ -283,7 +243,7 @@ const complexQuery: RuleDefinition<DataAccessNeeds> = {
 const unfilteredQuery: RuleDefinition<MissingOrgFilterNeeds> = {
   id: 'unfiltered-query',
   analyzer: 'data-access',
-  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['data-access-calls', 'table-catalog'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['data-access-calls', 'resolution'] },
   severity: 'high',
   message: META['unfiltered-query'].message,
   docs: META['unfiltered-query'].docs,
@@ -307,7 +267,7 @@ const unfilteredQuery: RuleDefinition<MissingOrgFilterNeeds> = {
       if (call.tables.length > joinedTableCount) continue;
 
       const isWrite = isUnfilteredWrite(call);
-      const isRead = isUnfilteredRead(call, ctx.thresholds, ctx.facts['table-catalog']);
+      const isRead = isUnfilteredRead(call, ctx.thresholds, ctx.facts['resolution']);
       if ((!isWrite && !isRead) || call.tables.length === 0) continue;
 
       const kind = isWrite ? 'write' : 'read';
@@ -391,15 +351,19 @@ function hasUniqueColumnFilter(text: string, uniqueColumns: ReadonlySet<string>)
   return false;
 }
 
-/** The lowercased UNIQUE / PRIMARY-KEY columns of the named tables, unioned —
- *  the set `hasUniqueColumnFilter` matches a filter-column token against. A
- *  table with no catalog entry (or none declared) contributes nothing. */
-function uniqueColumnsForTables(tables: string[], catalog: TableCatalog): ReadonlySet<string> {
+/** The lowercased natural-UNIQUE columns of the named tables, unioned — the set
+ *  `hasUniqueColumnFilter` matches a filter-column token against. Read from the
+ *  resolution fact's per-column `unique` flag: only natural UNIQUE is included,
+ *  never a PRIMARY KEY (the IDOR surface). A table with no catalog entry (or
+ *  none declared) contributes nothing. */
+function uniqueColumnsForTables(tables: string[], resolution: ResolutionFact): ReadonlySet<string> {
   const set = new Set<string>();
   for (const name of tables) {
-    const entry = catalog.tables.find((t) => t.name === name);
+    const entry = resolution.tables.find((t) => t.name === name);
     if (!entry) continue;
-    for (const col of entry.uniqueColumns) set.add(col.toLowerCase());
+    for (const col of entry.columns) {
+      if (col.unique) set.add(col.name.toLowerCase());
+    }
   }
   return set;
 }
@@ -411,7 +375,7 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
   analyzer: 'data-access-org-filter',
   needs: {
     formats: ['typescript', 'tsx', 'javascript', 'go'],
-    facts: ['data-access-calls', 'table-catalog'],
+    facts: ['data-access-calls', 'resolution'],
   },
   severity: 'critical',
   message: META['missing-org-filter'].message,
@@ -422,12 +386,12 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
     const out: Finding[] = [];
 
     // Tier 3 (DDL discovery) comes from the corpus reduction of the schema facts
-    // into `table-catalog`; Tiers 1–2 come from the config thresholds. The one
+    // into `resolution`; Tiers 1–2 come from the config thresholds. The one
     // `buildOrgFilterTierSet` is shared with the applicability predicate, so
     // firing and applicability cannot drift to different tier sets (Spec 62 B),
     // and with the `unfiltered-query` read half (§69 Fix 4).
-    const catalog = ctx.facts['table-catalog'];
-    const tierSet = buildTierSet(ctx.thresholds, catalog);
+    const resolution = ctx.facts['resolution'];
+    const tierSet = buildTierSet(ctx.thresholds, resolution);
 
     // The tenant-scoping column names this config treats as evidence (lowercased
     // by `buildOrgFilterTierSet`), matched against a raw-SQL INSERT column list.
@@ -449,12 +413,12 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
       // Resolve ORM schema-object identifiers to their declared SQL names
       // (`.from(sampleOwnership)` → `sample_ownership`) before the tier lookup,
       // so a query referencing a Drizzle schema object reaches the DDL-declared
-      // catalog entry (and its Tier-3 tenancy) the identifier names.
-      const tables = call.tables.map((t) => catalog.aliases[t] ?? t);
+      // resolution entry (and its Tier-3 tenancy) the identifier names.
+      const tables = call.tables.map((t) => resolution.aliases[t] ?? t);
       if (tables.length === 0) continue;
       if (!tableRequiresOrgFilter(tables, tierSet)) continue;
 
-      const isInsert = isRawSqlInsert(call.queryText);
+      const isInsert = call.isRawInsert;
 
       // Spec 69 R3 — a `.where(and(...conditions))` predicate hides its elements
       // from `queryText`; read the resolved binding instead. An all-paths tenant
@@ -479,19 +443,20 @@ const missingOrgFilter: RuleDefinition<MissingOrgFilterNeeds> = {
       // is not raw SQL, so it stays on the predicate path, where
       // `hasOrganizationFilter` already detects `org_id:` value keys.
       if (isInsert) {
-        const columns = rawInsertColumnList(call.queryText);
+        const columns = call.insertColumns;
         // `null` = positional INSERT (`INSERT INTO t VALUES (…)`, no column list)
         // — every column is set, tenant included.
         const setsTenant = columns === null
           || columns.some((c) => tenantColumnSet.has(c));
         if (setsTenant) continue;
-      } else if (hasOrganizationFilter(call.queryText, predicateConfig)) {
+      } else if (hasSqlTenantPredicate(call, tenantColumnSet)
+        || hasOrganizationFilter(call.queryText, predicateConfig)) {
         continue;
       } else if (allPathsOrg) {
         // The tenant predicate is present on every path (array initializer or an
         // unconditional push) — the isolation is unconditional, so no finding.
         continue;
-      } else if (hasUniqueColumnFilter(call.queryText, uniqueColumnsForTables(tables, catalog))) {
+      } else if (hasUniqueColumnFilter(call.queryText, uniqueColumnsForTables(tables, resolution))) {
         // A predicate bound to a UNIQUE / PRIMARY-KEY column returns at most one
         // row — the bootstrap-lookup shape (`eq(apiKey.prefix, …)`). Scoping by
         // tenant is structurally unnecessary here, so the rule stays quiet.
@@ -545,7 +510,7 @@ export const dataAccessRules: readonly RuleDefinition<DataAccessNeeds | MissingO
  * one per loop whose body issues a DB call) — not `data-access-calls`. It is
  * exported in a *separate* array from `dataAccessRules` because the two fact
  * kinds are distinct: the data-access slice context carries `data-access-calls`
- * + `table-catalog`, while this rule's context carries `loop-queries` alone.
+ * + `resolution`, while this rule's context carries `loop-queries` alone.
  *
  * Detection is the producer's — `collectLoopQueryCandidates` in the analyzer,
  * shared with the legacy `checkLoopQueries` — so `analyze` is a pure projection

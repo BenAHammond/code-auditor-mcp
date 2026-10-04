@@ -46,6 +46,7 @@ import type {
   ThresholdValues,
 } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
+import * as crypto from 'crypto';
 
 const META = RULE_REGISTRY['duplicate-import'];
 const STRING_META = RULE_REGISTRY['duplicate-string-literal'];
@@ -201,7 +202,7 @@ function detectDuplicateStringLiteral(facts: readonly StringLiteralFact[]): Find
 // ── code-block rules (the three per-file block/fragment comparisons) ─────────
 
 /** Config surface the three block rules read (subset of `DRYAnalyzerConfig`). */
-interface DryBlockConfig {
+export interface DryBlockConfig {
   minLineThreshold?: number;
   similarityThreshold?: number;
   excludePatterns?: string[];
@@ -234,7 +235,7 @@ const DRY_BLOCK_DEFAULTS: DryBlockConfig = {
 };
 
 /** Merge the (default-merged) thresholds onto the block defaults. */
-function resolveBlockConfig(t: ThresholdValues): DryBlockConfig {
+export function resolveBlockConfig(t: ThresholdValues): DryBlockConfig {
   return { ...DRY_BLOCK_DEFAULTS, ...(t as Record<string, unknown>) } as DryBlockConfig;
 }
 
@@ -600,6 +601,138 @@ function detectExpressionSimilarities(fragments: CodeBlockFragment[], cfg: DryBl
     }
   }
   return findings;
+}
+
+// ── dry-pair seeding (Spec 70 2b: the diverging-clone write, moved here) ──────
+
+/** One duplicate/structure pair seeded into `dry_pair_history`, re-homing the
+ *  legacy `UniversalDRYAnalyzer.seedPair` output. `rule` is the legacy tag
+ *  (`dry/duplicate` | `dry/structural-similarity`) and is not written to the
+ *  table — the writer reads only the ten anchor/hash/similarity fields. */
+export interface DryPairSeed {
+  pairFingerprint: string;
+  file1: string;
+  symbol1: string;
+  line1: number;
+  contentHash1: string;
+  file2: string;
+  symbol2: string;
+  line2: number;
+  contentHash2: string;
+  similarity: number;
+  rule: string;
+}
+
+/**
+ * The legacy `computeJaccardSimilarity` (UniversalDRYAnalyzer.ts) — a bare
+ * token-SET Jaccard over the whitespace-split skeleton. The migrated
+ * `dry/structural-similarity` rule deliberately uses a *bigram* Jaccard
+ * (`computeJaccardSimilarity` above), but the seed write must reproduce the
+ * *legacy* `dry_pair_history` series byte-for-byte, so it re-homes the legacy
+ * bare-token-set metric rather than the migrated bigram.
+ */
+function computeBareTokenJaccard(text1: string, text2: string): number {
+  const tokens1 = new Set(text1.split(/\s+/).filter(Boolean));
+  const tokens2 = new Set(text2.split(/\s+/).filter(Boolean));
+
+  let intersection = 0;
+  for (const t of tokens1) {
+    if (tokens2.has(t)) intersection++;
+  }
+
+  const union = tokens1.size + tokens2.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/** The legacy order-independent pair identity: SHA256 of the sorted
+ *  `file|nodeType|line` ids. */
+function computePairFingerprint(original: CodeBlockBlock, block: CodeBlockBlock): string {
+  const id1 = `${original.file}|${original.nodeType}|${original.start.line}`;
+  const id2 = `${block.file}|${block.nodeType}|${block.start.line}`;
+  const sorted = [id1, id2].sort();
+  return crypto.createHash('sha256').update(sorted.join('||')).digest('hex');
+}
+
+/**
+ * Seed the `dry_pair_history` rows the legacy `createDryVisitor` accumulated,
+ * from the phase `code-block` fact. This re-homes the pair half of the legacy
+ * `analyzeAST` — per-file filter → dedupe → compare — over the projected data,
+ * and writes the *legacy* gates:
+ *
+ *   - exact-duplicate pairs (`dry/duplicate`, similarity 1.0) always seed;
+ *   - structural pairs (`dry/structural-similarity`) seed only when
+ *     `checkStructuralSimilarity` is true, with the legacy bare-token-set Jaccard
+ *     (not the migrated rule's bigram) and the legacy `similarityThreshold`.
+ *
+ * The three block *rules* re-apply `minLineThreshold`/`similarityThreshold` in
+ * `detectExactDuplicates`/`detectStructuralDuplicates`; the seed repeats the
+ * same per-file filter/dedupe so the written `(fingerprint, contentHash, line)`
+ * tuple is byte-identical to what the legacy visitor accumulated.
+ *
+ * @param codeBlocks - The assembled `code-block` corpus fact.
+ * @param config - The default-merged dry config (the rule's `resolveBlockConfig`).
+ * @returns The seeded pairs, in per-file walk order.
+ */
+export function seedDryPairs(codeBlocks: readonly CodeBlockFact[], config: DryBlockConfig): DryPairSeed[] {
+  const minLine = config.minLineThreshold || 5;
+  const threshold = config.similarityThreshold ?? 0.85;
+  const pairs: DryPairSeed[] = [];
+
+  const seed = (original: CodeBlockBlock, block: CodeBlockBlock, similarity: number, rule: string): void => {
+    pairs.push({
+      pairFingerprint: computePairFingerprint(original, block),
+      file1: original.file,
+      symbol1: `${original.nodeType}:${original.start.line}`,
+      line1: original.start.line,
+      contentHash1: original.hash,
+      file2: block.file,
+      symbol2: `${block.nodeType}:${block.start.line}`,
+      line2: block.start.line,
+      contentHash2: block.hash,
+      similarity,
+      rule,
+    });
+  };
+
+  for (const { blocks } of perFileGroups(codeBlocks, config.excludePatterns ?? []).values()) {
+    const large = blocks.filter((b) => b.lineCount >= minLine);
+    const deduped = deduplicateBlocks(large);
+
+    // Exact duplicates — group by hash, seed each later block against the earliest.
+    const byHash = new Map<string, CodeBlockBlock[]>();
+    for (const block of deduped) {
+      const group = byHash.get(block.hash) ?? [];
+      group.push(block);
+      byHash.set(block.hash, group);
+    }
+    for (const group of byHash.values()) {
+      if (group.length < 2) continue;
+      const sorted = [...group].sort(byFileAndLine);
+      const original = sorted[0];
+      for (let i = 1; i < sorted.length; i++) {
+        const block = sorted[i];
+        if (spansOverlap(original, block)) continue;
+        seed(original, block, 1.0, 'dry/duplicate');
+      }
+    }
+
+    // Structural similarity — legacy-gated, bare-token-set Jaccard.
+    if (config.checkStructuralSimilarity) {
+      for (let i = 0; i < deduped.length; i++) {
+        const original = deduped[i];
+        for (let j = i + 1; j < deduped.length; j++) {
+          const block = deduped[j];
+          if (original.hash === block.hash) continue;
+          if (spansOverlap(original, block)) continue;
+          const similarity = computeBareTokenJaccard(original.structuralSkeleton, block.structuralSkeleton);
+          if (similarity < threshold) continue;
+          seed(original, block, similarity, 'dry/structural-similarity');
+        }
+      }
+    }
+  }
+
+  return pairs;
 }
 
 // ── diverging-clone (cross-run pair tracking, Spec 13 R5) ─────────────────────

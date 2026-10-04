@@ -20,30 +20,27 @@
  */
 
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
+import type { Dialect } from '../mcp-tools/discoveryQueries.js';
+import { dialectForPackage } from '../languages/sql/dialectDetection.js';
+import { DB_PACKAGES, DB_CALL_METHODS, ORM_METHODS } from './tsEcosystem.js';
+import { buildBindingEnv, type RootResolutionEnv, resolveReceiverRoot } from './receiverRoot.js';
+import { identifyHandle } from './handleIdentification.js';
+import type {
+  TsExpressionDescriptor,
+  TsWithinFileProvenanceExtract,
+  PropagationRule,
+  OwnCall,
+  ClassCall,
+} from './tsExpressionDescriptor.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Constants — the universal vocabulary (package names are language-invariant)
+// Constants — validator packages
+//
+// The DB ecosystem (DB_PACKAGES / DB_CALL_METHODS / ORM_METHODS) was
+// TypeScript/npm-only and moved behind the resolution interface to
+// `tsEcosystem.ts` (correction-seams-not-placement §4). What remains here is
+// the validator-package vocabulary, a distinct concern.
 // ═══════════════════════════════════════════════════════════════════════════
-
-/** Database packages — spec R1.1 */
-export const DB_PACKAGES: ReadonlySet<string> = new Set([
-  'better-sqlite3',
-  'drizzle-orm',
-  '@prisma/client',
-  'pg',
-  'mysql2',
-  'postgres',
-  'kysely',
-  'knex',
-  'mongodb',
-  'mongoose',
-  '@libsql/client',
-  '@planetscale/database',
-  '@neondatabase/serverless',
-  '@vercel/postgres',
-  'bun:sqlite',
-  'node:sqlite',
-]);
 
 /** Validator packages — spec R4.1 */
 export const VALIDATOR_PACKAGES: ReadonlySet<string> = new Set([
@@ -58,100 +55,11 @@ export const VALIDATOR_PACKAGES: ReadonlySet<string> = new Set([
   'class-validator',
 ]);
 
-/** Known DB type names — spec R1.1 (propagation rule 8) */
-export const DB_TYPES: ReadonlySet<string> = new Set([
-  'D1Database',
-  'D1PreparedStatement',
-  'D1Result',
-  'Database',
-  'Pool',
-  'PrismaClient',
-  'Kysely',
-  'Connection',
-  'SqliteDatabase',
-  'BetterSQLite3Database',
-]);
-
-/**
- * DB call methods — the fixed API surface (language-invariant).
- *
- * Spec 33 Item 11 FP category 5: the bare-identifier hybrid fallback in
- * `isDBProvenanced` treated any `get(...)` / `each(...)` / `values(...)` call
- * as a DB query, flagging lodash-style object accessors (e.g.
- * `@directus/utils`'s `get(item, ...)`) as sql-injection. Those three names
- * are also common non-DB methods (lodash `get`, jQuery/iterator
- * `each`, Map/WebSocket `.values()`), so they are removed from the fallback —
- * mirroring the `get`/`each` trim in CHANGELOG 3.4.9 (DB_CALL_METHOD_NAMES).
- *
- * `query` is deliberately RETAINED: it is a genuine query-execution method on
- * mysql2, pg, node-postgres, D1 and Planetscale (`.query(...)`), and the
- * spec-19 data-access fixtures exercise it as a canonical DB entry point.
- * Removing it would turn real SQL-injection positives into false negatives.
- *
- * `raw` is deliberately retained: it is a genuine raw-execution method on
- * D1 prepared statements, Knex, and Kysely, and the Item-6 taint-tracking
- * fixtures exercise it as the canonical raw-SQL entry point.
- */
-export const DB_CALL_METHODS: ReadonlySet<string> = new Set([
-  'exec',
-  'prepare',
-  'batch',
-  'run',
-  'all',
-  'first',
-  'query',
-  'raw',
-]);
-
-/** ORM method patterns — fixed API surface for ORM recognition (Spec 21 R1) */
-export const ORM_METHODS: ReadonlySet<string> = new Set([
-  'find',
-  'findOne',
-  'findMany',
-  'findFirst',
-  'findUnique',
-  'select',
-  'insert',
-  'insertMany',
-  'update',
-  'updateOne',
-  'updateMany',
-  'delete',
-  'deleteOne',
-  'deleteMany',
-  'from',
-  'where',
-  'join',
-  'leftJoin',
-  'rightJoin',
-  'innerJoin',
-  'create',
-  'createMany',
-  'aggregate',
-  'count',
-  'distinct',
-  'execute',
-  'query',
-  // Kysely builder verbs (camelCase SQL, absent from the SQL-keyword path).
-  'selectFrom',
-  'selectAll',
-  'insertInto',
-  'updateTable',
-  'deleteFrom',
-  'executeTakeFirst',
-  'executeTakeFirstOrThrow',
-  'values',
-  'set',
-  'onConflict',
-  'returning',
-  'whereRef',
-]);
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════════════════
 
-export type ProvenanceReason = 'package' | 'binding' | 'type' | 'propagation' | 'fallback' | 'wrapper';
+export type ProvenanceReason = 'package' | 'binding' | 'propagation' | 'fallback' | 'wrapper' | 'module' | 'sql-argument';
 
 export interface ProvenanceEvidence {
   identifier: string;
@@ -160,6 +68,16 @@ export interface ProvenanceEvidence {
   source: string;
   /** Chain of propagation — each hop records the intermediate identifier */
   chain: string[];
+  /**
+   * The npm package the handle traces to (base name, no subpath — `pg`, not
+   * `pg/lib`), when its provenance names one — set for a package-import seed
+   * and carried through propagation. This is the *structured* counterpart of
+   * `source` (which is a human label): it is what `resolveSiteDialect` reads to
+   * derive a per-call-site SQL dialect (`pg` → postgresql) instead of parsing
+   * the label. Absent for wrapper / type-annotation / in-repo-module evidence,
+   * which names no package.
+   */
+  packageName?: string;
 }
 
 export type DetectionMode = 'hybrid' | 'provenance' | 'names';
@@ -175,6 +93,15 @@ export interface ProvenanceContext {
   validatorProvenanced: Map<string, ProvenanceEvidence>;
   /** Active detection mode */
   mode: DetectionMode;
+  /**
+   * Receiver roots of DB-shaped call sites (a DB/ORM method call), *proven or
+   * unproven*. This is the file-gate signal: a file whose only DB signal is a
+   * type-annotated handle with a non-literal SQL argument (unproven under
+   * criterion 9, no dialect to parse) still passes the gate so `dynamic-sql-
+   * construction` / `unresolved-query` can report the site rather than drop it.
+   * It is *not* a handle decision — `identifyHandle` is the only thing that is.
+   */
+  dbActivity: Set<string>;
 }
 
 export interface InferredReceiverSet {
@@ -191,6 +118,21 @@ function matchesDBPackage(specifier: string): boolean {
   return [...DB_PACKAGES].some(
     (pkg) => specifier === pkg || specifier.startsWith(pkg + '/'),
   );
+}
+
+/**
+ * The base npm package name of a module specifier — `pg` for `pg`/`pg/lib`,
+ * `@neondatabase/serverless` for `@neondatabase/serverless` and its subpaths,
+ * `mysql2` for `mysql2/promise`. Used to stamp {@link ProvenanceEvidence.packageName}
+ * with the exact key `dialectForPackage` maps, so a subpath import still resolves
+ * to its driver's dialect.
+ */
+function basePackageName(specifier: string): string {
+  if (specifier.startsWith('@')) {
+    const parts = specifier.split('/');
+    return parts.slice(0, 2).join('/');
+  }
+  return specifier.split('/')[0];
 }
 
 /** Check if a module specifier matches a validator package. */
@@ -241,6 +183,7 @@ function extractProvenancedImports(
           reason: 'package',
           source: label,
           chain: [],
+          packageName: basePackageName(specifier),
         });
       }
     }
@@ -289,43 +232,15 @@ function propagateVariableDeclaration(
   node: ASTNode,
   ctx: PropagationContext,
 ): boolean {
-  const { nameNode, valueNode, typeAnnotationNode } =
-    splitVariableDeclarator(node, ctx.adapter);
+  const { nameNode, valueNode } = splitVariableDeclarator(node, ctx.adapter);
 
   if (!nameNode) return false;
 
-  let mutated = false;
-
-  // Rule 8: type annotation — let x: D1Database
-  if (typeAnnotationNode) {
-    mutated = propagateFromTypeAnnotation(nameNode, typeAnnotationNode, ctx);
-  }
-
   if (valueNode) {
-    mutated = propagateFromValue(nameNode, valueNode, ctx) || mutated;
+    return propagateFromValue(nameNode, valueNode, ctx);
   }
 
-  return mutated;
-}
-
-/** Rule 8: type annotation — `let x: D1Database`. */
-function propagateFromTypeAnnotation(
-  nameNode: ASTNode,
-  typeAnnotationNode: ASTNode,
-  ctx: PropagationContext,
-): boolean {
-  if (nameNode.type !== 'identifier') return false;
-  const typeText = ctx.adapter.getNodeText(typeAnnotationNode, ctx.sourceCode).trim();
-  if (!DB_TYPES.has(typeText)) return false;
-  const name = ctx.adapter.getNodeText(nameNode, ctx.sourceCode);
-  if (ctx.provenanceMap.has(name)) return false;
-  ctx.provenanceMap.set(name, {
-    identifier: name,
-    reason: 'type',
-    source: `type annotation ${typeText}`,
-    chain: [],
-  });
-  return true;
+  return false;
 }
 
 /** Propagate provenance from a declarator's value expression into its names. */
@@ -335,7 +250,7 @@ function propagateFromValue(
   ctx: PropagationContext,
 ): boolean {
   const propagated = tryPropagateFromExpression(
-    valueNode, ctx.adapter, ctx.sourceCode, ctx.provenanceMap,
+    valueNode, ctx.adapter, ctx.sourceCode, ctx.provenanceMap, ctx.localFunctions,
   );
   if (!propagated) return false;
   let mutated = false;
@@ -346,6 +261,7 @@ function propagateFromValue(
         reason: 'propagation',
         source: propagated.source,
         chain: [...propagated.chain, propagated.identifier],
+        packageName: propagated.packageName,
       });
       mutated = true;
     }
@@ -362,6 +278,7 @@ function propagateDefaultParameter(
   adapter: LanguageAdapter,
   sourceCode: string,
   provenanceMap: Map<string, ProvenanceEvidence>,
+  localFunctions?: ReadonlySet<string>,
 ): boolean {
   const children = adapter.getChildren(node);
   // assignment_pattern has [left, right]
@@ -378,6 +295,7 @@ function propagateDefaultParameter(
     adapter,
     sourceCode,
     provenanceMap,
+    localFunctions,
   );
   if (propagated && !provenanceMap.has(paramName)) {
     provenanceMap.set(paramName, {
@@ -385,6 +303,7 @@ function propagateDefaultParameter(
       reason: 'propagation',
       source: `default parameter = ${propagated.source}`,
       chain: [...propagated.chain, propagated.identifier],
+      packageName: propagated.packageName,
     });
     return true;
   }
@@ -400,31 +319,41 @@ function propagateClassField(
   adapter: LanguageAdapter,
   sourceCode: string,
   provenanceMap: Map<string, ProvenanceEvidence>,
+  localFunctions?: ReadonlySet<string>,
 ): boolean {
   const children = adapter.getChildren(node);
-  // Typically [name, value] or [decorators..., name, value]
+  // Typically [name, value], [modifier, name, type], or [decorators..., name, value].
   const nameChild = children.find(
     (c) => c.type === 'property_identifier',
   );
+  if (!nameChild) return false;
+
+  const fieldName = adapter.getNodeText(nameChild, sourceCode);
+
+  // Rule 7 — class field initialized with a DB value (`private db = new Database()`).
+  // `accessibility_modifier` and `type_annotation` are excluded so the value is
+  // found even on a modified or annotated field.
   const valueChild = children.find(
     (c) =>
       c.type !== 'property_identifier' &&
       c.type !== 'decorator' &&
+      c.type !== 'accessibility_modifier' &&
       c.type !== 'private' &&
       c.type !== 'public' &&
       c.type !== 'protected' &&
       c.type !== 'static' &&
       c.type !== 'readonly' &&
-      c.type !== 'abstract',
+      c.type !== 'abstract' &&
+      c.type !== 'type_annotation',
   );
 
-  if (nameChild && valueChild) {
-    const fieldName = adapter.getNodeText(nameChild, sourceCode);
+  if (valueChild) {
     const propagated = tryPropagateFromExpression(
       valueChild,
       adapter,
       sourceCode,
       provenanceMap,
+      localFunctions,
     );
     if (propagated && !provenanceMap.has(fieldName)) {
       provenanceMap.set(fieldName, {
@@ -432,6 +361,7 @@ function propagateClassField(
         reason: 'propagation',
         source: `class field initialized from ${propagated.source}`,
         chain: [...propagated.chain, propagated.identifier],
+        packageName: propagated.packageName,
       });
       return true;
     }
@@ -440,10 +370,57 @@ function propagateClassField(
 }
 
 /**
+ * S5b (form 4) — propagate provenance through a member assignment
+ * (`this.db = new Database()`). The RHS is a DB-provenanced expression (a
+ * `new X()` where X is an in-repo class that resolves, or a provenanced
+ * identifier), so the assigned field is a DB handle. This is the `new X()`
+ * binding form for the `this.<field> = …` assignment shape that no
+ * `variable_declarator`/`field_definition` rule covers.
+ */
+function propagateMemberAssignment(
+  node: ASTNode,
+  ctx: PropagationContext,
+): boolean {
+  const { adapter, sourceCode, provenanceMap } = ctx;
+  const children = adapter.getChildren(node);
+  // children: [member_expression (this.db), <RHS expression>].
+  const lhs = children.find(
+    (c) => c.type === 'member_expression' || c.type === 'selector_expression',
+  );
+  if (!lhs) return false;
+
+  const lhsChildren = adapter.getChildren(lhs);
+  const obj = lhsChildren.find((c) => c.type === 'this' || c.type === 'super');
+  if (!obj) return false;
+  const prop = lhsChildren.find(
+    (c) => c.type === 'property_identifier' || c.type === 'field_identifier',
+  );
+  if (!prop) return false;
+
+  const fieldName = adapter.getNodeText(prop, sourceCode);
+  if (!fieldName || provenanceMap.has(fieldName)) return false;
+
+  const rhs = children[children.length - 1];
+  if (!rhs || rhs.type === 'member_expression' || rhs.type === 'selector_expression') return false;
+
+  const propagated = tryPropagateFromExpression(rhs, adapter, sourceCode, provenanceMap, ctx.localFunctions);
+  if (!propagated) return false;
+
+  provenanceMap.set(fieldName, {
+    identifier: fieldName,
+    reason: 'propagation',
+    source: `this.${fieldName} assigned from ${propagated.source}`,
+    chain: [...propagated.chain, propagated.identifier],
+    packageName: propagated.packageName,
+  });
+  return true;
+}
+
+/**
  * Apply the single-file propagation rules for one AST node, mutating the
  * provided provenance map. Returns true if any new identifier was added.
  *
- * Rules 1-8 (spec R1): variable declarations (1-3, 8), default parameters
+ * Rules 1-7 (spec R1): variable declarations (1-3), default parameters
  * (6), and class field initialization (7).
  */
 /**
@@ -455,6 +432,11 @@ interface PropagationContext {
   adapter: LanguageAdapter;
   sourceCode: string;
   provenanceMap: Map<string, ProvenanceEvidence>;
+  /** Names of functions declared in this file — S5f must not forward a
+   *  provenanced argument through them (a local function's return is resolved
+   *  by `detectDbReturningFunctions`/`detectDbWrappers`, not by treating "takes
+   *  a handle" as "returns a handle"). */
+  localFunctions: ReadonlySet<string>;
 }
 
 function applyPropagationRule(
@@ -471,24 +453,29 @@ function applyPropagationRule(
     node.type === 'assignment_pattern' &&
     parent?.type === 'formal_parameters'
   ) {
-    return propagateDefaultParameter(node, adapter, sourceCode, provenanceMap);
+    return propagateDefaultParameter(node, adapter, sourceCode, provenanceMap, ctx.localFunctions);
   }
 
   if (
     node.type === 'public_field_definition' ||
     node.type === 'field_definition'
   ) {
-    return propagateClassField(node, adapter, sourceCode, provenanceMap);
+    return propagateClassField(node, adapter, sourceCode, provenanceMap, ctx.localFunctions);
+  }
+
+  // S5b (form 4) — `this.db = new Database()` / `this.db = <provenanced>`.
+  if (node.type === 'assignment_expression') {
+    return propagateMemberAssignment(node, ctx);
   }
 
   return false;
 }
 
 /**
- * Propagate provenance through assignments, destructuring, parameters,
- * class fields, and type annotations within a single file.
+ * Propagate provenance through assignments, destructuring, default
+ * parameters, and class-field initializers within a single file.
  *
- * The 8 single-file propagation rules (spec R1):
+ * The 7 single-file propagation rules (spec R1):
  *   1. new Expression → variable
  *   2. DB-provenanced call return → variable
  *   3. member expression on DB receiver → variable
@@ -496,7 +483,6 @@ function applyPropagationRule(
  *   5. array destructuring from DB source
  *   6. default parameter with DB value
  *   7. class field initialized with DB value
- *   8. type annotation with known DB type
  * @param adapter
  * @param ast
  * @param seedMap
@@ -511,7 +497,12 @@ export function propagateProvenance(
 ): Map<string, ProvenanceEvidence> {
   // Work on a copy so we can add newly-provenanced identifiers during the walk
   const provenanceMap = new Map(seedMap);
-  const ctx: PropagationContext = { adapter, sourceCode, provenanceMap };
+  const ctx: PropagationContext = {
+    adapter,
+    sourceCode,
+    provenanceMap,
+    localFunctions: collectLocalFunctionNames(ast, adapter, sourceCode),
+  };
   // Keep iterating until no new identifiers are discovered (handles chains)
   let changed = true;
   let iterations = 0;
@@ -531,6 +522,39 @@ export function propagateProvenance(
   return provenanceMap;
 }
 
+/**
+ * Names of functions *declared in this file* — named function declarations,
+ * method definitions, and arrow/function expressions bound to a variable.
+ * S5f consults this to refuse to forward a provenanced argument through a local
+ * function: the local function's own return is resolved by
+ * `detectDbReturningFunctions` (returned construction), not by
+ * the "it takes a handle, so it must return one" heuristic that is only sound
+ * for *external* factories like `enhancePrisma(PrismaClient)`.
+ */
+function collectLocalFunctionNames(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): Set<string> {
+  const names = new Set<string>();
+  walkAST(ast.root, (node) => {
+    if (FUNCTION_NODE_TYPES.has(node.type)) {
+      const name = adapter.getNodeName(node);
+      if (name) names.add(name);
+      return;
+    }
+    if (node.type === 'variable_declarator') {
+      const { nameNode, valueNode } = splitVariableDeclarator(node, adapter);
+      if (!nameNode || !valueNode) return;
+      const vt = valueNode.type;
+      if (vt === 'arrow_function' || vt === 'function_expression' || vt === 'generator_function_expression') {
+        for (const n of extractPatternNames(nameNode, adapter, sourceCode)) names.add(n);
+      }
+    }
+  });
+  return names;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Propagation helpers
 // ═══════════════════════════════════════════════════════════════════════════
@@ -544,6 +568,7 @@ function tryPropagateFromExpression(
   adapter: LanguageAdapter,
   sourceCode: string,
   provenanceMap: Map<string, ProvenanceEvidence>,
+  localFunctions?: ReadonlySet<string>,
 ): ProvenanceEvidence | null {
   // ── Rule 0: await x — unwrap the await and propagate from its operand ──
   // Mirrors getCallExpressionCallee, which already recurses through
@@ -554,7 +579,7 @@ function tryPropagateFromExpression(
     for (const child of adapter.getChildren(node)) {
       if (child.type === 'await') continue;
       const result = tryPropagateFromExpression(
-        child, adapter, sourceCode, provenanceMap,
+        child, adapter, sourceCode, provenanceMap, localFunctions,
       );
       if (result) return result;
     }
@@ -577,7 +602,7 @@ function tryPropagateFromExpression(
   // ── Rule 2: drizzle(env.DB) — call where callee is DB-provenanced ──
   // ── Rule 3: db.prepare(sql) — member expression call on DB receiver ──
   if (node.type === 'call_expression') {
-    const viaCall = tryCallProvenance(node, adapter, sourceCode, provenanceMap);
+    const viaCall = tryCallProvenance(node, adapter, sourceCode, provenanceMap, localFunctions);
     if (viaCall) return viaCall;
   }
 
@@ -621,6 +646,7 @@ function tryCallProvenance(
   adapter: LanguageAdapter,
   sourceCode: string,
   provenanceMap: Map<string, ProvenanceEvidence>,
+  localFunctions?: ReadonlySet<string>,
 ): ProvenanceEvidence | null {
   const calleeNode = getCallExpressionCallee(node, adapter);
   if (!calleeNode) return null;
@@ -630,6 +656,12 @@ function tryCallProvenance(
     const name = adapter.getNodeText(calleeNode, sourceCode);
     const evidence = lookupEvidence(provenanceMap, name);
     if (evidence) return evidence;
+
+    // S5f — higher-order wrapper: a plain-identifier call whose callee is NOT
+    // provenanced but forwards a provenanced DB-handle argument
+    // (`enhancePrisma(PrismaClient)`). The call result is treated as a DB handle.
+    const argEvidence = tryProvenancedArgument(node, adapter, sourceCode, provenanceMap, localFunctions);
+    if (argEvidence) return argEvidence;
   }
 
   // Case: member expression — db.prepare(...)
@@ -645,8 +677,55 @@ function tryCallProvenance(
 }
 
 /**
- * Split a variable_declarator into its name, value, and type annotation
- * child nodes.
+ * S5f — a call whose callee is unprovenanced but whose *argument* is a
+ * DB-provenanced expression (`enhancePrisma(PrismaClient)`) forwards the handle,
+ * so the call result is a DB handle (a wrapper constructor / factory). Restricted
+ * to a plain-identifier callee so member-expression calls like `JSON.stringify(db)`
+ * or `console.log(db)` — whose result is a string / undefined, not a handle — are
+ * not swept in.
+ */
+function tryProvenancedArgument(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenanceMap: Map<string, ProvenanceEvidence>,
+  localFunctions?: ReadonlySet<string>,
+): ProvenanceEvidence | null {
+  // S5f is only sound for *external* factories (`enhancePrisma(PrismaClient)`).
+  // A local function that merely takes a handle does not therefore return one —
+  // e.g. `loadCallGraphData(indexHandle)` returns an in-memory graph, not a
+  // handle — and its return is resolved by `detectDbReturningFunctions`. Refusing
+  // to forward through a locally-declared function breaks the cascade that labels
+  // plain Maps/Sets as DB handles (the source of the index-code N+1 false
+  // positives). `localFunctions` is undefined in the `detectDbReturningFunctions`
+  // return-check, where S5f's canonical imported-factory case must still fire.
+  if (localFunctions) {
+    const calleeNode = getCallExpressionCallee(node, adapter);
+    if (calleeNode?.type === 'identifier') {
+      const calleeName = adapter.getNodeText(calleeNode, sourceCode);
+      if (calleeName && localFunctions.has(calleeName)) return null;
+    }
+  }
+
+  const argsNode = adapter.getChildren(node).find((c) => c.type === 'arguments');
+  if (!argsNode) return null;
+  for (const arg of adapter.getChildren(argsNode)) {
+    if (arg.type === '(' || arg.type === ')' || arg.type === ',') continue;
+    const evidence = tryPropagateFromExpression(arg, adapter, sourceCode, provenanceMap, localFunctions);
+    if (evidence) {
+      return {
+        identifier: evidence.identifier,
+        reason: 'wrapper',
+        source: `higher-order wrapper forwards DB handle \`${evidence.identifier}\``,
+        chain: evidence.chain,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Split a variable_declarator into its name and value child nodes.
  */
 function splitVariableDeclarator(
   node: ASTNode,
@@ -654,12 +733,10 @@ function splitVariableDeclarator(
 ): {
   nameNode: ASTNode | null;
   valueNode: ASTNode | null;
-  typeAnnotationNode: ASTNode | null;
 } {
   const children = adapter.getChildren(node);
   let nameNode: ASTNode | null = null;
   let valueNode: ASTNode | null = null;
-  let typeAnnotationNode: ASTNode | null = null;
   let pastEquals = false;
 
   for (const child of children) {
@@ -668,10 +745,7 @@ function splitVariableDeclarator(
       continue;
     }
     if (child.type === ':') continue;
-    if (child.type === 'type_annotation') {
-      typeAnnotationNode = child;
-      continue;
-    }
+    if (child.type === 'type_annotation') continue;
 
     if (!pastEquals && !nameNode) {
       // First non-syntax child is the name/pattern
@@ -693,7 +767,7 @@ function splitVariableDeclarator(
     }
   }
 
-  return { nameNode, valueNode, typeAnnotationNode };
+  return { nameNode, valueNode };
 }
 
 /**
@@ -821,8 +895,13 @@ function resolveReceiverText(
  * Extract the "receiver" identifier from a member expression chain.
  * For `db.prepare` → "db"
  * For `this.db.prepare` → "db" (walk to the deepest non-member identifier)
+ *
+ * @param node the member/selector expression node
+ * @param adapter the language adapter used to walk child nodes
+ * @param sourceCode the file source text for reading node text
+ * @returns the receiver identifier text, or `null`
  */
-function getMemberExpressionReceiver(
+export function getMemberExpressionReceiver(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
@@ -941,10 +1020,15 @@ function walkAST(root: ASTNode, visitor: ASTVisitor): void {
 
 export interface BuildProvenanceContextOptions {
   mode: DetectionMode;
-  /** Name lists used in hybrid/names fallback modes */
-  dbReceiverNames?: string[];
+  /**
+   * Cross-file resolution seeds — the per-file provenanced identifiers produced
+   * by `resolveReceiverProvenance` (package import / declaration / propagation /
+   * wrapper / cross-file import). Merged into the import seeds before
+   * propagation; this is the declaration-based replacement for the deleted
+   * name-list fallback (Spec 69 §10).
+   */
+  seedProvenance?: ReadonlyMap<string, ProvenanceEvidence>;
   dbBindingNames?: string[];
-  dbCallMethods?: string[];
   /**
    * Known DB wrapper function names — e.g. d1Query, d1Exec.
    * These are project-specific functions that wrap D1/DB API calls
@@ -957,6 +1041,14 @@ export interface BuildProvenanceContextOptions {
   dbWrapperNames?: string[];
   /** Validator package list override (defaults to VALIDATOR_PACKAGES) */
   validatorPackageList?: string[];
+  /**
+   * The corpus's named SQL dialect for R3 (sql-argument) handle inference. When
+   * non-null, a call whose argument parses as SQL under this dialect proves its
+   * receiver a DB handle (Spec 70 criterion 8) — the replacement for the deleted
+   * type-name handle tests (criterion 9). Absent (null/undefined), the R3 step
+   * abstains: `identifyHandle` reports `unproven` rather than guessing a dialect.
+   */
+  sqlDialect?: Dialect | null;
 }
 
 /**
@@ -980,160 +1072,314 @@ export function buildProvenanceContext(
 
   // 1. Extract seed identifiers from imports
   const dbSeeds = extractDBProvenancedImports(ast, adapter);
-  const validatorSeeds =
-    options.mode !== 'names'
-      ? extractValidatorProvenancedImports(ast, adapter)
-      : new Map<string, ProvenanceEvidence>();
+  const validatorSeeds = extractValidatorProvenancedImports(ast, adapter);
+
+  // 1a. Merge cross-file resolution seeds (declaration-based, not name-based).
+  //     These replace the deleted name-list fallback (Spec 69 §10): the
+  //     `seedProvenance` map is the per-file DB-provenanced identifier set
+  //     produced by `resolveReceiverProvenance` for this file.
+  if (options.seedProvenance) {
+    for (const [name, evidence] of options.seedProvenance) {
+      if (!dbSeeds.has(name)) dbSeeds.set(name, evidence);
+    }
+  }
 
   // 2. Propagate provenance through assignments
   let dbProvenanced = propagateProvenance(ast, adapter, sourceCode, dbSeeds);
-  let validatorProvenanced =
-    mode !== 'names'
-      ? propagateProvenance(ast, adapter, sourceCode, validatorSeeds)
-      : new Map<string, ProvenanceEvidence>();
+  const validatorProvenanced = propagateProvenance(ast, adapter, sourceCode, validatorSeeds);
 
-  // 3. Fallback: in hybrid mode, add identifiers that match name lists
-  //    but weren't caught by provenance (R3)
-  if (mode === 'hybrid') {
-    dbProvenanced = addNameListFallbacks(dbProvenanced, sourceCode, {
-      dbReceiverNames: options.dbReceiverNames ?? [],
-      dbBindingNames: options.dbBindingNames ?? [],
-      dbWrapperNames: options.dbWrapperNames ?? [],
-    });
-    // 3a. Wrapper detection: learn DB-wrapper function names from function
-    //     bodies (a D1 REST fetch, or delegation to an already-provenanced
-    //     receiver). A bare call like `d1(sql)` then resolves as DB-provenanced
-    //     and its SQL reaches the table rules instead of bypassing them.
-    dbProvenanced = detectDbWrapperFunctions(ast, adapter, sourceCode, dbProvenanced);
+  // 2a. DB-shaped activity — receiver roots of DB/ORM call sites, proven or
+  //     unproven. This is the file-gate signal, not a handle decision: it must
+  //     run before the R3 dialect gate so a type-annotated handle with a dynamic
+  //     SQL argument (unproven under criterion 9, no dialect to parse) still
+  //     passes the gate and reaches the analyzers instead of being dropped.
+  const dbActivity = collectDbActivity(ast, adapter, sourceCode);
+
+  // 3. R3 — a call whose argument parses as SQL proves its receiver a handle
+  //    (criterion 8). This is the replacement for the type-name handle tests
+  //    criterion 9 deleted: `const db: D1Database = getDb()` no longer proves `db`
+  //    by its annotation, but `db.query('SELECT …')` still does — by the parsed
+  //    argument, not the name. Runs before wrapper detection so a wrapper body's
+  //    `db.prepare('SELECT …')` is already visible as a DB call to
+  //    `detectDbWrappers`. Only run when a dialect is named; without one
+  //    `identifyHandle` abstains (`unproven`) rather than guessing.
+  if (options.sqlDialect) {
+    dbProvenanced = applySqlArgumentInference(ast, adapter, sourceCode, dbProvenanced, options.sqlDialect);
   }
 
-  // 4. In names mode, use ONLY name lists
-  if (mode === 'names') {
-    dbProvenanced = buildNamesOnlyProvenance(
-      sourceCode,
-      options.dbReceiverNames ?? [],
-      options.dbBindingNames ?? [],
-      options.dbWrapperNames ?? [],
-    );
-  }
+  // 4. Wrapper detection (structural, not name-based): learn DB-wrapper function
+  //    names from function bodies — a body that constructs/calls a DB driver.
+  //    A bare call like `d1(sql)` then resolves as DB-provenanced and its SQL
+  //    reaches the table rules instead of bypassing them.
+  dbProvenanced = detectDbWrappers(ast, adapter, sourceCode, dbProvenanced);
 
   return {
     dbProvenanced,
     validatorProvenanced,
     mode,
+    dbActivity,
   };
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// R3 — sql-argument handle inference (criterion 8)
+// ═══════════════════════════════════════════════════════════════════════════
+
 /**
- * Add fallback provenance entries for identifiers that match name lists
- * but weren't caught by the provenance chain (R3 hybrid mode).
+ * Collect the receiver roots of raw-SQL call sites (a member/selector call
+ * whose method name is in `DB_CALL_METHODS`), *proven or unproven*. This is the
+ * file-gate signal — see `ProvenanceContext.dbActivity` — not a handle decision
+ * (that is `identifyHandle`'s job alone, criterion 2).
  *
- * These entries carry `reason: 'fallback'` — visible in config detection
- * so users can audit and tighten their chains.
+ * Unlike R3 (`applySqlArgumentInference`) it needs no dialect and does not
+ * require the SQL argument to be a static literal: a type-annotated handle with
+ * a dynamic SQL argument (`db.prepare(sql)`) has no provable dialect but the
+ * site is still DB-shaped, so the file must reach the analyzers rather than be
+ * silently dropped. Runs unconditionally, before R3's dialect gate.
  */
-/**
- * Name-list inputs for fallback provenance. Bundles the three configured name
- * lists so the fallback builder takes a single name-lists object rather than
- * three trailing positional arrays.
- */
-interface NameLists {
-  dbReceiverNames: string[];
-  dbBindingNames: string[];
-  dbWrapperNames: string[];
-}
-
-function addNameListFallbacks(
-  provenanceMap: Map<string, ProvenanceEvidence>,
+export function collectDbActivity(
+  ast: AST,
+  adapter: LanguageAdapter,
   sourceCode: string,
-  nameLists: NameLists,
-): Map<string, ProvenanceEvidence> {
-  const { dbReceiverNames, dbBindingNames, dbWrapperNames } = nameLists;
-  const result = new Map(provenanceMap);
+): Set<string> {
+  const activity = new Set<string>();
+  // Go resolves cross-file; a member-receiver root has no local binding to key
+  // the gate on, and Go files are gated by their own import resolution instead.
+  if (adapter.name === 'go') return activity;
 
-  addIdentifierFallbacks(result, sourceCode, dbReceiverNames, 'dbReceiverNames');
-  addBindingFallbacks(result, sourceCode, dbBindingNames);
-  addIdentifierFallbacks(result, sourceCode, dbWrapperNames, 'dbWrapperNames');
-
-  return result;
-}
-
-/** Add fallback entries for identifiers that appear in source but lack provenance. */
-function addIdentifierFallbacks(
-  result: Map<string, ProvenanceEvidence>,
-  sourceCode: string,
-  names: string[],
-  label: string,
-): void {
-  for (const name of names) {
-    if (result.has(name)) continue; // already provenanced — provenance wins
-    if (identifierAppearsInSource(sourceCode, name)) {
-      result.set(name, {
-        identifier: name,
-        reason: 'fallback',
-        source: `name list match: ${label} contains "${name}"`,
-        chain: [],
-      });
-    }
-  }
-}
-
-/** Add fallback entries for binding names like `env.DB` (plus their short forms). */
-function addBindingFallbacks(
-  result: Map<string, ProvenanceEvidence>,
-  sourceCode: string,
-  bindings: string[],
-): void {
-  for (const binding of bindings) {
-    if (!sourceCode.includes(binding)) continue;
-    const dotIdx = binding.lastIndexOf('.');
-    const shortName = dotIdx >= 0 ? binding.substring(dotIdx + 1) : binding;
-    if (!result.has(binding)) {
-      result.set(binding, {
-        identifier: binding,
-        reason: 'fallback',
-        source: `name list match: dbBindingNames contains "${binding}"`,
-        chain: [],
-      });
-    }
-    if (shortName !== binding && !result.has(shortName)) {
-      result.set(shortName, {
-        identifier: shortName,
-        reason: 'fallback',
-        source: `from binding ${binding}`,
-        chain: [],
-      });
-    }
-  }
-}
-
-/**
- * Build a provenance map using ONLY name lists (for names mode).
- */
-function buildNamesOnlyProvenance(
-  sourceCode: string,
-  dbReceiverNames: string[],
-  dbBindingNames: string[],
-  dbWrapperNames: string[],
-): Map<string, ProvenanceEvidence> {
-  return addNameListFallbacks(new Map(), sourceCode, {
-    dbReceiverNames,
-    dbBindingNames,
-    dbWrapperNames,
+  walkAST(ast.root, (node) => {
+    if (node.type !== 'call_expression') return;
+    const callee = getCallExpressionCallee(node, adapter);
+    if (!callee) return;
+    if (callee.type !== 'member_expression' && callee.type !== 'selector_expression') return;
+    const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+    if (!method) return;
+    const m = method.toLowerCase();
+    // Raw-SQL shape only — never a handle decision, and never ORM. ORM methods
+    // (`.select()`, `.find()`, `.set()`, …) carry no SQL string and are ambiguous
+    // with generic JS accessors, so admitting a file on them would over-broaden the
+    // gate to every file that calls `array.find()`. The unproven-activity signal is
+    // specifically "a raw-SQL call whose receiver is type-annotated but unproven"
+    // (criterion 9), which is exactly the DB_CALL_METHODS surface.
+    if (!DB_CALL_METHODS.has(m)) return;
+    const root = resolveReceiverRoot(callee, adapter, sourceCode);
+    if (root !== null) activity.add(root);
   });
+
+  return activity;
 }
 
-/** Check if an identifier name appears as a standalone identifier in source. */
-function identifierAppearsInSource(
+/**
+ * R3: a call whose argument parses as SQL proves its receiver a DB handle.
+ * Folds the one entry point `identifyHandle` (criterion 2: no second decision
+ * path) over DB-shaped call sites and adds every receiver it proves a handle to
+ * `dbProvenanced`. This is the replacement for the type-name handle tests
+ * criterion 9 deleted: a receiver typed `D1Database` / `MockDB` is no longer
+ * proven by its annotation, but `db.query('SELECT …')` still is — by the parsed
+ * argument, not the name.
+ *
+ * The declaration-resolution arm of `identifyHandle` re-runs here, but it is
+ * harmless and already the same evidence `propagateProvenance` produced: for a
+ * type-annotated receiver it now returns `unproven` (criterion 9), and
+ * `combineVerdicts`' `handle > not-handle > unproven` precedence lets the
+ * sql-argument proof win. A receiver already in the map is left untouched.
+ */
+function applySqlArgumentInference(
+  ast: AST,
+  adapter: LanguageAdapter,
   sourceCode: string,
-  name: string,
-): boolean {
-  // Use word boundary matching to avoid partial matches
-  const pattern = new RegExp(`\\b${escapeRegex(name)}\\b`);
-  return pattern.test(sourceCode);
+  dbProvenanced: Map<string, ProvenanceEvidence>,
+  sqlDialect: Dialect,
+): Map<string, ProvenanceEvidence> {
+  if (adapter.name === 'go') return dbProvenanced; // Go resolves cross-file; no TS env here.
+
+  const env: RootResolutionEnv = {
+    provenance: dbProvenanced,
+    bindings: buildBindingEnv(ast, adapter, sourceCode),
+    adapter,
+    sourceCode,
+  };
+
+  walkAST(ast.root, (node) => {
+    if (node.type !== 'call_expression') return;
+    const callee = getCallExpressionCallee(node, adapter);
+    if (!callee) return;
+
+    // Only member-expression calls carry the receiver whose handle-ness R3
+    // proves. A bare-identifier call (`query('…')`) has no receiver to add.
+    if (callee.type !== 'member_expression' && callee.type !== 'selector_expression') return;
+
+    const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+    if (!method) return;
+    const m = method.toLowerCase();
+    // Candidate filter: DB/ORM *shape* test, never a handle decision (mirrors
+    // `handleVerdictForCall`). `DB_CALL_METHODS` is lowercase; ORM methods are
+    // camelCase and must be checked raw too.
+    if (!DB_CALL_METHODS.has(m) && !ORM_METHODS.has(m) && !ORM_METHODS.has(method)) return;
+
+    const root = resolveReceiverRoot(callee, adapter, sourceCode);
+    if (root === null) return;
+    const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
+
+    const sqlArgument = extractStaticSqlArgument(node, adapter, sourceCode);
+    if (sqlArgument === null) return;
+
+    const verdict = identifyHandle(
+      {
+        format: 'typescript',
+        root,
+        receiver,
+        method,
+        sqlArgument,
+        thisField: receiverRootIsThis(callee, adapter),
+      },
+      {
+        imports: new Map(),
+        typeAnnotations: new Map(),
+        bindings: new Map(),
+        withinFileProvenance: new Map(),
+        sqlDialect,
+        resolution: { dialect: 'ts', env },
+      },
+    );
+
+    if (verdict.kind === 'handle' && !dbProvenanced.has(root)) {
+      dbProvenanced.set(root, {
+        identifier: root,
+        reason: 'sql-argument',
+        source: 'SQL argument parses as a statement (Spec 70 R3)',
+        chain: [],
+      });
+    }
+  });
+
+  return dbProvenanced;
 }
 
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/**
+ * A serializable R3 site — one member-expression call whose static SQL argument
+ * is a parseable literal, exactly the sites `applySqlArgumentInference` folds
+ * `identifyHandle` over. `format` is absent because the R3 path is always
+ * `typescript` (Go resolves cross-file and has no TS `RootResolutionEnv`). The
+ * receiver-provenance corpus consumers carry this per file and re-run
+ * `identifyHandle` corpus-side with the seeded provenance + rehydrated bindings.
+ */
+export interface R3Site {
+  readonly root: string;
+  readonly receiver: string;
+  readonly method: string;
+  readonly sqlArgument: string;
+  readonly thisField: boolean;
+}
+
+/**
+ * Extract the R3 sites of a TS-family file — the member calls whose static SQL
+ * argument proves their receiver a handle (Spec 70 criterion 8). This is the
+ * provenance-free extraction half of {@link applySqlArgumentInference}: the same
+ * candidate filter (DB/ORM shape) and the same static-argument test, but it
+ * records the site instead of folding `identifyHandle`. The corpus-side
+ * `applyR3FromSites` mirror re-runs the verdict once the seeded provenance and
+ * bindings are known.
+ */
+export function extractR3Sites(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): R3Site[] {
+  if (adapter.name === 'go') return []; // Go resolves cross-file; no TS env here.
+
+  const sites: R3Site[] = [];
+  walkAST(ast.root, (node) => {
+    if (node.type !== 'call_expression') return;
+    const callee = getCallExpressionCallee(node, adapter);
+    if (!callee) return;
+
+    // Only member-expression calls carry the receiver whose handle-ness R3
+    // proves. A bare-identifier call (`query('…')`) has no receiver to add.
+    if (callee.type !== 'member_expression' && callee.type !== 'selector_expression') return;
+
+    const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+    if (!method) return;
+    const m = method.toLowerCase();
+    // Candidate filter: DB/ORM *shape* test, never a handle decision (mirrors
+    // `handleVerdictForCall`). `DB_CALL_METHODS` is lowercase; ORM methods are
+    // camelCase and must be checked raw too.
+    if (!DB_CALL_METHODS.has(m) && !ORM_METHODS.has(m) && !ORM_METHODS.has(method)) return;
+
+    const root = resolveReceiverRoot(callee, adapter, sourceCode);
+    if (root === null) return;
+    const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
+
+    const sqlArgument = extractStaticSqlArgument(node, adapter, sourceCode);
+    if (sqlArgument === null) return;
+
+    sites.push({
+      root,
+      receiver,
+      method,
+      sqlArgument,
+      thisField: receiverRootIsThis(callee, adapter),
+    });
+  });
+
+  return sites;
+}
+
+/** True when a member/selector chain bottoms out at `this`/`super`. */
+function receiverRootIsThis(callee: ASTNode, adapter: LanguageAdapter): boolean {
+  let current: ASTNode = callee;
+  while (current.type === 'member_expression' || current.type === 'selector_expression') {
+    const children = adapter.getChildren(current);
+    const object = children.find(
+      (c) => c.type !== '.' && c.type !== 'property_identifier' && c.type !== 'field_identifier',
+    );
+    if (!object) return false;
+    current = object;
+  }
+  return current.type === 'this' || current.type === 'super';
+}
+
+/**
+ * The statically-present SQL text of a call's first argument (string/template
+ * literal), unquoted — or null when the first argument is not a literal or the
+ * template carries a `${…}` substitution (dynamic). Mirrors the literal-argument
+ * slice of the data-access analyzer's `extractStaticSql`; the tagged-template
+ * and variable-assignment cases are not R3's concern here because a member
+ * receiver already names the handle.
+ */
+function extractStaticSqlArgument(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const children = adapter.getChildren(node);
+  const args = children.find((c) => {
+    const t = adapter.getNodeType(c);
+    return t === 'arguments' || t === 'argument_list';
+  });
+  if (!args) return null;
+  for (const arg of adapter.getChildren(args)) {
+    const t = adapter.getNodeType(arg);
+    if (t === '(' || t === ')' || t === ',') continue;
+    if (t === 'string' || t === 'template_string') {
+      if (t === 'template_string') {
+        const kids = adapter.getChildren(arg) ?? [];
+        if (kids.some((c) => adapter.getNodeType(c) === 'template_substitution')) return null;
+      }
+      const raw = adapter.getNodeText(arg, sourceCode) ?? '';
+      return stripSqlQuotes(raw);
+    }
+    return null; // first non-trivia argument is not a literal → cannot parse.
+  }
+  return null;
+}
+
+/** Strip the surrounding quote delimiters of a string/template literal. */
+function stripSqlQuotes(text: string): string {
+  if (text.length >= 2 && (text[0] === '"' || text[0] === "'" || text[0] === '`')) {
+    return text.slice(1, -1);
+  }
+  return text;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1171,7 +1417,131 @@ const FUNCTION_NODE_TYPES = new Set([
  * @param dbProvenanced The current provenance map (mutated in place and returned).
  * @returns The provenance map with any learned wrapper names added.
  */
-function detectDbWrapperFunctions(
+/** Shared predicate shape: does this node's own body wrap a DB operation? */
+type WrapperPredicate = (
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
+) => boolean;
+
+/** A wrapper-detection spec: which node types to scan, the body predicate, and
+ *  the provenance source label. */
+interface WrapperSpec {
+  nodeTypes: ReadonlySet<string>;
+  isWrapper: WrapperPredicate;
+  source: string;
+}
+
+/** Learn DB-wrapper names from nodes of `spec.nodeTypes` whose bodies wrap a DB
+ *  operation, merging each learned name into `dbProvenanced`. */
+function learnWrapperNames(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  dbProvenanced: Map<string, ProvenanceEvidence>,
+  spec: WrapperSpec,
+): Map<string, ProvenanceEvidence> {
+  const nodes = adapter.findNodes(ast, {
+    custom: (node: ASTNode) => spec.nodeTypes.has(node.type),
+  });
+
+  for (const node of nodes) {
+    const name = adapter.getNodeName(node);
+    if (!name) continue;
+    if (dbProvenanced.has(name)) continue;
+    if (!spec.isWrapper(node, adapter, sourceCode, dbProvenanced)) continue;
+    dbProvenanced.set(name, {
+      identifier: name,
+      reason: 'wrapper',
+      source: spec.source,
+      chain: [],
+    });
+  }
+
+  return dbProvenanced;
+}
+
+/** Class-node types that may wrap a DB handle (Spec 69 §10 — cross-file anchor). */
+const WRAPPER_CLASS_TYPES = new Set([
+  'class_declaration',
+  'abstract_class_declaration',
+  'class',
+]);
+
+/**
+ * Learn DB-wrapper names and merge them into the provenance map.
+ *
+ * A wrapper is a named function/class whose own body performs a DB operation —
+ * either a `fetch` to the Cloudflare D1 HTTP query API, or a call that delegates
+ * to an already DB-provenanced identifier/receiver. Adding the wrapper's name to
+ * `dbProvenanced` lets `isDBProvenanced` treat a bare call like `d1(sql)` as a
+ * DB call, so its SQL argument reaches the table rules (unknown-table /
+ * stale-table-reference) and the data-access rules instead of bypassing them.
+ *
+ * The class form (`options.classes`) is the object-form of the function form: its
+ * body (fields + methods + constructor) constructs or calls a DB driver, so the
+ * class *is* a DB handle — e.g. `export class Database { constructor() {
+ * this.sql = neon(url) } query(t) { return this.sql(t) } }`. Class bodies are
+ * scanned *through* method bodies (the driver call lives in the constructor) but
+ * never into nested classes or nested function declarations — an inner named
+ * function's DB op is not mis-attributed to the outer class.
+ *
+ * This is structural evidence, not name matching, so it is only run in hybrid
+ * mode (alongside the name fallbacks), never strict `provenance`/`names` modes.
+ *
+ * @param ast the parsed file AST
+ * @param adapter the language adapter used to walk nodes
+ * @param sourceCode the file source text for reading node text
+ * @param dbProvenanced the provenance map to merge learned wrapper names into
+ * @param options when `classes` is true, also scan wrapper classes
+ * @returns the provenance map with wrapper names added
+ */
+export function detectDbWrappers(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  dbProvenanced: Map<string, ProvenanceEvidence>,
+  options?: { classes?: boolean },
+): Map<string, ProvenanceEvidence> {
+  learnWrapperNames(ast, adapter, sourceCode, dbProvenanced, {
+    nodeTypes: FUNCTION_NODE_TYPES,
+    isWrapper: isDbWrapperBody,
+    source: 'function body performs a DB operation',
+  });
+  if (options?.classes) {
+    learnWrapperNames(ast, adapter, sourceCode, dbProvenanced, {
+      nodeTypes: WRAPPER_CLASS_TYPES,
+      isWrapper: isDbWrapperClass,
+      source: 'class body constructs or calls a DB driver',
+    });
+  }
+  return dbProvenanced;
+}
+
+/**
+ * Form-5 (Spec 69 §10 S5f) — function return resolution.
+ *
+ * A call to an in-repo function resolves to its *returned construction*,
+ * transitively: `export function getDB() { return new Database() }` proves
+ * `getDB` is a DB handle because the returned expression is already provenanced —
+ * the identifier's name is irrelevant. It is the binding form the two
+ * `cli-integration` fixtures need: `const db = getDB()` in an importing file
+ * resolves through the export fixed point (a provenanced `getDB` export is seeded
+ * in importers) and then propagates via the existing rule 2 (call to a provenanced
+ * identifier).
+ *
+ * This deliberately does NOT learn to accept mocks: a `getDB(): MockDB` with no
+ * provenanced client anywhere in its chain is honestly not a handle, and stays
+ * unprovenanced.
+ *
+ * @param ast the parsed file AST
+ * @param adapter the language adapter used to find function nodes
+ * @param sourceCode the file source text for reading return expressions
+ * @param dbProvenanced the provenance map to merge learned names into
+ * @returns the provenance map with DB-returning function names added
+ */
+export function detectDbReturningFunctions(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
@@ -1183,18 +1553,103 @@ function detectDbWrapperFunctions(
 
   for (const fn of functionNodes) {
     const name = adapter.getNodeName(fn);
-    if (!name) continue;
-    if (dbProvenanced.has(name)) continue;
-    if (!isDbWrapperBody(fn, adapter, sourceCode, dbProvenanced)) continue;
-    dbProvenanced.set(name, {
-      identifier: name,
-      reason: 'wrapper',
-      source: 'function body performs a DB operation',
-      chain: [],
-    });
+    if (!name || dbProvenanced.has(name)) continue;
+
+    // A `return` whose expression is an already-provenanced construction
+    // (`return new Database(...)`, `return db`, `return drizzle(...)`).
+    if (functionReturnsProvenanced(fn, adapter, sourceCode, dbProvenanced)) {
+      dbProvenanced.set(name, {
+        identifier: name,
+        reason: 'propagation',
+        source: 'returns a DB-provenanced construction',
+        chain: [],
+      });
+    }
   }
 
   return dbProvenanced;
+}
+
+/**
+ * True when any `return` statement in a function body returns an expression that
+ * is itself a DB-provenanced construction — a provenanced identifier, a
+ * `new`/call whose constructor/callee is provenanced, or a member expression on a
+ * provenanced receiver.
+ */
+function functionReturnsProvenanced(
+  fn: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
+): boolean {
+  let found = false;
+  walkAST(fn, (node) => {
+    if (found || node.type !== 'return_statement') return;
+    const arg = adapter.getChildren(node).find((c) => c.type !== 'return');
+    if (!arg) return;
+    if (tryPropagateFromExpression(arg, adapter, sourceCode, dbProvenanced as Map<string, ProvenanceEvidence>)) {
+      found = true;
+    }
+  });
+  return found;
+}
+
+/**
+ * Decide whether a class's own body performs a DB operation: a D1 REST fetch, a
+ * call delegating to an already DB-provenanced identifier/receiver, or a
+ * `new`/call to a DB-provenanced constructor/function (the driver a wrapper
+ * class *owns*). Method bodies are included (the constructor is where the driver
+ * call lives); nested classes and nested function declarations are excluded.
+ */
+function isDbWrapperClass(
+  cls: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
+): boolean {
+  for (const expr of collectClassCallExpressions(cls, adapter)) {
+    if (expr.type === 'new_expression') {
+      const ctor = findChildOfType(expr, ['identifier', 'member_expression']);
+      if (ctor) {
+        const ctorName = extractIdentifierName(ctor, adapter, sourceCode);
+        if (ctorName && dbProvenanced.has(ctorName)) return true;
+      }
+      continue;
+    }
+    if (isD1RestCall(expr, adapter, sourceCode)) return true;
+    if (delegatesToProvenanced(expr, adapter, sourceCode, dbProvenanced)) return true;
+  }
+  return false;
+}
+
+/**
+ * Collect `call_expression`/`new_expression` nodes within a class body, descending
+ * through method bodies but never into nested classes or nested function
+ * declarations (so an inner function's DB op doesn't make the class a wrapper).
+ */
+function collectClassCallExpressions(cls: ASTNode, adapter: LanguageAdapter): ASTNode[] {
+  const expressions: ASTNode[] = [];
+  const NESTED_SKIP = new Set([
+    'class_declaration',
+    'abstract_class_declaration',
+    'class',
+    'function_declaration',
+    'function_expression',
+    'arrow_function',
+    'generator_function_declaration',
+    'generator_function_expression',
+  ]);
+  const walk = (node: ASTNode): void => {
+    for (const child of adapter.getChildren(node)) {
+      if (NESTED_SKIP.has(child.type)) continue;
+      if (child.type === 'call_expression' || child.type === 'new_expression') {
+        expressions.push(child);
+      }
+      walk(child);
+    }
+  };
+  walk(cls);
+  return expressions;
 }
 
 /**
@@ -1270,135 +1725,80 @@ function delegatesToProvenanced(
   if (callee.type === 'member_expression' || callee.type === 'selector_expression') {
     const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode);
     if (!receiver) return false;
-    if (dbProvenanced.has(receiver)) return true;
-    // Compound receivers ("env.DB", "db.users") — match any dotted segment.
-    return receiver.split('.').some((part) => dbProvenanced.has(part));
+    const receiverProvenanced =
+      dbProvenanced.has(receiver) ||
+      // Compound receivers ("env.DB", "db.users") — match any dotted segment.
+      receiver.split('.').some((part) => dbProvenanced.has(part));
+    if (!receiverProvenanced) return false;
+    // A provenanced receiver only counts as delegation when the *method* is a
+    // DB/ORM method — `db.prepare(...)` delegates, but `provenancedMap.set(k, v)`
+    // (a Map/Set built from a provenanced in-memory value) does not. This is the
+    // same method gate `isDBMethodCall` applies, so a function whose body only
+    // mutates a provenanced Map is not learned as a DB wrapper.
+    return dbMethodInMemberChain(callee, adapter, sourceCode, (n) => adapter.getChildren(n));
   }
 
   return false;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Core detection — is this call DB-provenanced?
+// Per-call-site dialect (Spec 70)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Bundled inputs for the DB-provenance decision helpers: the adapter and
- * source needed to read node text, the resolved provenance context, and the
- * (already defaulted) set of DB call methods.  Collapses the five positional
- * parameters the `isDB*` family used to thread through every call into one.
- */
-interface DBProvenanceQuery {
-  adapter: LanguageAdapter;
-  sourceCode: string;
-  context: ProvenanceContext;
-  methods: ReadonlySet<string>;
+/** The SQL dialect a DB-driver package's evidence names, or null when the
+ *  evidence carries no package or the package names no single dialect. */
+function dialectForEvidence(evidence: ProvenanceEvidence | undefined): Dialect | null {
+  if (!evidence?.packageName) return null;
+  return dialectForPackage(evidence.packageName);
 }
 
 /**
- * Determine if a call-expression node's callee is DB-provenanced.
+ * Resolve the SQL dialect a call site should parse its SQL argument under, from
+ * the package its receiver traces to (Spec 70 — per-site dialect). The dialect
+ * is a property of the *located fact*, not the repo: `pool.query(…)` where
+ * `pool` resolves to `pg` is postgres, `conn.query(…)` where `conn` resolves to
+ * `mysql2` is mysql. A repo with two drivers is therefore not "ambiguous" for a
+ * site whose receiver resolves to one of them — that site names its dialect and
+ * parses honestly.
  *
- * This replaces the old `isDBCallee()` / `isDbCallNode()` name-based
- * pattern matching in UniversalDataAccessAnalyzer.
+ * Returns null when the receiver carries no package (a wrapper, a type
+ * annotation, an in-repo module, a cross-dialect ORM like `knex`) or when that
+ * package names no single dialect — the caller then falls back to repo-level
+ * detection (`detectDialect`), and abstains only when that is also null.
  *
- * Checks:
- *   1. Simple identifier call → is the identifier DB-provenanced?
- *   2. Member expression call → is the receiver DB-provenanced AND is the
- *      method in the DB call method set?
- *   3. ORM patterns → receiver is DB-provenanced and method matches ORM API
- *
- * @param node  the call-expression node whose callee is under test
- * @param query  bundled adapter, source, provenance context, and DB methods
- * @returns  true if the call's callee resolves to a DB-provenanced target
+ * @param node The call-expression node whose callee is under test.
+ * @param adapter The language adapter for child traversal.
+ * @param sourceCode The file source text (for reading node text).
+ * @param provenanceContext The resolved provenance context for this file.
+ * @returns The receiver's dialect, or null when the receiver doesn't resolve to one.
  */
-export function isDBProvenanced(node: ASTNode, query: DBProvenanceQuery): boolean {
-  if (node.type !== 'call_expression') return false;
-
-  const { adapter, sourceCode, context, methods } = query;
-  const calleeNode = getCallExpressionCallee(node, adapter);
-  if (!calleeNode) return false;
-
-  // Case 1: Simple identifier call — e.g. query(...)
-  if (calleeNode.type === 'identifier') {
-    const name = adapter.getNodeText(calleeNode, sourceCode);
-    if (name !== null && context.dbProvenanced.has(name)) {
-      return true;
-    }
-    // Hybrid fallback: standalone calls to dbCallMethods (query, execute, etc.)
-    // qualify as likely DB calls when provenance couldn't resolve the import.
-    // This catches patterns like `import { query } from './db'` where './db' is
-    // a local re-export of a known package — provenance can't see through it,
-    // but the method name is strong evidence.
-    if (context.mode === 'hybrid' && name !== null && methods.has(name)) {
-      return true;
-    }
-    return false;
-  }
-
-  // Case 2: Member expression — e.g. db.prepare(...)
-  if (calleeNode.type === 'member_expression' || calleeNode.type === 'selector_expression') {
-    return isMemberExpressionDBProvenanced(calleeNode, query);
-  }
-
-  return false;
-}
-
-/**
- * Check if a member_expression call is DB-provenanced.
- *
- * Traverses the member chain to find the root receiver,
- * checks if it's in the provenance context, and verifies
- * the method matches the DB call/ORM API.
- */
-function isMemberExpressionDBProvenanced(node: ASTNode, query: DBProvenanceQuery): boolean {
-  const { adapter, sourceCode, context } = query;
-  const rootReceiver = findRootReceiver(node, adapter, sourceCode);
-  if (!rootReceiver) return false;
-
-  // In names mode, check the method name directly
-  if (context.mode === 'names') {
-    return isDBMethodCall(node, query);
-  }
-
-  // Check if the root receiver is DB-provenanced.
-  // Compound receivers (e.g. "db.users" or "env.DB") need to match both
-  // the full text (for bindings like "env.DB") and each sub-identifier
-  // (for receivers like "db.users" where "db" is in dbReceiverNames).
-  const matchesProvenance = (r: string): boolean => {
-    if (context.dbProvenanced.has(r)) return true;
-    for (const part of r.split('.')) {
-      if (context.dbProvenanced.has(part)) return true;
-    }
-    return false;
-  };
-
-  if (!matchesProvenance(rootReceiver)) {
-    if (rootReceiver !== 'this') return false;
-    // For `this.xxx`, check if the method chain itself suggests DB usage
-    return isDBMethodOnThis(node, query);
-  }
-
-  // Check that the method is in the DB call/ORM API
-  return isDBMethodCall(node, query);
-}
-
-/**
- * Walk a member/selector expression chain to its root receiver text.
- * Returns `'this'` for `this.xxx` chains and `null` when no root is found.
- */
-function findRootReceiver(
+export function resolveSiteDialect(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
-): string | null {
-  let current: ASTNode = node;
+  provenanceContext: ProvenanceContext | undefined,
+): Dialect | null {
+  if (!provenanceContext) return null;
+  const calleeNode = getCallExpressionCallee(node, adapter);
+  if (!calleeNode) return null;
 
-  while (current.type === 'member_expression' || current.type === 'selector_expression') {
-    const children = adapter.getChildren(current);
-    const firstChild = children[0];
-    if (!firstChild) break;
+  // Bare-identifier call (a wrapper like `d1(sql)`) → the identifier's package.
+  if (calleeNode.type === 'identifier') {
+    const name = adapter.getNodeText(calleeNode, sourceCode);
+    if (!name) return null;
+    return dialectForEvidence(provenanceContext.dbProvenanced.get(name));
+  }
 
-    return resolveReceiverText(firstChild, adapter, sourceCode, 'this');
+  // Member-expression call (`pool.query(...)`) → the receiver's package. Match the
+  // full receiver text and each dotted segment, mirroring
+  // `isMemberExpressionDBProvenanced` (`env.DB` / `db.users` / `this.db`).
+  if (calleeNode.type === 'member_expression' || calleeNode.type === 'selector_expression') {
+    const receiver = getMemberExpressionReceiver(calleeNode, adapter, sourceCode);
+    if (!receiver) return null;
+    for (const candidate of [receiver, ...receiver.split('.')]) {
+      const dialect = dialectForEvidence(provenanceContext.dbProvenanced.get(candidate));
+      if (dialect) return dialect;
+    }
   }
 
   return null;
@@ -1406,15 +1806,16 @@ function findRootReceiver(
 
 /**
  * Walk a member/selector-expression chain, returning true when any property in
- * the chain is a DB or ORM method. Shared by isDBMethodCall and
- * isDBMethodOnThis, which differ only in how they read a node's children.
+ * the chain is a DB or ORM method. Used by {@link delegatesToProvenanced} to
+ * distinguish a DB-delegating call (`db.prepare(...)`) from a non-DB mutation
+ * on a provenanced in-memory value (`provenancedMap.set(k, v)`).
  */
 function dbMethodInMemberChain(
   node: ASTNode,
-  query: DBProvenanceQuery,
+  adapter: LanguageAdapter,
+  sourceCode: string,
   getChildren: (n: ASTNode) => ASTNode[],
 ): boolean {
-  const { adapter, sourceCode, methods } = query;
   let current: ASTNode = node;
   while (
     current.type === 'member_expression' ||
@@ -1429,7 +1830,15 @@ function dbMethodInMemberChain(
       ) {
         const propName = adapter.getNodeText(child, sourceCode);
         const lower = propName.toLowerCase();
-        if (methods.has(lower) || ORM_METHODS.has(lower)) {
+        // DB_CALL_METHODS is all-lowercase, so `DB_CALL_METHODS.has(lower)` covers it.
+        // ORM_METHODS is mixed-case (camelCase JS method names like
+        // `findUnique`/`findMany`/`selectFrom`), so it must be checked against
+        // both the lowercased form (for lowercase entries like `find`/`select`/
+        // `set`) and the raw property (for camelCase entries). Lowercasing only
+        // here turned `findUnique` into `findunique` and never matched, silently
+        // dropping every camelCase ORM finder as a DB call (the false negative
+        // #406.3's Prisma must-fire fixture exposed).
+        if (DB_CALL_METHODS.has(lower) || ORM_METHODS.has(lower) || ORM_METHODS.has(propName)) {
           return true;
         }
       }
@@ -1446,22 +1855,6 @@ function dbMethodInMemberChain(
     }
   }
   return false;
-}
-
-/**
- * Check if a call through a member expression uses a DB method
- * (exec, prepare, all, etc.) or an ORM method (find, insert, etc.).
- */
-function isDBMethodCall(node: ASTNode, query: DBProvenanceQuery): boolean {
-  return dbMethodInMemberChain(node, query, (n) => n.children ?? []);
-}
-
-/**
- * For `this.xxx.method()` calls — check if the method chain suggests DB access.
- * Used when the receiver is `this` (not directly DB-provenanced).
- */
-function isDBMethodOnThis(node: ASTNode, query: DBProvenanceQuery): boolean {
-  return dbMethodInMemberChain(node, query, (n) => query.adapter.getChildren(n));
 }
 
 /**
@@ -1742,8 +2135,13 @@ function extractTopLevelIdentifiers(text: string): string[] {
 /**
  * Extract the property name from a member expression node.
  * For `db.prepare` → "prepare", for `db.sql.prepare` → "prepare"
+ *
+ * @param node the member/selector expression node
+ * @param adapter the language adapter used to read children
+ * @param sourceCode the file source text for reading node text
+ * @returns the property identifier text, or `null`
  */
-function extractMemberExpressionProperty(
+export function extractMemberExpressionProperty(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
@@ -1757,4 +2155,253 @@ function extractMemberExpressionProperty(
     }
   }
   return null;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TS within-file-provenance split — the extract arm (Spec 70 Item 4 / Item 3)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `extractTsWithinFileProvenance` projects everything `computeTsWithinFileProvenance`
+// reads from a single file's AST into a serializable `TsWithinFileProvenanceExtract`
+// (see tsExpressionDescriptor.ts). The classify arm re-runs the fixed point over the
+// projection with no AST. The two are pinned byte-identical by the parity spec.
+//
+// Every helper below is the *structural* half — provenance-free — so it may run at
+// extract time. The semantic half (which name resolves to which evidence) is
+// deferred to classify, where the provenance map is known.
+
+/** Project an `await` expression: the first non-`await` child carries the value. */
+function describeAwaitExpression(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): TsExpressionDescriptor {
+  for (const child of adapter.getChildren(node)) {
+    if (child.type === 'await') continue;
+    return { kind: 'await', operand: describeTsExpression(child, adapter, sourceCode) };
+  }
+  return { kind: 'await', operand: null };
+}
+
+/** Project a `new` expression: the leftmost identifier of its constructor. */
+function describeNewExpression(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): TsExpressionDescriptor {
+  const ctor = findChildOfType(node, ['identifier', 'member_expression']);
+  return { kind: 'new', ctorName: ctor ? extractIdentifierName(ctor, adapter, sourceCode) : null };
+}
+
+/** Project a call expression: the callee (via `getCallExpressionCallee`) + its args. */
+function describeCallExpression(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): TsExpressionDescriptor {
+  const calleeNode = getCallExpressionCallee(node, adapter);
+  const callee = calleeNode ? describeTsExpression(calleeNode, adapter, sourceCode) : null;
+  const argsNode = adapter.getChildren(node).find((c) => c.type === 'arguments');
+  const args: TsExpressionDescriptor[] = [];
+  if (argsNode) {
+    for (const arg of adapter.getChildren(argsNode)) {
+      if (arg.type === '(' || arg.type === ')' || arg.type === ',') continue;
+      args.push(describeTsExpression(arg, adapter, sourceCode));
+    }
+  }
+  return { kind: 'call', callee, args };
+}
+
+/** Project a member expression: receiver (object) + property + full source text. */
+function describeMemberExpression(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): TsExpressionDescriptor {
+  const children = adapter.getChildren(node);
+  const receiver = children[0] ? describeTsExpression(children[0], adapter, sourceCode) : null;
+  let property: string | null = null;
+  for (const child of children) {
+    if (child.type === 'property_identifier' || child.type === 'field_identifier') {
+      property = adapter.getNodeText(child, sourceCode);
+      break;
+    }
+  }
+  return { kind: 'member', receiver, property, text: adapter.getNodeText(node, sourceCode) };
+}
+
+/**
+ * Project a value-expression node into a {@link TsExpressionDescriptor}. Mirrors
+ * the *structural* dispatch of `tryPropagateFromExpression`: `await` → `new` →
+ * `call` → `identifier` → `member`, and anything else collapses to `unproven`.
+ */
+function describeTsExpression(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): TsExpressionDescriptor {
+  switch (node.type) {
+    case 'await_expression':
+      return describeAwaitExpression(node, adapter, sourceCode);
+    case 'new_expression':
+      return describeNewExpression(node, adapter, sourceCode);
+    case 'call_expression':
+      return describeCallExpression(node, adapter, sourceCode);
+    case 'identifier':
+      return { kind: 'identifier', name: adapter.getNodeText(node, sourceCode) };
+    case 'member_expression':
+      return describeMemberExpression(node, adapter, sourceCode);
+    default:
+      return { kind: 'unproven' };
+  }
+}
+
+/** Child types excluded when locating a class-field initializer (mirrors `propagateClassField`). */
+const CLASS_FIELD_EXCLUDED = new Set([
+  'property_identifier',
+  'decorator',
+  'accessibility_modifier',
+  'private',
+  'public',
+  'protected',
+  'static',
+  'readonly',
+  'abstract',
+  'type_annotation',
+]);
+
+/**
+ * Project a single file's AST into the serializable {@link TsWithinFileProvenanceExtract}
+ * that `classifyTsWithinFileProvenance` re-runs the provenance fixed point over.
+ *
+ * Everything here is provenance-free (structural reads of the AST + source text),
+ * so it can run once at parse time and be carried as a file fact. The semantic
+ * resolution — which name a value resolves to under the current provenance map —
+ * is deferred to the classify arm.
+ */
+export function extractTsWithinFileProvenance(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): TsWithinFileProvenanceExtract {
+  const seeds = extractDBProvenancedImports(ast, adapter);
+  const localFunctions = collectLocalFunctionNames(ast, adapter, sourceCode);
+
+  // ── Propagation rules, in `walkAST` pre-order ─────────────────────────────
+  const propagationRules: PropagationRule[] = [];
+  walkAST(ast.root, (node, parent) => {
+    if (node.type === 'variable_declarator') {
+      const { nameNode, valueNode } = splitVariableDeclarator(node, adapter);
+      if (!nameNode) return;
+      const names = extractPatternNames(nameNode, adapter, sourceCode);
+      const value = valueNode ? describeTsExpression(valueNode, adapter, sourceCode) : null;
+      propagationRules.push({ kind: 'variable-declarator', names, value });
+      return;
+    }
+
+    if (node.type === 'assignment_pattern' && parent?.type === 'formal_parameters') {
+      const children = adapter.getChildren(node);
+      if (children.length < 2 || children[0].type !== 'identifier') return;
+      propagationRules.push({
+        kind: 'default-parameter',
+        name: adapter.getNodeText(children[0], sourceCode),
+        value: describeTsExpression(children[1], adapter, sourceCode),
+      });
+      return;
+    }
+
+    if (node.type === 'public_field_definition' || node.type === 'field_definition') {
+      const children = adapter.getChildren(node);
+      const nameChild = children.find((c) => c.type === 'property_identifier');
+      if (!nameChild) return;
+      const valueChild = children.find((c) => !CLASS_FIELD_EXCLUDED.has(c.type));
+      if (!valueChild) return;
+      propagationRules.push({
+        kind: 'class-field',
+        field: adapter.getNodeText(nameChild, sourceCode),
+        value: describeTsExpression(valueChild, adapter, sourceCode),
+      });
+      return;
+    }
+
+    if (node.type === 'assignment_expression') {
+      const children = adapter.getChildren(node);
+      const lhs = children.find(
+        (c) => c.type === 'member_expression' || c.type === 'selector_expression',
+      );
+      if (!lhs) return;
+      const lhsChildren = adapter.getChildren(lhs);
+      const obj = lhsChildren.find((c) => c.type === 'this' || c.type === 'super');
+      if (!obj) return;
+      const prop = lhsChildren.find(
+        (c) => c.type === 'property_identifier' || c.type === 'field_identifier',
+      );
+      if (!prop) return;
+      const fieldName = adapter.getNodeText(prop, sourceCode);
+      if (!fieldName) return;
+      const rhs = children[children.length - 1];
+      if (!rhs || rhs.type === 'member_expression' || rhs.type === 'selector_expression') return;
+      propagationRules.push({
+        kind: 'member-assignment',
+        field: fieldName,
+        value: describeTsExpression(rhs, adapter, sourceCode),
+      });
+      return;
+    }
+  });
+
+  // ── Wrapper functions, wrapper classes, returning functions ────────────────
+  // One `findNodes` pass for functions (wrappers + returning) and one for classes,
+  // matching the order `detectDbWrappers` / `detectDbReturningFunctions` consume.
+  const wrapperFunctions: { name: string; ownCalls: OwnCall[] }[] = [];
+  const returningFunctions: { name: string; returnExprs: TsExpressionDescriptor[] }[] = [];
+
+  const functionNodes = adapter.findNodes(ast, {
+    custom: (n: ASTNode) => FUNCTION_NODE_TYPES.has(n.type),
+  });
+  for (const fn of functionNodes) {
+    const name = adapter.getNodeName(fn);
+    if (!name) continue;
+
+    const ownCalls: OwnCall[] = collectOwnCallExpressions(fn, adapter).map((call) => ({
+      callee: getCallExpressionCallee(call, adapter)
+        ? describeTsExpression(getCallExpressionCallee(call, adapter)!, adapter, sourceCode)
+        : null,
+      isD1Rest: isD1RestCall(call, adapter, sourceCode),
+    }));
+    wrapperFunctions.push({ name, ownCalls });
+
+    const returnExprs: TsExpressionDescriptor[] = [];
+    walkAST(fn, (n) => {
+      if (n.type !== 'return_statement') return;
+      const arg = adapter.getChildren(n).find((c) => c.type !== 'return');
+      if (!arg) return;
+      returnExprs.push(describeTsExpression(arg, adapter, sourceCode));
+    });
+    returningFunctions.push({ name, returnExprs });
+  }
+
+  const wrapperClasses: { name: string; classCalls: ClassCall[] }[] = [];
+  const classNodes = adapter.findNodes(ast, {
+    custom: (n: ASTNode) => WRAPPER_CLASS_TYPES.has(n.type),
+  });
+  for (const cls of classNodes) {
+    const name = adapter.getNodeName(cls);
+    if (!name) continue;
+    const classCalls: ClassCall[] = collectClassCallExpressions(cls, adapter).map((expr) => {
+      if (expr.type === 'new_expression') {
+        const ctor = findChildOfType(expr, ['identifier', 'member_expression']);
+        return { kind: 'new', ctorName: ctor ? extractIdentifierName(ctor, adapter, sourceCode) : null };
+      }
+      const calleeNode = getCallExpressionCallee(expr, adapter);
+      return {
+        kind: 'call',
+        callee: calleeNode ? describeTsExpression(calleeNode, adapter, sourceCode) : null,
+        isD1Rest: isD1RestCall(expr, adapter, sourceCode),
+      };
+    });
+    wrapperClasses.push({ name, classCalls });
+  }
+
+  return { seeds, localFunctions, propagationRules, wrapperFunctions, wrapperClasses, returningFunctions };
 }

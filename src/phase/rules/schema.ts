@@ -2,7 +2,7 @@
  * Spec 68 §3.2 — the schema rules that are pure over extracted facts.
  *
  * Two of the five `schema` rules are a clean reduction over facts the producers
- * already extract: `unknown-table` (schema-usage × table-catalog) and
+ * already extract: `unknown-table` (schema-usage × resolution) and
  * `table-naming-convention` (schema-usage alone). Their violation logic is
  * re-homed verbatim from `UniversalSchemaAnalyzer`'s `checkMissingReferences`
  * and `checkNamingConventions` (in `codeAnalysis.ts`), which are pure functions
@@ -12,7 +12,7 @@
  * The `needs` declarations here CORRECT the registry's placeholder entries,
  * which said `schema-code` for both: the analyzer walked *references* (usages),
  * not DDL declarations. `unknown-table` reads the known-table catalog too, so
- * it declares `table-catalog` — the §5 corpus fact — alongside `schema-usage`.
+ * it declares `resolution` — the §5 corpus fact — alongside `schema-usage`.
  * `unknown-table`'s registry entry also claimed `go`; the Node implementation
  * is TypeScript-shaped and cannot evaluate a Go AST, so this declaration omits
  * `'go'` and the rule reports the honest `notApplicable` on a Go corpus (§9).
@@ -41,11 +41,12 @@ import type {
   RuleDefinition,
   Finding,
   SchemaUsageFact,
-  TableCatalog,
+  ResolutionFact,
   MigrationHistory,
   ThresholdValues,
 } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
+import { isTestOrSpecPath } from '../../languages/testConventions.js';
 import {
   isSystemTable,
   isTableValuedFunction,
@@ -63,14 +64,14 @@ type SchemaUsageNeeds = {
  *  `stale-table-reference` instead of mislabeling them as never-existed. */
 type UnknownTableNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
-  readonly facts: readonly ['schema-usage', 'table-catalog', 'migration-history'];
+  readonly facts: readonly ['schema-usage', 'resolution', 'migration-history'];
 };
 
 /** `stale-table-reference` additionally reads the migration-history corpus fact
  *  (§5) to distinguish "dropped in a migration" from "never existed". */
 type StaleTableReferenceNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript'];
-  readonly facts: readonly ['schema-usage', 'table-catalog', 'migration-history'];
+  readonly facts: readonly ['schema-usage', 'resolution', 'migration-history'];
 };
 
 /** Join a list of names as prose: "a", "a and b", "a, b and c". Mirrors the
@@ -85,18 +86,23 @@ const META = RULE_REGISTRY;
 
 /** The known-table set from the corpus catalog (case-sensitive, as the old
  *  `collectAllTableNames` built it). */
-function knownTableSet(catalog: TableCatalog): Set<string> {
+function knownTableSet(catalog: ResolutionFact): Set<string> {
   const names = new Set<string>();
   for (const t of catalog.tables) names.add(t.name);
   return names;
 }
 
 /** A usage is a candidate when it is a real table reference, not a fluent
- *  query-builder selector or a system/table-valued function. */
+ *  query-builder selector, a system/table-valued function, or a host-language
+ *  template substitution. The `${…}` form is a table name filled in at
+ *  query-composition time (`FROM "${this.tableName}"`), not a literal name the
+ *  catalog can resolve — the same carve-out `table-naming-convention` already
+ *  draws, so a dynamic table name is not misreported as unknown/stale. */
 function isRealTableRef(u: SchemaUsageFact): boolean {
   return u.origin !== 'query-builder'
     && !isSystemTable(u.tableName)
-    && !isTableValuedFunction(u.tableName);
+    && !isTableValuedFunction(u.tableName)
+    && !u.tableName.includes('${');
 }
 
 /**
@@ -109,10 +115,17 @@ function isRealTableRef(u: SchemaUsageFact): boolean {
  */
 function unknownRefs(
   usages: readonly SchemaUsageFact[],
-  catalog: TableCatalog,
+  catalog: ResolutionFact,
 ): { refs: SchemaUsageFact[]; knownCount: number; failOpen: boolean } {
   const known = knownTableSet(catalog);
-  const refs = usages.filter((u) => isRealTableRef(u) && !known.has(u.tableName));
+  // Symmetric scoping (#408): a file excluded from schema *declaration* is
+  // excluded from schema *reference*. The DDL replay drops `isTestOrSpecPath`
+  // files from the known-table set, so a table declared only in a test/spec file
+  // reads as unknown; references in those same test/spec files must not then
+  // fire `unknown-table`/`stale-table-reference`. Same predicate, both directions.
+  const refs = usages.filter(
+    (u) => isRealTableRef(u) && !isTestOrSpecPath(u.filePath) && !known.has(u.tableName),
+  );
   const knownCount = known.size;
   const failOpen = knownCount === 0 || refs.length / Math.max(knownCount, 1) > 10;
   return { refs, knownCount, failOpen };
@@ -123,15 +136,15 @@ function unknownRefs(
 const unknownTable: RuleDefinition<UnknownTableNeeds> = {
   id: 'unknown-table',
   analyzer: 'schema',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'table-catalog', 'migration-history'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'resolution', 'migration-history'] },
   severity: 'critical',
   message: META['unknown-table'].message,
   docs: META['unknown-table'].docs,
   thresholds: META['unknown-table'].thresholds,
   samples: META['unknown-table'].samples,
   analyze(ctx): Finding[] {
-    const known = knownTableSet(ctx.facts['table-catalog']);
-    const { refs, failOpen } = unknownRefs(ctx.facts['schema-usage'], ctx.facts['table-catalog']);
+    const known = knownTableSet(ctx.facts['resolution']);
+    const { refs, failOpen } = unknownRefs(ctx.facts['schema-usage'], ctx.facts['resolution']);
 
     // R2.4 fail-open: at 0 known tables, or an unknown:known ratio above 10,
     // the catalog is not trustworthy enough to flag individual references.
@@ -192,6 +205,12 @@ const tableNamingConvention: RuleDefinition<SchemaUsageNeeds> = {
       // Fluent-builder references carry a dynamic table string; naming
       // conformance is a property of the schema, not the call.
       if (ref.origin === 'query-builder') continue;
+      // A `${…}` template substitution is a host-language table name filled in
+      // at query-composition time (`FROM "${this.tableName}"`), not a literal
+      // name. The producer reports it accurately; naming conformance is a
+      // property of the schema, not the substitution — same carve-out rationale
+      // as `query-builder` origin above.
+      if (ref.tableName.includes('${')) continue;
 
       const isSnakeCase = /^[a-z][a-z0-9_]*$/.test(ref.tableName);
       const isTableSuffix = ref.tableName.endsWith('Table');
@@ -216,7 +235,7 @@ const tableNamingConvention: RuleDefinition<SchemaUsageNeeds> = {
 /**
  * `stale-table-reference` reads the `migration-history` corpus fact (§5) — the
  * drop-provenance map built by the shared `buildDropProvenance` the legacy
- * schema reducer called — alongside `schema-usage` + `table-catalog`. It is the
+ * schema reducer called — alongside `schema-usage` + `resolution`. It is the
  * partition of the unknown-reference set that `unknown-table` hands off: a
  * reference whose table a migration dropped is a stale code reference (the
  * message names the dropping migration and the tables it introduced as
@@ -229,7 +248,7 @@ const tableNamingConvention: RuleDefinition<SchemaUsageNeeds> = {
 const staleTableReference: RuleDefinition<StaleTableReferenceNeeds> = {
   id: 'stale-table-reference',
   analyzer: 'schema',
-  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'table-catalog', 'migration-history'] },
+  needs: { formats: ['typescript', 'tsx', 'javascript'], facts: ['schema-usage', 'resolution', 'migration-history'] },
   severity: 'critical',
   message: META['stale-table-reference'].message,
   docs: META['stale-table-reference'].docs,
@@ -237,7 +256,7 @@ const staleTableReference: RuleDefinition<StaleTableReferenceNeeds> = {
   samples: META['stale-table-reference'].samples,
   analyze(ctx): Finding[] {
     const dropped = ctx.facts['migration-history'].dropped;
-    const { refs, failOpen } = unknownRefs(ctx.facts['schema-usage'], ctx.facts['table-catalog']);
+    const { refs, failOpen } = unknownRefs(ctx.facts['schema-usage'], ctx.facts['resolution']);
     if (failOpen) return [];
 
     const out: Finding[] = [];
@@ -288,7 +307,7 @@ export const schemaRules: readonly RuleDefinition<
  * `DynamicSqlFact`, one per dangerous query/execute call site) — not
  * `schema-usage`. It is exported in a *separate* array from `schemaRules`
  * because the two fact kinds are distinct: the schema slice context carries
- * `schema-usage` + `table-catalog`, while this rule's context carries
+ * `schema-usage` + `resolution`, while this rule's context carries
  * `dynamic-sql` alone.
  *
  * Detection is the producer's — `collectDynamicSqlCandidates` in `codeAnalysis.ts`,
