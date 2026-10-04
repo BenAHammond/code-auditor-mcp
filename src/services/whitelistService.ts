@@ -75,7 +75,7 @@ export class WhitelistService {
    */
   async getWhitelist(type?: WhitelistType, status?: WhitelistStatus): Promise<WhitelistEntry[]> {
     const db = await getDatabase();
-    return db.getWhitelist(type, status);
+    return db.whitelist.getWhitelist(type, status);
   }
 
   /**
@@ -94,7 +94,7 @@ export class WhitelistService {
     patterns?: string[]
   ): Promise<WhitelistEntry> {
     const db = await getDatabase();
-    return db.addWhitelistEntry({
+    return db.whitelist.addWhitelistEntry({
       name,
       type,
       status: WhitelistStatus.Active,
@@ -109,7 +109,7 @@ export class WhitelistService {
    */
   async updateStatus(name: string, status: WhitelistStatus): Promise<void> {
     const db = await getDatabase();
-    await db.updateWhitelistStatus(name, status);
+    await db.whitelist.updateWhitelistStatus(name, status);
   }
 
   /**
@@ -117,7 +117,7 @@ export class WhitelistService {
    */
   async isWhitelisted(name: string, type: WhitelistType): Promise<boolean> {
     const db = await getDatabase();
-    return db.isWhitelisted(name, type);
+    return db.whitelist.isWhitelisted(name, type);
   }
 
   /**

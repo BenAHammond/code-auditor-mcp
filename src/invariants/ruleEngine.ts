@@ -37,6 +37,22 @@ export { hasRules } from './ruleValidator.js';
 /** Chunked IN-clause bound (SQLite max host params, conservative). */
 const SQLITE_MAX_VARIABLES = 900;
 
+/**
+ * Build a `col IN (...)` predicate over `values` as a single SQL fragment that
+ * respects the SQLite bind-parameter cap: the values are chunked into groups of
+ * `SQLITE_MAX_VARIABLES` and joined with `OR`, so the caller passes `values` as
+ * the single `?` list and issues one query — no per-item query loop.
+ */
+function chunkedInClause(col: string, values: readonly string[]): string {
+  const chunks: string[][] = [];
+  for (let i = 0; i < values.length; i += SQLITE_MAX_VARIABLES) {
+    chunks.push(values.slice(i, i + SQLITE_MAX_VARIABLES) as string[]);
+  }
+  return chunks
+    .map((c) => `${col} IN (${c.map(() => '?').join(', ')})`)
+    .join(' OR ');
+}
+
 /** Cache compiled matchers keyed by pattern */
 const matcherCache = new Map<string, ReturnType<typeof picomatch>>();
 
@@ -425,37 +441,38 @@ function checkStyleMechanism(
 
   const allowedSet = new Set(rule.allow);
 
-  for (const file of files) {
-    // Check path filter
-    if (rule.path && !matchesPattern(rule.path, file)) continue;
+  // Apply the path filter up front so the query runs once over the matching
+  // files (a per-file query loop is the N+1 the loop-query rule flags).
+  const matchingFiles = files.filter((file) => !rule.path || matchesPattern(rule.path, file));
+  if (matchingFiles.length === 0) return violations;
 
-    try {
-      const rows = indexHandle.query(`
-        SELECT DISTINCT mechanism, file_path, line
-        FROM style_declarations
-        WHERE file_path = ?
-        ORDER BY line
-      `, [file]) as Array<{ mechanism: string; file_path: string; line: number }>;
+  try {
+    const clause = chunkedInClause('file_path', matchingFiles);
+    const rows = indexHandle.query(`
+      SELECT DISTINCT mechanism, file_path, line
+      FROM style_declarations
+      WHERE ${clause}
+      ORDER BY file_path, line
+    `, matchingFiles) as Array<{ mechanism: string; file_path: string; line: number }>;
 
-      for (const row of rows) {
-        if (!allowedSet.has(row.mechanism)) {
-          violations.push({
-            ruleId: rule.id,
-            kind: 'style-mechanism',
-            severity: rule.severity,
-            message: rule.message ||
-              `Style mechanism "${row.mechanism}" is not allowed (allowed: ${rule.allow.join(', ')})`,
-            file: row.file_path,
-            line: row.line,
-          });
-          // One violation per mechanism per file is sufficient
-          break;
-        }
-      }
-    } catch {
-      // Table may not exist yet (no style index built)
-      continue;
+    // One violation per file: the first disallowed mechanism in line order.
+    const reported = new Set<string>();
+    for (const row of rows) {
+      if (reported.has(row.file_path)) continue;
+      if (allowedSet.has(row.mechanism)) continue;
+      reported.add(row.file_path);
+      violations.push({
+        ruleId: rule.id,
+        kind: 'style-mechanism',
+        severity: rule.severity,
+        message: rule.message ||
+          `Style mechanism "${row.mechanism}" is not allowed (allowed: ${rule.allow.join(', ')})`,
+        file: row.file_path,
+        line: row.line,
+      });
     }
+  } catch {
+    // Table may not exist yet (no style index built)
   }
 
   return violations;
@@ -478,55 +495,57 @@ function checkNoRawValues(
   const propertiesSet = new Set(rule.properties);
   const allowValuesSet = new Set(rule.allowValues ?? []);
 
-  for (const file of files) {
-    // Check path filter
-    if (rule.path && !matchesPattern(rule.path, file)) continue;
+  // Apply the path filter up front so the query runs once over the matching
+  // files (a per-file query loop is the N+1 the loop-query rule flags).
+  const matchingFiles = files.filter((file) => !rule.path || matchesPattern(rule.path, file));
+  if (matchingFiles.length === 0) return violations;
 
-    try {
-      const rows = indexHandle.query(`
-        SELECT property, raw_value, normalized_value, file_path, line
-        FROM style_declarations
-        WHERE file_path = ?
-        ORDER BY line
-      `, [file]) as Array<{
-        property: string;
-        raw_value: string;
-        normalized_value: string | null;
-        file_path: string;
-        line: number;
-      }>;
+  try {
+    const clause = chunkedInClause('file_path', matchingFiles);
+    // `token_ref` is selected in the same query so the "has a token ref" check
+    // is a Set membership test, not a per-row query (the nested N+1).
+    const rows = indexHandle.query(`
+      SELECT property, raw_value, normalized_value, file_path, line, token_ref
+      FROM style_declarations
+      WHERE ${clause}
+      ORDER BY file_path, line
+    `, matchingFiles) as Array<{
+      property: string;
+      raw_value: string;
+      normalized_value: string | null;
+      file_path: string;
+      line: number;
+      token_ref: string | null;
+    }>;
 
-      for (const row of rows) {
-        if (!propertiesSet.has(row.property)) continue;
-
-        const normVal = row.normalized_value ?? row.raw_value;
-        if (allowValuesSet.has(normVal) || allowValuesSet.has(row.raw_value)) continue;
-
-        // Check if this declaration has a token ref
-        const tokenRows = indexHandle.query(`
-          SELECT token_ref FROM style_declarations
-          WHERE file_path = ? AND line = ? AND property = ? AND token_ref IS NOT NULL
-          LIMIT 1
-        `, [row.file_path, row.line, row.property]) as Array<{ token_ref: string }>;
-        const tokenRow = tokenRows[0];
-
-        if (tokenRow) continue; // has a token ref — allowed
-
-        violations.push({
-          ruleId: rule.id,
-          kind: 'no-raw-values',
-          severity: rule.severity,
-          message: rule.message ||
-            `CSS property "${row.property}" has raw value "${row.raw_value}" — use a design token`,
-          file: row.file_path,
-          line: row.line,
-          symbol: row.property,
-        });
-      }
-    } catch {
-      // Table may not exist yet (no style index built)
-      continue;
+    // The set of (file, line, property) declarations that carry a token ref —
+    // the exact predicate the old per-row query checked.
+    const tokenRefKeys = new Set<string>();
+    for (const row of rows) {
+      if (row.token_ref != null) tokenRefKeys.add(`${row.file_path} ${row.line} ${row.property}`);
     }
+
+    for (const row of rows) {
+      if (!propertiesSet.has(row.property)) continue;
+
+      const normVal = row.normalized_value ?? row.raw_value;
+      if (allowValuesSet.has(normVal) || allowValuesSet.has(row.raw_value)) continue;
+
+      if (tokenRefKeys.has(`${row.file_path} ${row.line} ${row.property}`)) continue; // has a token ref — allowed
+
+      violations.push({
+        ruleId: rule.id,
+        kind: 'no-raw-values',
+        severity: rule.severity,
+        message: rule.message ||
+          `CSS property "${row.property}" has raw value "${row.raw_value}" — use a design token`,
+        file: row.file_path,
+        line: row.line,
+        symbol: row.property,
+      });
+    }
+  } catch {
+    // Table may not exist yet (no style index built)
   }
 
   return violations;

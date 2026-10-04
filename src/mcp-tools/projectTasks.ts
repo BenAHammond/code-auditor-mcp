@@ -136,7 +136,7 @@ async function handleFromAudit(
 
   let auditRecord: any;
   if (auditJobId) {
-    auditRecord = await db.getAuditResults(auditJobId);
+    auditRecord = await db.auditResults.getAuditResults(auditJobId);
     if (!auditRecord) {
       return {
         success: false,
@@ -146,13 +146,13 @@ async function handleFromAudit(
   } else {
     // Prefer the most recent full audit; fall back to scoped or
     // legacy results without scope metadata.
-    auditRecord = await db.getMostRecentAuditResults(projectPath, 'full');
+    auditRecord = await db.auditResults.getMostRecentAuditResults(projectPath, 'full');
     if (!auditRecord) {
-      auditRecord = await db.getMostRecentAuditResults(projectPath, 'scoped');
+      auditRecord = await db.auditResults.getMostRecentAuditResults(projectPath, 'scoped');
     }
     if (!auditRecord) {
       // Legacy: results stored before scope metadata was added
-      auditRecord = await db.getMostRecentAuditResults(projectPath);
+      auditRecord = await db.auditResults.getMostRecentAuditResults(projectPath);
     }
     if (!auditRecord) {
       return {
@@ -232,14 +232,14 @@ async function handleFromAudit(
       const rule = fpInput.rule;
 
       // Dedupe: skip if open task with same fingerprint exists
-      if (db.hasOpenTaskByFingerprint(fp)) {
+      if (db.projectTasks.hasOpenTaskByFingerprint(fp)) {
         skipped++;
         continue;
       }
 
       // Create task
       try {
-        const task = await db.createProjectTask({
+        const task = await db.projectTasks.createProjectTask({
           projectPath,
           title: String(violation.message ?? '').substring(0, 200),
           description: [
@@ -314,7 +314,7 @@ export async function handleProjectTasks(
         const { projectPath, projectPathDefaulted } = resolveProjectPathForTasks(args);
         const dedupKey = buildReadDedupKey(action, args, projectPath);
         const tasks = await withReadDedup(dedupKey, () =>
-          db.listProjectTasks(projectPath, parseListTaskOptions(args))
+          db.projectTasks.listProjectTasks(projectPath, parseListTaskOptions(args))
         );
         return {
           success: true,
@@ -334,7 +334,7 @@ export async function handleProjectTasks(
         const listOptions = parseListTaskOptions(args);
         const dedupKey = buildReadDedupKey(action, args, projectPath);
         const tree = await withReadDedup(dedupKey, () =>
-          db.listProjectTasksTree(projectPath, listOptions)
+          db.projectTasks.listProjectTasksTree(projectPath, listOptions)
         );
         return {
           success: true,
@@ -354,7 +354,7 @@ export async function handleProjectTasks(
         if (!title) {
           return { success: false, error: 'title is required for create' };
         }
-        const task = await db.createProjectTask({
+        const task = await db.projectTasks.createProjectTask({
           projectPath,
           title,
           description:
@@ -398,7 +398,7 @@ export async function handleProjectTasks(
           return { success: false, error: 'taskId is required for get' };
         }
         const dedupKey = buildReadDedupKey(action, args);
-        const task = await withReadDedup(dedupKey, () => db.getProjectTask(taskId));
+        const task = await withReadDedup(dedupKey, () => db.projectTasks.getProjectTask(taskId));
         if (!task) {
           return { success: false, error: taskNotFound(taskId) };
         }
@@ -412,7 +412,7 @@ export async function handleProjectTasks(
         if (!taskId) {
           return { success: false, error: 'taskId is required for update' };
         }
-        const task = await db.updateProjectTask(taskId, args.patch);
+        const task = await db.projectTasks.updateProjectTask(taskId, args.patch);
         if (!task) {
           return { success: false, error: taskNotFound(taskId) };
         }
@@ -426,7 +426,7 @@ export async function handleProjectTasks(
         if (!taskId) {
           return { success: false, error: 'taskId is required for complete_task' };
         }
-        const result = await db.completeProjectTask(taskId);
+        const result = await db.projectTasks.completeProjectTask(taskId);
         if (!result) {
           return { success: false, error: taskNotFound(taskId) };
         }
@@ -441,7 +441,7 @@ export async function handleProjectTasks(
           return { success: false, error: 'taskId is required for delete' };
         }
         const mode = args.mode as ProjectTaskDeleteMode | undefined;
-        const deleted = await db.deleteProjectTask(taskId, mode);
+        const deleted = await db.projectTasks.deleteProjectTask(taskId, mode);
         return {
           success: deleted,
           taskId,

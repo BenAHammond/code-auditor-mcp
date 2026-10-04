@@ -293,7 +293,7 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
       }
     }, jobTimeoutMs);
 
-    const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+    const storedConfigs = await db.analyzerConfig.getAllAnalyzerConfigs(auditPath);
     const analyzerConfigs = {
       ...storedConfigs,
       ...(args.analyzerConfigs as Record<string, unknown> || {}),
@@ -358,7 +358,7 @@ export async function runAuditJob(jobId: string, args: any, defaults: StartAudit
       ...(indexingResult && { functionIndexing: indexingResult }),
       ...(codeMapResult && { codeMap: codeMapResult }),
     };
-    const resultId = await db.storeAuditResults(persisted, projectRootForStore);
+    const resultId = await db.auditResults.storeAuditResults(persisted, projectRootForStore);
 
     // Spec 41 R2 — converge on the one ledger write path: attach findings +
     // coverage to the pre-existing run, then close the lifecycle.
@@ -544,7 +544,7 @@ export async function getAuditResultsAsSarif(args: any): Promise<string> {
 
   const db = CodeIndexDB.getInstance(undefined, CodeIndexDB.currentProject);
   await db.initialize();
-  const stored = await db.getAuditResults(resultId);
+  const stored = await db.auditResults.getAuditResults(resultId);
   if (!stored) {
     throw new ContextualError(`Audit result not found or expired: ${resultId}`, {
       resultId,
@@ -604,7 +604,7 @@ export async function getAuditResultsPage(args: any): Promise<Record<string, unk
 
   const db = CodeIndexDB.getInstance(undefined, CodeIndexDB.currentProject);
   await db.initialize();
-  const auditResult = await db.getAuditResults(resultId);
+  const auditResult = await db.auditResults.getAuditResults(resultId);
   if (!auditResult) {
     throw new ContextualError(`Audit result not found or expired: ${resultId}`, {
       resultId,

@@ -64,12 +64,20 @@ export function isTestFunction(language: string, name: string): boolean {
  * (Spec 55 R3). Unlike the per-language `isTestFile` above (driven by
  * `TEST_CONVENTIONS`), this is a single shared path heuristic for the generic
  * TS/JS test-file shapes — `*.test.*` / `*.spec.*` filenames and `test/` /
- * `tests/` / `__tests__/` directory segments, plus Go's `*_test.go`. It is
+ * `tests/` / `__tests__/` directory segments, plus the `tsd` type-definition
+ * test shapes `*.test-d.ts` / `*.test-d.tsx`, plus Go's `*_test.go`. It is
  * used by rules that must never fire on test files at all (`loop-query`,
  * `unfiltered-query`, `too-many-queries`): the shape is a file-scope signal,
  * not a per-language convention, so it is one predicate rather than a table
  * entry. Segment anchoring (`/test/`) avoids matching `contest/`, `latest/`,
  * etc., which a bare `/test\//` substring would.
+ *
+ * The `test-d` shapes are a distinct clause, not folded into `*.test.*`:
+ * `foo.test-d.ts` has `.test-` (dot-test-hyphen) where the generic `*.test.*`
+ * pattern requires `.test.` (dot-test-dot), so a type-definition test would
+ * otherwise slip through. A predicate that claims to identify test files and
+ * misses the standard `tsd` extension is incomplete, not minimal — this is the
+ * same predicate, widened, not a new list.
  *
  * @param filePath The file path to classify.
  * @returns True when the path matches a test/spec file shape.
@@ -78,6 +86,7 @@ export function isTestOrSpecPath(filePath: string): boolean {
   const p = filePath.replace(/\\/g, '/');
   return (
     /\.(test|spec)\.[^/]+$/.test(p) ||
+    /\.test-d\.tsx?$/.test(p) ||
     /(^|\/)(test|tests|__tests__)(\/|$)/.test(p) ||
     /_test\.go$/.test(p)
   );

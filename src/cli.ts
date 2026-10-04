@@ -120,6 +120,18 @@ program
   .version(`${PACKAGE_VERSION} (sqlite: ${describeSqliteBackend()})`);
 
 /**
+ * Collapse a receiver-resolution reason to a single line for the cannot-fire
+ * panel. Reasons embed the receiver text (which can span the SQL of a chained
+ * `db.prepare("...").bind(...)`), so newlines must be folded and the result
+ * truncated to stay legible in the per-file rollup.
+ */
+function sanitizeReason(reason: string | undefined): string {
+  if (!reason) return '';
+  const collapsed = reason.replace(/\s+/g, ' ').trim();
+  return collapsed.length > 220 ? `${collapsed.slice(0, 217)}…` : collapsed;
+}
+
+/**
  * Print the pre-delta diagnostic panels: coverage, skipped analyzers, ignored
  * config keys, coverage gaps, test coverage, size distributions, and dead
  * clusters. Pure reporting over `result.metadata`.
@@ -127,6 +139,13 @@ program
 function printAuditDiagnostics(result: AuditResult): void {
   // ── Coverage panel leads the report (Spec 47 R2) ─────────────
   const coverage = result.metadata?.coverage;
+  // Spec 69 §10 R4 — the site-level cannot-fire count (unproven DB-access
+  // receiver sites) sits beside the rule-level states, so one line reports
+  // both the per-rule verdict and the per-call-site gap the affected rules
+  // may have under-reported on.
+  const unprovenSiteCount = (result.metadata?.diagnostics ?? [])
+    .filter((d: any) => d.kind === 'cannot-fire' && d.analyzerName === 'schema')
+    .length;
   if (coverage && coverage.length > 0) {
     const covFired = coverage.filter(c => c.state === 'fired').length;
     const covClean = coverage.filter(c => c.state === 'clean').length;
@@ -137,7 +156,7 @@ function printAuditDiagnostics(result: AuditResult): void {
       chalk.gray(
         `── Coverage panel ── ${covFired} fired · ${covClean} clean · ` +
         `${covIncomplete} incomplete · ${covNotApplicable} not-applicable · ` +
-        `${covCannotFire} cannot-fire`
+        `${covCannotFire} cannot-fire · ${unprovenSiteCount} unproven sites`
       )
     );
   }
@@ -167,23 +186,61 @@ function printAuditDiagnostics(result: AuditResult): void {
     }
   }
 
+  // ── Cannot-fire sites (Spec 69 §10) ───────────────────────────
+  // The cannot-fire verdict surface is the release bar: every DB-access call
+  // site whose receiver could not be proven a handle must be *visible with its
+  // reason*, never capped or folded into a silent clean. Grouped by file so a
+  // reader can see exactly which files the table-reference and data-access
+  // rules may have under-reported on.
+  const allDiagnostics = result.metadata?.diagnostics ?? [];
+  const cannotFireSites = allDiagnostics.filter((d: any) => d.kind === 'cannot-fire');
+  if (cannotFireSites.length > 0) {
+    const byFile = new Map<string, { lines: number[]; reasons: Set<string> }>();
+    for (const d of cannotFireSites) {
+      const key = d.file ?? '(unknown)';
+      const entry = byFile.get(key) ?? { lines: [], reasons: new Set<string>() };
+      if (typeof d.line === 'number') entry.lines.push(d.line);
+      const rawReason = typeof d.details?.reason === 'string' ? d.details.reason : d.message;
+      const reason = sanitizeReason(rawReason);
+      if (reason) entry.reasons.add(reason);
+      byFile.set(key, entry);
+    }
+    console.log(
+      chalk.yellow(
+        `── Cannot-fire sites ── ${cannotFireSites.length} unproven DB-access call sites across ${byFile.size} files`
+      )
+    );
+    console.log(
+      chalk.yellow(
+        `   Table-reference and data-access rules may report clean on access they could not observe.`
+      )
+    );
+    for (const [file, entry] of [...byFile.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      const reasons = [...entry.reasons];
+      const shown = reasons.slice(0, 2).join(' │ ');
+      const more = reasons.length > 2 ? ` (+${reasons.length - 2} more reasons)` : '';
+      const loc = entry.lines.length === 1 ? ` (line ${entry.lines[0]})` : '';
+      console.log(chalk.yellow(`   ${file} — ${entry.lines.length} site(s)${loc}: ${shown}${more}`));
+    }
+  }
+
   // ── Coverage gaps (Spec 58 follow-up) ─────────────────────────
-  const coverageDiagnostics = (result.metadata?.diagnostics ?? []).filter(
-    (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import' || d.kind === 'undefined-class-not-found' || d.kind === 'cannot-fire'
+  const otherCoverageGaps = allDiagnostics.filter(
+    (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import' || d.kind === 'undefined-class-not-found'
   );
-  if (coverageDiagnostics.length > 0) {
+  if (otherCoverageGaps.length > 0) {
     const byKind: Record<string, number> = {};
-    for (const d of coverageDiagnostics) byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
+    for (const d of otherCoverageGaps) byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
     const totals = Object.entries(byKind)
       .map(([kind, n]) => `${n} ${kind}`)
       .join(' · ');
     console.log(chalk.gray(`── Coverage gaps ── ${totals}`));
-    for (const d of coverageDiagnostics.slice(0, 20)) {
+    for (const d of otherCoverageGaps.slice(0, 20)) {
       const loc = d.file ? `${d.file}${typeof d.line === 'number' ? `:${d.line}` : ''}` : '(unknown)';
       console.log(chalk.gray(`  ${loc} [${d.kind}] — ${d.message}`));
     }
-    if (coverageDiagnostics.length > 20) {
-      console.log(chalk.gray(`  … and ${coverageDiagnostics.length - 20} more`));
+    if (otherCoverageGaps.length > 20) {
+      console.log(chalk.gray(`  … and ${otherCoverageGaps.length - 20} more`));
     }
   }
 
@@ -1532,12 +1589,12 @@ indexCmd
     try {
       const db = CodeIndexDB.getInstance();
       await db.initialize();
-      const stats = await db.getStats();
+      const stats = await db.functionIndex.getStats();
 
       // Graph stats — non-fatal if graph cache is empty
       let graphStats: import('./types.js').GraphStats | null = null;
       try {
-        graphStats = db.getGraphStats();
+        graphStats = db.graph.getGraphStats();
       } catch {
         // No graph data yet — ok
       }
@@ -1875,9 +1932,7 @@ configCmd
           // Build provenance context using schema analyzer config (most complete)
           const ctx = buildProvenanceContext(ast, adapter, sourceCode, {
             mode: detectionMode as any,
-            dbReceiverNames: schemaCfg.dbReceiverNames ?? daCfg.dbReceiverNames,
             dbBindingNames: schemaCfg.dbBindingNames ?? daCfg.dbBindingNames,
-            dbCallMethods: schemaCfg.dbCallMethods ?? daCfg.dbCallMethods,
           });
 
           // Collect DB-provenanced
@@ -1934,11 +1989,11 @@ configCmd
           entry.validatorProvenanced.push(v);
         }
         for (const [file, data] of byFile) {
-          db.storeFileProvenance(file, data);
+          db.provenance.storeFileProvenance(file, data);
         }
 
         // Store inferred receivers
-        db.storeInferredReceivers(inferred);
+        db.inferredReceivers.storeInferredReceivers(inferred);
       } catch {
         // Index not available — skip persistence
       }
@@ -2426,12 +2481,15 @@ program
         // DOT output: call-graph neighborhood of top-N risk functions
         const { callGraphToDot } = await import('./graph/outputFormatter.js');
 
-        // Collect IDs for top risk functions
+        // Collect IDs for top risk functions — one query for the whole top-N
+        // set, not one query per function (loop-query).
         const topIds = new Set<number>();
-        for (const e of top) {
+        if (top.length > 0) {
+          const orClause = top.map(() => '(name = ? AND file_path = ?)').join(' OR ');
+          const params = top.flatMap((e) => [e.functionName, e.filePath]);
           const rows = rawDb.prepare(
-            'SELECT id FROM functions WHERE name = ? AND file_path = ?'
-          ).all(e.functionName, e.filePath) as Array<{ id: number }>;
+            `SELECT id FROM functions WHERE ${orClause}`
+          ).all(...params) as Array<{ id: number }>;
           for (const r of rows) topIds.add(r.id);
         }
 
@@ -4339,7 +4397,7 @@ async function runSearch(query: string, options: Record<string, any>): Promise<v
 
   // --definition: look up a specific symbol
   if (options.definition) {
-    const func = await db.findDefinition(query);
+    const func = await db.functionIndex.findDefinition(query);
     if (!func) {
       console.log(chalk.yellow(`No definition found for "${query}"`));
       return;
@@ -4384,7 +4442,7 @@ async function runSearch(query: string, options: Record<string, any>): Promise<v
     searchOptions.filters.language = options.language;
   }
 
-  const result = await db.searchFunctions(searchOptions);
+  const result = await db.search.searchFunctions(searchOptions);
 
   if (options.json) {
     process.stdout.write(JSON.stringify({

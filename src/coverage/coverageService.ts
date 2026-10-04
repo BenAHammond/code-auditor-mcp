@@ -116,7 +116,7 @@ export async function importCoverageFile(
 
   const entriesImported = entries.filter((e) => e.covered).length;
 
-  db.importCoverageData(entries);
+  db.coverage.importCoverageData(entries);
 
   return {
     format,
@@ -146,9 +146,9 @@ export async function generateCoverageReport(): Promise<{
   const db = CodeIndexDB.getInstance();
   await db.initialize();
 
-  const byRiskDecile = db.getCoverageByRiskDecile(10);
-  const untestedTopDecile = db.getUntestedTopDecile(0.1);
-  const staleImport = db.isCoverageStale();
+  const byRiskDecile = db.coverage.getCoverageByRiskDecile(10);
+  const untestedTopDecile = db.coverage.getUntestedTopDecile(0.1);
+  const staleImport = db.coverage.isCoverageStale();
 
   // Overall stats
   const totalResult = (db as any).rawDb

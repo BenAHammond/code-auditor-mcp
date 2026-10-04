@@ -59,12 +59,10 @@ export const PRESETS: Record<string, Preset> = {
       'data-access': {
         dbBindingNames: ['env.DB'],
         dbWrapperNames: ['d1Query', 'd1Exec'],
-        dbReceiverNames: ['db', 'database'],
       },
       schema: {
         dbBindingNames: ['env.DB'],
         dbWrapperNames: ['d1Query', 'd1Exec'],
-        dbReceiverNames: ['db', 'database'],
         sqlTagNames: ['sql', 'db'],
         fileGateGlobs: ['**/*.sql', '**/migrations/**'],
       },
@@ -78,10 +76,8 @@ export const PRESETS: Record<string, Preset> = {
     stacks: ['postgres', 'mysql', 'sqlite'],
     config: {
       'data-access': {
-        dbReceiverNames: ['db', 'database'],
       },
       schema: {
-        dbReceiverNames: ['db', 'database'],
         sqlTagNames: ['sql', 'db'],
         tableSources: DRIZZLE_TABLE_SOURCES,
       },
@@ -95,10 +91,8 @@ export const PRESETS: Record<string, Preset> = {
     stacks: ['postgres', 'mysql', 'sqlite'],
     config: {
       'data-access': {
-        dbReceiverNames: ['dataSource', 'manager', 'repository', 'queryRunner', 'connection'],
       },
       schema: {
-        dbReceiverNames: ['dataSource', 'manager', 'repository', 'queryRunner', 'connection'],
         tableSources: TYPEORM_TABLE_SOURCES,
       },
     },
@@ -111,10 +105,8 @@ export const PRESETS: Record<string, Preset> = {
     stacks: ['postgres', 'mysql', 'sqlite'],
     config: {
       'data-access': {
-        dbReceiverNames: ['prisma', 'db'],
       },
       schema: {
-        dbReceiverNames: ['prisma', 'db'],
       },
     },
   },
@@ -126,10 +118,8 @@ export const PRESETS: Record<string, Preset> = {
     stacks: ['postgres'],
     config: {
       'data-access': {
-        dbReceiverNames: ['pool', 'client', 'db', 'database'],
       },
       schema: {
-        dbReceiverNames: ['pool', 'client', 'db', 'database'],
         sqlTagNames: ['sql', 'db'],
       },
     },
@@ -142,10 +132,8 @@ export const PRESETS: Record<string, Preset> = {
     stacks: ['postgres', 'mysql', 'sqlite'],
     config: {
       'data-access': {
-        dbReceiverNames: ['knex', 'db', 'database'],
       },
       schema: {
-        dbReceiverNames: ['knex', 'db', 'database'],
         tableSources: [
           { kind: 'callee', name: 'createTable', arg: 0, description: 'Knex schema.createTable migration' },
           { kind: 'callee', name: 'createTableIfNotExists', arg: 0, description: 'Knex schema.createTableIfNotExists migration' },
@@ -166,8 +154,8 @@ export function getPreset(id: string): Preset | undefined {
  * Apply presets to an existing `analyzerConfigs` object. The merged preset
  * layer forms the base; the provided config (project config, path profiles,
  * run options) wins on key collision, and nested namespaces deep-merge so a
- * preset's `tableSources` survives even when the project overrides
- * `dbReceiverNames`.
+ * preset's `tableSources` survives even when the project overrides other
+ * tuning keys.
  *
  * Precedence: project-config > preset (presets merge in order, later wins).
  *

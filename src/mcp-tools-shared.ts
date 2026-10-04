@@ -20,12 +20,11 @@ import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { DEFAULT_SERVER_URL } from './constants.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { errorMessage } from './utils/errorMessage.js';
+import { buildDiscoveryQueries, normalizeDialect } from './mcp-tools/discoveryQueries.js';
 
 import path from 'node:path';
 import chalk from 'chalk';
 import { assertAuditPathExists } from './mcpToolErrors.js';
-
-const GET_ALL_TABLES_VIEWS_DESC = 'Get all tables and views';
 
 
 export interface ToolParameter {
@@ -278,7 +277,7 @@ export const tools: Tool[] = [
         name: 'databaseType',
         type: 'string',
         required: true,
-        enum: ['postgresql', 'mysql', 'sqlite', 'sqlserver', 'oracle'],
+        enum: ['postgresql', 'mysql', 'sqlite'],
         description: 'Type of database to generate queries for',
       },
       {
@@ -556,121 +555,6 @@ async function runIndexingAndCodeMap(
   return { indexingResult, codeMapResult };
 }
 
-/** Discovery SQL for PostgreSQL information_schema / pg_catalog. */
-function postgresDiscoveryQueries(
-  tableFilter: string,
-  includeIndexes: boolean,
-  includeConstraints: boolean,
-): { name: string; sql: string; description: string }[] {
-  const queries: { name: string; sql: string; description: string }[] = [];
-  queries.push({
-    name: 'tables',
-    sql: `SELECT table_name, table_type, table_schema
-          FROM information_schema.tables
-          WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ${tableFilter}
-          ORDER BY table_schema, table_name;`,
-    description: GET_ALL_TABLES_VIEWS_DESC
-  });
-
-  queries.push({
-    name: 'columns',
-    sql: `SELECT table_name, column_name, data_type, is_nullable, column_default,
-                 character_maximum_length, numeric_precision, numeric_scale
-          FROM information_schema.columns
-          WHERE table_schema NOT IN ('information_schema', 'pg_catalog') ${tableFilter}
-          ORDER BY table_name, ordinal_position;`,
-    description: 'Get all columns with types and constraints'
-  });
-
-  if (includeConstraints) {
-    queries.push({
-      name: 'foreign_keys',
-      sql: `SELECT tc.table_name, kcu.column_name, ccu.table_name AS foreign_table_name,
-                   ccu.column_name AS foreign_column_name, rc.delete_rule, rc.update_rule
-            FROM information_schema.table_constraints AS tc
-            JOIN information_schema.key_column_usage AS kcu ON tc.constraint_name = kcu.constraint_name
-            JOIN information_schema.constraint_column_usage AS ccu ON ccu.constraint_name = tc.constraint_name
-            JOIN information_schema.referential_constraints AS rc ON tc.constraint_name = rc.constraint_name
-            WHERE tc.constraint_type = 'FOREIGN KEY' ${tableFilter.replace('table_name', 'tc.table_name')}
-            ORDER BY tc.table_name, kcu.column_name;`,
-      description: 'Get foreign key relationships'
-    });
-  }
-
-  if (includeIndexes) {
-    queries.push({
-      name: 'indexes',
-      sql: `SELECT tablename, indexname, indexdef
-            FROM pg_indexes
-            WHERE schemaname NOT IN ('information_schema', 'pg_catalog') ${tableFilter.replace('table_name', 'tablename')}
-            ORDER BY tablename, indexname;`,
-      description: 'Get all indexes'
-    });
-  }
-  return queries;
-}
-
-/** Discovery SQL for MySQL information_schema. */
-function mysqlDiscoveryQueries(
-  tableFilter: string,
-  includeConstraints: boolean,
-): { name: string; sql: string; description: string }[] {
-  const queries: { name: string; sql: string; description: string }[] = [];
-  queries.push({
-    name: 'tables',
-    sql: `SELECT table_name, table_type, table_schema
-          FROM information_schema.tables
-          WHERE table_schema = DATABASE() ${tableFilter}
-          ORDER BY table_name;`,
-    description: GET_ALL_TABLES_VIEWS_DESC
-  });
-
-  queries.push({
-    name: 'columns',
-    sql: `SELECT table_name, column_name, data_type, is_nullable, column_default,
-                 character_maximum_length, numeric_precision, numeric_scale,
-                 column_key, extra
-          FROM information_schema.columns
-          WHERE table_schema = DATABASE() ${tableFilter}
-          ORDER BY table_name, ordinal_position;`,
-    description: 'Get all columns with types and constraints'
-  });
-
-  if (includeConstraints) {
-    queries.push({
-      name: 'foreign_keys',
-      sql: `SELECT table_name, column_name, referenced_table_name, referenced_column_name,
-                   delete_rule, update_rule
-            FROM information_schema.key_column_usage
-            WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL ${tableFilter}
-            ORDER BY table_name, column_name;`,
-      description: 'Get foreign key relationships'
-    });
-  }
-  return queries;
-}
-
-/** Discovery SQL for SQLite sqlite_master. */
-function sqliteDiscoveryQueries(): { name: string; sql: string; description: string }[] {
-  const queries: { name: string; sql: string; description: string }[] = [];
-  queries.push({
-    name: 'tables',
-    sql: `SELECT name as table_name, type as table_type
-          FROM sqlite_master
-          WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
-          ORDER BY name;`,
-    description: GET_ALL_TABLES_VIEWS_DESC
-  });
-
-  queries.push({
-    name: 'table_info',
-    sql: `-- Run this for each table: PRAGMA table_info(table_name);
-          -- This will give you column information for each table`,
-    description: 'Get column information (run PRAGMA table_info for each table)'
-  });
-  return queries;
-}
-
 /**
  * Shared tool handler implementations
  */
@@ -691,7 +575,7 @@ export class ToolHandlers {
     // Get stored analyzer configs from database
     const db = CodeIndexDB.getInstance();
     await db.initialize();
-    const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+    const storedConfigs = await db.analyzerConfig.getAllAnalyzerConfigs(auditPath);
     
     // Merge stored configs with any provided configs
     const analyzerConfigs = {
@@ -750,7 +634,7 @@ export class ToolHandlers {
     // Get stored analyzer configs from database
     const db = CodeIndexDB.getInstance();
     await db.initialize();
-    const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+    const storedConfigs = await db.analyzerConfig.getAllAnalyzerConfigs(auditPath);
     
     // Merge stored configs with any provided configs
     const analyzerConfigs = {
@@ -899,7 +783,7 @@ export class ToolHandlers {
       const db = CodeIndexDB.getInstance();
       await db.initialize();
       
-      const schemaId = await db.storeSchema(schema);
+      const schemaId = await db.schema.storeSchema(schema);
 
       return {
         success: true,
@@ -942,7 +826,7 @@ export class ToolHandlers {
       await db.initialize();
 
       // Get existing schema or create new one
-      const existingSchemas = await db.getAllSchemas();
+      const existingSchemas = await db.schema.getAllSchemas();
       let schema = existingSchemas.find(s => s.schema.name === schemaName)?.schema;
 
       if (!schema) {
@@ -979,7 +863,7 @@ export class ToolHandlers {
       schema.databases[0].tables.push(newTable);
 
       // Store updated schema
-      const schemaId = await db.storeSchema(schema);
+      const schemaId = await db.schema.storeSchema(schema);
 
       return {
         success: true,
@@ -1006,8 +890,8 @@ export class ToolHandlers {
       const db = CodeIndexDB.getInstance();
       await db.initialize();
       
-      const schemas = await db.getAllSchemas();
-      const stats = await db.getSchemaStats();
+      const schemas = await db.schema.getAllSchemas();
+      const stats = await db.schema.getSchemaStats();
       
       return {
         schemas: schemas.map(s => ({
@@ -1046,7 +930,7 @@ export class ToolHandlers {
       const db = CodeIndexDB.getInstance();
       await db.initialize();
       
-      const schemas = (await db.getAllSchemas()).map(s => s.schema);
+      const schemas = (await db.schema.getAllSchemas()).map(s => s.schema);
       const results: any[] = [];
       const queryLower = query.toLowerCase();
       
@@ -1122,6 +1006,16 @@ export class ToolHandlers {
     includeConstraints: boolean,
     specificTables?: string[]
   ): { name: string; sql: string; description: string }[] {
+    // The dialect seam lives in `mcp-tools/discoveryQueries.ts`: a free-form
+    // string becomes a `Dialect` (or `null`) at exactly one point. An
+    // unrecognised engine is a loud error here, never a silent empty result.
+    const dialect = normalizeDialect(databaseType);
+    if (!dialect) {
+      throw new Error(
+        `unsupported databaseType '${databaseType}' — expected one of postgresql, mysql, sqlite`,
+      );
+    }
+
     // Identifiers are interpolated into generated SQL text (run by the agent,
     // never this tool), so a name that is not a plain identifier is dropped —
     // a quoted name could otherwise escape the string literal and inject SQL.
@@ -1131,16 +1025,7 @@ export class ToolHandlers {
       ? `WHERE table_name IN (${validTables.map(t => `'${t}'`).join(', ')})`
       : '';
 
-    switch (databaseType.toLowerCase()) {
-      case 'postgresql':
-        return postgresDiscoveryQueries(tableFilter, includeIndexes, includeConstraints);
-      case 'mysql':
-        return mysqlDiscoveryQueries(tableFilter, includeConstraints);
-      case 'sqlite':
-        return sqliteDiscoveryQueries();
-      default:
-        return [];
-    }
+    return buildDiscoveryQueries(dialect, { tableFilter, includeIndexes, includeConstraints });
   }
 
   /**

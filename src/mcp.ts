@@ -297,7 +297,7 @@ const auditActions: ActionDefinition[] = [
 
         const db = CodeIndexDB.getInstance();
         await db.initialize();
-        const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+        const storedConfigs = await db.analyzerConfig.getAllAnalyzerConfigs(auditPath);
         const analyzerConfigs = {
           ...storedConfigs,
           ...((args.analyzerConfigs as Record<string, any>) || {}),
@@ -513,7 +513,7 @@ const auditActions: ActionDefinition[] = [
 
       const db = CodeIndexDB.getInstance();
       await db.initialize();
-      const storedConfigs = await db.getAllAnalyzerConfigs(auditPath);
+      const storedConfigs = await db.analyzerConfig.getAllAnalyzerConfigs(auditPath);
       const analyzerConfigs = {
         ...storedConfigs,
         ...((args.analyzerConfigs as Record<string, any>) || {}),
@@ -843,7 +843,7 @@ function registerIndexTool(registry: ToolRegistry): void {
         handler: async () => {
           const db = CodeIndexDB.getInstance();
           await db.initialize();
-          const functionCount = await db.getFunctionCount();
+          const functionCount = await db.functionIndex.getFunctionCount();
           return {
             success: true,
             functionCount,
@@ -879,7 +879,7 @@ const configActions: ActionDefinition[] = [
       const db = CodeIndexDB.getInstance();
       await db.initialize();
       if (analyzerName) {
-        const config = await db.getAnalyzerConfig(analyzerName, projectPath);
+        const config = await db.analyzerConfig.getAnalyzerConfig(analyzerName, projectPath);
         return {
           success: true,
           analyzer: analyzerName,
@@ -888,7 +888,7 @@ const configActions: ActionDefinition[] = [
           message: config ? 'Configuration found' : 'No custom configuration found, using defaults',
         };
       }
-      const configs = await db.getAllAnalyzerConfigs(projectPath);
+      const configs = await db.analyzerConfig.getAllAnalyzerConfigs(projectPath);
       return {
         success: true,
         configs,
@@ -926,7 +926,7 @@ const configActions: ActionDefinition[] = [
       const projectPath = args.projectPath as string | undefined;
       const db = CodeIndexDB.getInstance();
       await db.initialize();
-      await db.storeAnalyzerConfig(analyzerName, config, {
+      await db.analyzerConfig.storeAnalyzerConfig(analyzerName, config, {
         projectPath,
         isGlobal: !projectPath,
       });
@@ -962,7 +962,7 @@ const configActions: ActionDefinition[] = [
       const db = CodeIndexDB.getInstance();
       await db.initialize();
       if (analyzerName) {
-        const deleted = await db.deleteAnalyzerConfig(analyzerName, {
+        const deleted = await db.analyzerConfig.deleteAnalyzerConfig(analyzerName, {
           projectPath,
           isGlobal: !projectPath,
         });
@@ -975,7 +975,7 @@ const configActions: ActionDefinition[] = [
           scope: projectPath ? 'project' : 'global',
         };
       }
-      await db.resetAnalyzerConfigs(projectPath);
+      await db.analyzerConfig.resetAnalyzerConfigs(projectPath);
       return {
         success: true,
         message: projectPath
@@ -1370,7 +1370,7 @@ function registerCodeMapTool(registry: ToolRegistry): void {
           if (!mapId || !sectionType)
             return { success: false, error: 'Both mapId and sectionType are required' };
           const db = await getDatabase();
-          const section = await db.getCodeMapSection(mapId, sectionType);
+          const section = await db.codeMap.getCodeMapSection(mapId, sectionType);
           if (section) {
             return { success: true, mapId, sectionType, content: section.content, metadata: section.metadata };
           }
@@ -1392,7 +1392,7 @@ function registerCodeMapTool(registry: ToolRegistry): void {
           const mapId = args.mapId as string;
           if (!mapId) return { success: false, error: 'mapId is required' };
           const db = await getDatabase();
-          const sections = await db.listCodeMapSections(mapId);
+          const sections = await db.codeMap.listCodeMapSections(mapId);
           return { success: true, mapId, sections, totalSections: sections.length };
         },
       },

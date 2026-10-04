@@ -261,8 +261,6 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     maxQueriesPerFunction: 1,      // Spec 11 R3 sweep: 5 → 1 (precision-first)
     requiredSchemas: [],
     sqlTagNames: ['sql', 'db'],
-    dbReceiverNames: ['db', 'database', 'sql', 'stmt'],
-    dbCallMethods: ['exec', 'prepare', 'batch', 'run', 'all', 'first'],
     dbBindingNames: ['env.DB'],
     fileGateGlobs: ['**/*.sql', '**/migrations/**'],
     schemaFiles: [],

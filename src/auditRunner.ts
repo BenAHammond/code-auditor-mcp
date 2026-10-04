@@ -29,6 +29,7 @@ import {
   type TestCoverageReport,
   type DeadCluster,
   type SizeDistribution,
+  type CoverageDiagnostic,
 } from './types.js';
 import { discoverFiles, discoverFilesDetailed } from './utils/fileDiscovery.js';
 import { FileAccounting } from './services/fileAccounting.js';
@@ -46,6 +47,8 @@ import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
 import { applyDismissals } from './dismissals.js';
 import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
 import { readTsconfigAliases, readPackageEntryPoints, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
+import { normalizeDialect, type Dialect } from './mcp-tools/discoveryQueries.js';
+import { detectDialect } from './languages/sql/dialectDetection.js';
 
 // Import universal analyzers
 import { initializeLanguages } from './languages/index.js';
@@ -60,7 +63,6 @@ import { writeAuditToLedger, detectRunInput } from './ledger.js';
 import { runPipeline, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
 import {
   createSolidVisitor,
-  createDryVisitor,
   createDataAccessVisitor,
   createOrgFilterReducer,
   createDocumentationVisitor,
@@ -83,7 +85,6 @@ import {
   createSchemaValidatorReducer,
   createAPIContractReducer,
   createDependencyGraphReducer,
-  type DryVisitorBundle,
   type ReactVisitorBundle,
   type SolidVisitorBundle,
 } from './pipelineAdapters.js';
@@ -93,7 +94,10 @@ import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';
 import { resolvePhaseThresholds } from './phase/config.js';
 import { deriveCoverage, presentFormatsOf } from './phase/coverage.js';
 import { MIGRATED_RULES, RULE_ANALYZER } from './phase/rules/registry.js';
-import type { Finding, FactKind } from './phase/types.js';
+import type { Finding, FactKind, CodeBlockFact } from './phase/types.js';
+import { seedDryPairs, resolveBlockConfig, type DryPairSeed } from './phase/rules/dry.js';
+import { checkUnresolvedReceiverImports, checkUnprovenQueryReceivers, checkUnresolvedQueries, dedupeCannotFireByReceiver } from './analyzers/universal/schema/codeAnalysis.js';
+import { readProjectManifest, computeManifestStaleness } from './analyzers/manifestStaleness.js';
 
 // Package version — stamped into the build (see constants.ts), not read from
 // package.json at runtime, so a stale binary reports the version it was built as.
@@ -358,11 +362,27 @@ async function discoverAuditFiles(
       const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
       const rawDb = db.rawDb;
       const functionIds: number[] = [];
+      // One batched query per chunk of changed functions, not one query per
+      // function (loop-query). `changedFunctions` can be large, so chunk to the
+      // SQLite bind-parameter cap; `ORDER BY id` + first-wins by (name, file_path)
+      // reproduces the old `.get` (first matching row) semantics exactly.
+      const idByKey = new Map<string, number>();
+      const BATCH = 900;
+      for (let i = 0; i < changedFunctions.length; i += BATCH) {
+        const chunk = changedFunctions.slice(i, i + BATCH);
+        const orClause = chunk.map(() => '(name = ? AND file_path = ?)').join(' OR ');
+        const params = chunk.flatMap((fn) => [fn.name, fn.filePath]);
+        const rows = rawDb.prepare(
+          `SELECT id, name, file_path FROM functions WHERE ${orClause} ORDER BY id`
+        ).all(...params) as Array<{ id: number; name: string; file_path: string }>;
+        for (const r of rows) {
+          const key = `${r.name}\0${r.file_path}`;
+          if (!idByKey.has(key)) idByKey.set(key, r.id);
+        }
+      }
       for (const fn of changedFunctions) {
-        const row = rawDb.prepare(
-          'SELECT id FROM functions WHERE name = ? AND file_path = ?'
-        ).get(fn.name, fn.filePath) as { id: number } | undefined;
-        if (row) functionIds.push(row.id);
+        const id = idByKey.get(`${fn.name}\0${fn.filePath}`);
+        if (id != null) functionIds.push(id);
       }
 
       if (functionIds.length > 0) {
@@ -571,7 +591,6 @@ interface PipelineAdapterBundle {
   pipelineVisitors: Stage2Visitor[];
   pipelineReducers: Stage3Reducer[];
   pipelineDerivedReducers: Stage4Reducer[];
-  dryBundle: DryVisitorBundle | undefined;
   reactBundle: ReactVisitorBundle | undefined;
   solidBundle: SolidVisitorBundle | undefined;
   allRulesMigrated: boolean;
@@ -589,7 +608,6 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
   const pipelineReducers: Stage3Reducer[] = [];
   const pipelineDerivedReducers: Stage4Reducer[] = [];
 
-  let dryBundle: DryVisitorBundle | undefined;
   let reactBundle: ReactVisitorBundle | undefined;
   let solidBundle: SolidVisitorBundle | undefined;
 
@@ -607,10 +625,9 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
   // reusing the stage-1 parse (eliminates the style-index re-parse).
   if (analyzers.includes('styles')) pipelineVisitors.push(createStylesSourceVisitor());
 
-  if (analyzers.includes('dry')) {
-    dryBundle = createDryVisitor();
-    pipelineVisitors.push(dryBundle.visitor);
-  }
+  // The DRY visitor's findings are all migrated and stripped, and its pair-seed
+  // side-effect now comes from the phase `code-block` fact (`seedDryPairs`, Spec
+  // 70 2b), so there is no legacy DRY visitor to register.
   // The invariant reducer is pipeline-only (its rules come from
   // `.codeauditor.json`, not the registry), so it always runs — it is the one
   // legacy path that still emits non-migrated findings.
@@ -621,10 +638,12 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
   // tables, so this reducer must keep running even though its *findings* are
   // migrated and stripped.
   if (analyzers.includes('styles')) pipelineReducers.push(createStylesReducer());
-  // The schema-code visitor emits the Spec 58 R1 `unresolved-query` coverage
-  // diagnostic (DB-call SQL held in an unresolvable identifier) — a
-  // *diagnostic*, not a finding, so it is not migrated and must keep running
-  // even though the visitor's own findings are stripped.
+  // The schema-code visitor's findings are migrated and stripped, but it must
+  // keep running for its non-finding outputs: the schema_usage index facts the
+  // cross-domain reducer reads, the ORM/DDL table catalog, and the `unparseable`
+  // cannot-fire diagnostic (Spec 70 R2). Its `unresolved-query` diagnostic
+  // (Spec 58 R1) is now re-derived corpus-side (Spec 70 1b), so this visitor no
+  // longer emits it.
   if (analyzers.includes('schema')) pipelineVisitors.push(createSchemaCodeVisitor());
 
   // Everything below emits findings the phase model already serves. Once the
@@ -676,7 +695,6 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
     pipelineVisitors,
     pipelineReducers,
     pipelineDerivedReducers,
-    dryBundle,
     reactBundle,
     solidBundle,
     allRulesMigrated,
@@ -699,10 +717,31 @@ function buildPipelineAnalyzerConfig(
   for (const name of analyzers) {
     pipelineAnalyzerConfig[name] = { ...(mergedOptions.analyzerConfigs?.[name] ?? {}) };
   }
+  // Spec 70 R1 — the corpus's dialect is threaded to the data-access analyzer
+  // (whose SQL-content facts parse rather than regex) and to DB-receiver
+  // resolution. Explicit config (`databaseType`) overrides detection; otherwise
+  // the dialect is *detected* from the dependency manifest (pg/neon → postgres,
+  // better-sqlite3/D1 → sqlite, mysql2 → mysql). A null dialect means the SQL
+  // facts `cannot-fire` — and `sqlDialectReason` names *why* (undetermined or
+  // ambiguous) so the abstention is visible rather than silent.
+  const detection = mergedOptions.databaseType
+    ? (() => {
+        const explicit = normalizeDialect(mergedOptions.databaseType as string);
+        return explicit
+          ? { dialect: explicit, reason: null as string | null }
+          : { dialect: null as Dialect | null, reason: `dialect undetermined (unsupported databaseType '${mergedOptions.databaseType}')` };
+      })()
+    : detectDialect(root);
+  const sqlDialect: Dialect | null = detection.dialect;
+  const sqlDialectReason: string | null = detection.reason;
   // Spec 62 Amendment B — the missing-org-filter Stage-4 reducer reads the
   // data-access config namespace, so it inherits the data-access analyzer's
   // config rather than a fresh empty namespace.
   if (analyzers.includes('data-access')) {
+    pipelineAnalyzerConfig['data-access'] = {
+      ...(pipelineAnalyzerConfig['data-access'] ?? {}),
+      dialect: sqlDialect,
+    };
     pipelineAnalyzerConfig['data-access-org-filter'] = { ...(pipelineAnalyzerConfig['data-access'] ?? {}) };
   }
   // Pass invariant rules from .codeauditor.json into the invariants pipeline config.
@@ -725,8 +764,6 @@ function buildPipelineAnalyzerConfig(
     const schemaConfig = {
       ...(pipelineAnalyzerConfig['schema'] ?? {}),
       sqlTagNames: scConfig.sqlTagNames ?? ['sql', 'db'],
-      dbReceiverNames: scConfig.dbReceiverNames,
-      dbCallMethods: scConfig.dbCallMethods,
       dbBindingNames: scConfig.dbBindingNames ?? ['env.DB'],
       fileGateGlobs: scConfig.fileGateGlobs,
       maxQueriesPerFunction: scConfig.maxQueriesPerFunction,
@@ -737,6 +774,14 @@ function buildPipelineAnalyzerConfig(
       detection: scConfig.detection,
       schemas: scConfig.schemas,
       knownTables: scConfig.knownTables,
+      // Spec 70 R2 — thread the corpus's named dialect so a provenanced static
+      // SQL argument that the dialect cannot parse (PRAGMA/VACUUM/ANALYZE) is
+      // reported as unreadable (cannot-fire), not silently "no tables".
+      sqlDialect,
+      // Spec 70 (detection) — the named reason when the dialect is null, so an
+      // undetermined/ambiguous corpus emits a "dialect undetermined" cannot-fire
+      // rather than reading the empty reference set as clean.
+      sqlDialectReason,
     };
     pipelineAnalyzerConfig['schema'] = schemaConfig;
     // Pipeline resolves config by visitor name; the schema-* sub-visitors need
@@ -755,6 +800,12 @@ function buildPipelineAnalyzerConfig(
     importVirtualModules: mergedOptions.importVirtualModules ?? DEFAULT_VIRTUAL_MODULES,
     tsconfigAliases: readTsconfigAliases(root),
     packageEntryPoints: readPackageEntryPoints(root).entryPaths,
+    // Spec 70 R1 — surfaced under `_infra` so `runPipeline` can hand the named
+    // dialect to the phase model's data-access producer without reading the
+    // data-access namespace.
+    sqlDialect,
+    // Spec 70 (detection) — the named reason when `sqlDialect` is null.
+    sqlDialectReason,
   };
 
   return pipelineAnalyzerConfig;
@@ -807,7 +858,7 @@ function buildPipelineConfig(inputs: {
       // (populated by the function-index visitor).
       if (auditIndex && analyzers.includes('conventions')) {
         try {
-          await auditIndex.updateDependencyGraph();
+          await auditIndex.graph.updateDependencyGraph();
         } catch (err) {
           logMcpInfo('analysis', 'updateDependencyGraph failed (non-fatal)', {
             error: err instanceof Error ? err.message : String(err)
@@ -817,7 +868,7 @@ function buildPipelineConfig(inputs: {
         // legacy conventions reducer (migrated); redundant once fully migrated.
         if (!allRulesMigrated) {
           try {
-            auditIndex.mineAllConventions(root);
+            auditIndex.conventions.mineAllConventions(root);
           } catch (err) {
             logMcpInfo('analysis', 'convention mining failed (non-fatal)', {
               error: err instanceof Error ? err.message : String(err)
@@ -838,6 +889,7 @@ async function applyPhaseModelSplit(inputs: {
   mergedOptions: AuditRunnerOptions;
   root: string;
   files: string[];
+  isScoped: boolean;
   pipelineAnalyzerConfig: Record<string, Record<string, unknown>>;
   analyzerResults: Record<string, AnalyzerResult>;
   pipelineIndexHandle: IndexHandle | undefined;
@@ -845,11 +897,16 @@ async function applyPhaseModelSplit(inputs: {
   phaseFindings: Finding[];
   phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>>;
   routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
+  /** Spec 69 §10 + Part 2b — the `cannot-fire` (unproven receivers + unresolved
+   *  imports) and `manifest-stale` diagnostics, re-homed here from the deleted
+   *  pre-pass, to be merged into the pipeline's metadata diagnostics. */
+  receiverDiagnostics: CoverageDiagnostic[];
 }> {
-  const { mergedOptions, root, files, pipelineAnalyzerConfig, analyzerResults, pipelineIndexHandle } = inputs;
+  const { mergedOptions, root, files, isScoped, pipelineAnalyzerConfig, analyzerResults, pipelineIndexHandle } = inputs;
   let phaseFindings: Finding[] = [];
   let phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>> = new Map();
   let routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
+  let receiverDiagnostics: CoverageDiagnostic[] = [];
 
   const { migrated } = splitRoutes();
   routeAttribution = Object.fromEntries(attributeRoutes());
@@ -893,6 +950,7 @@ async function applyPhaseModelSplit(inputs: {
     }
     const phaseResult = await runPhaseModel(phaseFiles, thresholds, {
       projectRoot: root,
+      scoped: isScoped,
       corpusFiles: infraConfig.corpusFiles as string[] | undefined,
       importVirtualModules: infraConfig.importVirtualModules as string[] | undefined,
       tsconfigAliases: infraConfig.tsconfigAliases as PhaseInfra['tsconfigAliases'],
@@ -901,9 +959,25 @@ async function applyPhaseModelSplit(inputs: {
       enabledRules: enabledMigratedRules(),
       externalTables,
       workerCount: resolveWorkerCount(),
+      sqlDialect: infraConfig.sqlDialect as Dialect | null | undefined,
+      // Spec 70 2b — the diverging-clone write: seed `dry_pair_history` from the
+      // phase `code-block` fact (replacing `createDryVisitor`/`persistDryPairs`).
+      persistDryPairHistory: (facts) => {
+        const dryCfg = resolveBlockConfig(thresholds.get('dry/duplicate') ?? {});
+        const codeBlocks = (facts.get('code-block') as CodeBlockFact[] | undefined) ?? [];
+        return persistDryPairs(seedDryPairs(codeBlocks, dryCfg), root);
+      },
     });
     phaseFindings = phaseResult.findings;
     phaseIncompleteFacts = phaseResult.incompleteFacts;
+
+    // Spec 69 §10 + Part 2b — re-home the pre-pass's diagnostics (deleted from
+    // `pipeline.ts`) on the phase result. Cannot-fire: re-derive per file from
+    // `phaseResult.unprovenQueryReceivers` + `phaseResult.unresolvedImports`, keyed
+    // to the TS-family surface the legacy `schema-code` visitor covered (Go
+    // receivers/imports never reached it). Manifest-stale: the ecosystem-list
+    // self-check, unchanged from the deleted `buildPipelineResult` loop.
+    receiverDiagnostics = await buildReceiverDiagnostics(phaseResult.unprovenQueryReceivers, phaseResult.unresolvedImports, phaseResult.unresolvedQuerySites, root);
 
     // Strip the migrated rules' legacy emission from every analyzer result.
     let strippedCount = 0;
@@ -969,23 +1043,94 @@ async function applyPhaseModelSplit(inputs: {
     });
   }
 
-  return { phaseFindings, phaseIncompleteFacts, routeAttribution };
+  return { phaseFindings, phaseIncompleteFacts, routeAttribution, receiverDiagnostics };
+}
+
+/**
+ * Spec 69 §10 + Part 2b — re-derive the pre-pass's coverage diagnostics from the
+ * phase result: the `cannot-fire` surface (unproven query receivers + unresolved
+ * DB-looking imports, keyed to the TS-family files the legacy `schema-code`
+ * visitor covered) and the `manifest-stale` ecosystem-list self-check. Replaces
+ * `collectCannotFireDiagnostics` (deleted from `pipelineAdapters.ts`) and the
+ * `manifest-staleness` loop (deleted from `buildPipelineResult`).
+ */
+async function buildReceiverDiagnostics(
+  unprovenQueryReceivers: readonly { file: string; line: number; receiver: string; method: string; reason: string }[],
+  unresolvedImports: readonly { importer: string; source: string; names: readonly string[] }[],
+  unresolvedQuerySites: readonly { file: string; identifier: string; location: { line: number; column: number } }[],
+  projectRoot: string,
+): Promise<CoverageDiagnostic[]> {
+  const diagnostics: CoverageDiagnostic[] = [];
+
+  // Group the two signals by file, then per-file dedup so the call-site signal
+  // wins over the import-level signal — mirroring the deleted
+  // `collectCannotFireDiagnostics` (which ran per TS-family file inside the
+  // schema-code visitor, so Go files never reached it).
+  const files = new Set<string>();
+  for (const u of unprovenQueryReceivers) if (!u.file.endsWith('.go')) files.add(u.file);
+  for (const u of unresolvedImports) if (!u.importer.endsWith('.go')) files.add(u.importer);
+  for (const file of files) {
+    const perFile: CoverageDiagnostic[] = [];
+    const unresolvedHere = unresolvedImports.filter((u) => path.resolve(u.importer) === path.resolve(file));
+    if (unresolvedHere.length > 0) {
+      perFile.push(...checkUnresolvedReceiverImports(unresolvedHere.map((u) => ({ source: u.source, names: [...u.names] })), file));
+    }
+    const unprovenHere = unprovenQueryReceivers.filter((u) => path.resolve(u.file) === path.resolve(file));
+    if (unprovenHere.length > 0) {
+      perFile.push(...checkUnprovenQueryReceivers(unprovenHere.map((u) => ({ receiver: u.receiver, method: u.method, line: u.line, reason: u.reason })), file));
+    }
+    diagnostics.push(...dedupeCannotFireByReceiver(perFile));
+  }
+
+  // Spec 70 1b — the `unresolved-query` diagnostics (re-admitted DB-calls whose
+  // SQL is held in an unresolvable identifier). Emitted separately from
+  // `cannot-fire`: a distinct kind, never receiver-deduped (the legacy
+  // `schema-code` visitor emitted them verbatim, per file, in visitor order).
+  const unresolvedByFile = new Map<string, { file: string; identifier: string; location: { line: number; column: number } }[]>();
+  for (const site of unresolvedQuerySites) {
+    if (site.file.endsWith('.go')) continue;
+    let list = unresolvedByFile.get(site.file);
+    if (!list) {
+      list = [];
+      unresolvedByFile.set(site.file, list);
+    }
+    list.push(site);
+  }
+  for (const [file, sites] of unresolvedByFile) {
+    diagnostics.push(...checkUnresolvedQueries(sites.map((s) => ({ identifier: s.identifier, location: s.location })), file));
+  }
+
+  // Part 2b — the manifest staleness self-check, unchanged from the deleted
+  // `buildPipelineResult` loop: our hardcoded ecosystem lists vs. the project's
+  // manifest, emitted as a diagnostic (never a verdict input).
+  const manifest = await readProjectManifest(projectRoot);
+  for (const stale of computeManifestStaleness(manifest)) {
+    diagnostics.push({
+      analyzerName: 'data-access',
+      kind: 'manifest-stale',
+      message: `our list names '${stale.package}', this project doesn't depend on it`,
+      file: stale.manifestPath,
+      line: 0,
+      details: { ecosystem: stale.ecosystem, package: stale.package },
+    });
+  }
+
+  return diagnostics;
 }
 
 /**
  * Persist seeded DRY pairs into `dry_pair_history` (Spec 13 R5 Phase 1) so the
  * migrated `dry/diverging-clone` rule can read them through the index handle.
- * Runs BEFORE the phase model. Advisory — non-fatal on failure.
+ * The pairs come from `seedDryPairs` over the phase `code-block` fact (Spec 70
+ * 2b — the writer moved off the legacy DRY visitor). Runs BEFORE the phase
+ * model's `clone-pair-history` read. Advisory — non-fatal on failure.
+ * @param dryPairs The seeded DRY pairs to persist into `dry_pair_history`.
+ * @param root The project root used to open the code-index database handle.
+ * @returns Resolves when the advisory write completes (never rejects).
  */
-async function persistDryPairs(dryBundle: DryVisitorBundle | undefined, root: string): Promise<void> {
+export async function persistDryPairs(dryPairs: DryPairSeed[], root: string): Promise<void> {
   try {
-    const dryPairs = dryBundle?.getDryPairs() as Array<{
-      pairFingerprint: string;
-      file1: string; symbol1: string; line1: number; contentHash1: string;
-      file2: string; symbol2: string; line2: number; contentHash2: string;
-      similarity: number;
-    }> | undefined;
-    if (dryPairs && dryPairs.length > 0) {
+    if (dryPairs.length > 0) {
       const indexDb = CodeIndexDB.getInstance(undefined, root);
       await indexDb.initialize();
       const dryPersistRunId = randomUUID();
@@ -1083,25 +1228,25 @@ async function runPipelineStage(inputs: {
   let pipelineIndexHandle: IndexHandle | undefined;
   if (auditIndex) {
     pipelineIndexHandle = {
-      query: (sql, params) => auditIndex!.query(sql, params),
-      count: (table) => auditIndex!.count(table),
-      tableHasRows: (table) => auditIndex!.tableHasRows(table),
+      query: (sql, params) => auditIndex!.rawSql.query(sql, params),
+      count: (table) => auditIndex!.rawSql.count(table),
+      tableHasRows: (table) => auditIndex!.rawSql.tableHasRows(table),
       run: (sql, params) => auditIndex!.rawDb.prepare(sql).run(...(params ?? [])),
       exec: (sql) => auditIndex!.rawDb.exec(sql),
-      getMeta: (key) => auditIndex!.getMeta(key),
-      getUntestedTopDecile: (td) => auditIndex!.getUntestedTopDecile(td),
+      getMeta: (key) => auditIndex!.meta.getMeta(key),
+      getUntestedTopDecile: (td) => auditIndex!.coverage.getUntestedTopDecile(td),
       rawDb: auditIndex!.rawDb,
     };
   }
 
   const {
     pipelineVisitors, pipelineReducers, pipelineDerivedReducers,
-    dryBundle, reactBundle, solidBundle, allRulesMigrated,
+    reactBundle, solidBundle, allRulesMigrated,
   } = buildPipelineAdapters(analyzers);
 
   // ── Safeguard warnings ────────────────────────────────────────────────
   if (auditIndex && analyzers.includes('cross-domain')) {
-    const suCount = auditIndex.count('schema_usage');
+    const suCount = auditIndex.rawSql.count('schema_usage');
     if (suCount === 0) {
       console.warn('[code-audit] ⚠ cross-domain analyzer requires schema_usage data. '
         + 'This is populated during a full audit run by the schema analyzer. '
@@ -1129,6 +1274,7 @@ async function runPipelineStage(inputs: {
   let pipelineDeadClusters: DeadCluster[] | undefined;
   let pipelineSizeDistributions: SizeDistribution[] | undefined;
   let routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
+  let receiverDiagnostics: CoverageDiagnostic[] = [];
 
   if (hasPipelineAnalyzers) {
     const pipelineAnalyzerConfig = buildPipelineAnalyzerConfig(analyzers, mergedOptions, root, files, corpusFiles, provenanceTiming);
@@ -1160,14 +1306,14 @@ async function runPipelineStage(inputs: {
       }
 
       await finalizeReact(reactBundle, analyzerResults, pipelineAnalyzerConfig);
-      await persistDryPairs(dryBundle, root);
 
       const split = await applyPhaseModelSplit({
-        mergedOptions, root, files, pipelineAnalyzerConfig, analyzerResults, pipelineIndexHandle,
+        mergedOptions, root, files, isScoped, pipelineAnalyzerConfig, analyzerResults, pipelineIndexHandle,
       });
       phaseFindings = split.phaseFindings;
       phaseIncompleteFacts = split.phaseIncompleteFacts;
       routeAttribution = split.routeAttribution;
+      receiverDiagnostics = split.receiverDiagnostics;
 
       // Spec 68 §8 — derived coverage, computed AFTER the split so phaseFindings
       // holds the migrated rules' re-emitted findings.
@@ -1188,7 +1334,10 @@ async function runPipelineStage(inputs: {
       pipelineInputPresence = pipelineResult.metadata?.inputPresence;
       pipelineRuleTiming = pipelineResult.metadata?.ruleTiming;
       pipelineFileAccounting = pipelineResult.metadata?.fileAccounting;
-      pipelineDiagnostics = pipelineResult.metadata?.diagnostics;
+      pipelineDiagnostics = [
+        ...(pipelineResult.metadata?.diagnostics ?? []),
+        ...receiverDiagnostics,
+      ];
       pipelineTestCoverage = pipelineResult.metadata?.testCoverage;
       pipelineDeadClusters = pipelineResult.metadata?.deadClusters;
 
@@ -1492,7 +1641,17 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
     collectedFunctions, fileToFunctionsMap,
   } = inputs;
 
-  const summary = generateSummary(ordered, files.length);
+  // Spec 69 §10 R4 — count query-shaped call sites whose DB receiver is
+  // unproven, keyed by the analyzer that owns the receiver-resolution
+  // instrument (`schema`). This is the site-level `cannot-fire` surface that
+  // `summary.byAnalyzer[].unprovenSites` carries per analyzer.
+  const unprovenSitesByAnalyzer = new Map<string, number>();
+  for (const d of pipelineDiagnostics ?? []) {
+    if (d.kind !== 'cannot-fire' || d.analyzerName !== 'schema') continue;
+    unprovenSitesByAnalyzer.set(d.analyzerName, (unprovenSitesByAnalyzer.get(d.analyzerName) ?? 0) + 1);
+  }
+
+  const summary = generateSummary(ordered, files.length, unprovenSitesByAnalyzer);
 
   return {
     timestamp: new Date(),
@@ -1920,15 +2079,26 @@ async function resolveFilesScope(
 
 
 /**
- * Generate audit summary
+ * Generate audit summary.
+ *
+ * Exported for the Spec 69 §10 R4 pin: `summary.byAnalyzer[].unprovenSites`
+ * must carry the site-level cannot-fire count per analyzer.
+ *
+ * @param analyzerResults per-analyzer results, keyed by analyzer name
+ * @param filesAnalyzed total number of files processed this run
+ * @param unprovenSitesByAnalyzer per-analyzer count of unproven (cannot-fire) sites
  */
-function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesAnalyzed: number) {
+export function generateSummary(
+  analyzerResults: Record<string, AnalyzerResult>,
+  filesAnalyzed: number,
+  unprovenSitesByAnalyzer: ReadonlyMap<string, number> = new Map(),
+) {
   let totalViolations = 0;
   let criticalIssues = 0;
   let severe = 0;
   let high = 0;
   const violationsByCategory: Record<string, number> = {};
-  const byAnalyzer: Record<string, { violations: number; filesProcessed: number; fatalErrors: number }> = {};
+  const byAnalyzer: Record<string, { violations: number; filesProcessed: number; fatalErrors: number; unprovenSites: number }> = {};
 
   for (const [analyzer, result] of Object.entries(analyzerResults)) {
     let analyzerViolations = 0;
@@ -1956,6 +2126,7 @@ function generateSummary(analyzerResults: Record<string, AnalyzerResult>, filesA
       violations: analyzerViolations,
       filesProcessed: getFilesProcessed(result.status),
       fatalErrors: result.errors ? result.errors.length : 0,
+      unprovenSites: unprovenSitesByAnalyzer.get(analyzer) ?? 0,
     };
   }
 

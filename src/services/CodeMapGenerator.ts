@@ -151,7 +151,7 @@ export class CodeMapGenerator {
     const sectionInfo: Array<{type: string, description: string, size: number}> = [];
     
     for (const [sectionType, content] of Object.entries(sections)) {
-      await db.storeCodeMapSection(mapId, sectionType, content.text, content.metadata);
+      await db.codeMap.storeCodeMapSection(mapId, sectionType, content.text, content.metadata);
       sectionInfo.push({
         type: sectionType,
         description: content.description,
@@ -1193,7 +1193,7 @@ async function queryCoverageStats(): Promise<CoverageStats> {
   // Untested top-decile functions
   const untestedTopDecile: CoverageStats['untestedTopDecile'] = [];
   try {
-    const untested = db.getUntestedTopDecile(0.1);
+    const untested = db.coverage.getUntestedTopDecile(0.1);
     for (const fn of untested) {
       untestedTopDecile.push({
         functionName: fn.functionName,

@@ -446,7 +446,7 @@ export async function runNextFile(options: {
 
   const db = CodeIndexDB.getInstance(undefined, root);
   await db.initialize();
-  const raw = db.getMeta(SNAPSHOT_KEY);
+  const raw = db.meta.getMeta(SNAPSHOT_KEY);
   const snapshot: NextFileSnapshot | null = raw ? (JSON.parse(raw) as NextFileSnapshot) : null;
 
   // Shared full-audit-and-seed (cold path + schema escalation).
@@ -455,7 +455,7 @@ export async function runNextFile(options: {
     const result = await runner.run();
     const split = splitFindings(result.analyzerResults, root);
     const seeded = seedSnapshot(root, current, split);
-    db.setMeta(SNAPSHOT_KEY, JSON.stringify(seeded));
+    db.meta.setMeta(SNAPSHOT_KEY, JSON.stringify(seeded));
     return { snapshot: seeded, violations: flatten(seeded), cold: true, summary: summarizeViolations(flatten(seeded)) };
   };
 
@@ -533,6 +533,6 @@ export async function runNextFile(options: {
     corpusFindings: merged.corpusFindings,
     schemaFindings: merged.schemaFindings,
   };
-  db.setMeta(SNAPSHOT_KEY, JSON.stringify(refreshed));
+  db.meta.setMeta(SNAPSHOT_KEY, JSON.stringify(refreshed));
   return { snapshot: refreshed, violations: merged.all, cold: false, summary: summarizeViolations(merged.all) };
 }

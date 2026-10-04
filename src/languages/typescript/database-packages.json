@@ -1,0 +1,18 @@
+[
+  "better-sqlite3",
+  "drizzle-orm",
+  "@prisma/client",
+  "pg",
+  "mysql2",
+  "postgres",
+  "kysely",
+  "knex",
+  "mongodb",
+  "mongoose",
+  "@libsql/client",
+  "@planetscale/database",
+  "@neondatabase/serverless",
+  "@vercel/postgres",
+  "bun:sqlite",
+  "node:sqlite"
+]

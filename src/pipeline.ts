@@ -31,6 +31,7 @@ import {
   type Stage2Visitor,
   type Stage3Reducer,
   type Stage4Reducer,
+  type VisitorContext,
   type Violation,
   type TestCoverageReport,
   type DeadCluster,
@@ -360,7 +361,7 @@ export async function runStage2(
         matchedAny = true;
 
         const visitorConfig = { ...(rawConfig[visitor.name] ?? {}), ...fileInfra };
-        const visitorContext = {
+        const visitorContext: VisitorContext = {
           projectRoot,
           filePath: tuple.file,
           config: visitorConfig,
@@ -759,6 +760,7 @@ export async function runPipeline(
   // The generator lazily reads/parses files as stage 2 consumes them.
   // Stage 1 parse time is accumulated inside the generator closure and
   // retrieved via getTiming() after the stream exhausts.
+
   const streamT0 = performance.now();
   const stage2 = await runStage2(s1.generator, visitors, config, s1.fileCount);
   const { parseDurationMs, readDurationMs } = s1.getTiming();

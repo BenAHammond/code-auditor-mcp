@@ -11,14 +11,11 @@
 
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import type { SqliteDatabase } from '../sqlite/types.js';
+import type { SqliteDatabase, SqliteStatement } from '../sqlite/types.js';
 import { extractDeclarations } from './styleExtractor.js';
 import { loadTailwindConfig, tokensToStyleTokens, type TailwindConfigResult } from './tailwindConfigLoader.js';
 import {
-  findFiles,
-  UNREAD_STYLE_EXTENSIONS,
   STYLE_MARKUP_EXTENSIONS,
-  KNOWN_SOURCE_EXTENSIONS,
   TYPESCRIPT_EXTENSIONS,
   JAVASCRIPT_EXTENSIONS,
 } from '../utils/fileDiscovery.js';
@@ -42,7 +39,31 @@ const SQL_STYLE_CLEAR_TOKEN = 'DELETE FROM style_tokens WHERE file_path = ?';
 const SQL_STYLE_CLEAR_UNREAD = 'DELETE FROM style_unread_sources WHERE file_path = ?';
 const SQL_STYLE_CLEAR_CLASS = 'DELETE FROM style_defined_classes WHERE file_path = ?';
 
-
+// Style-table insert statements, hoisted into the same one-time prepare bundle as
+// the clears. `insertDeclarations`/`upsertClassUsage`/`upsertTokens` used to
+// `.prepare(...)` these on every call — once per file in the per-file sync loop —
+// the same N+1 the clear statements were hoisted to avoid. One parse per
+// statement, bound `.run` per row.
+const SQL_STYLE_INSERT_DECL = `
+  INSERT INTO style_declarations
+    (property, raw_value, normalized_value, mechanism, file_path, line,
+     context, variant_context, token_ref, content_hash)
+  VALUES
+    (@property, @rawValue, @normalizedValue, @mechanism, @filePath, @line,
+     @context, @variantContext, @tokenRef, @contentHash)
+`;
+const SQL_STYLE_INSERT_CLASS =
+  'INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)';
+const SQL_STYLE_INSERT_USAGE = `
+  INSERT INTO style_class_usage
+    (class_name, file_path, line, mechanism, unresolvable)
+  VALUES
+    (@className, @filePath, @line, @mechanism, @unresolvable)
+`;
+const SQL_STYLE_INSERT_TOKEN = `
+  INSERT INTO style_tokens (name, value, file_path, mechanism)
+  VALUES (@name, @value, @filePath, @mechanism)
+`;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -105,9 +126,22 @@ export async function syncStyleIndex(
   const result: StyleSyncResult = { changed: 0, skipped: 0, removed: 0, errors: 0, consumedFiles: [], contributingFiles: [] };
   const scoped = options.scoped ?? false;
 
+  // Prepare the nine style-table statements (five clears + four inserts) once up
+  // front, and preload the per-file content hash map for the skip check. Both
+  // were per-file round-trips before (a `.prepare(...)` on every
+  // `deleteFileEntries`/`insertDeclarations`/`upsertClassUsage`/`upsertTokens`
+  // call, and a `SELECT content_hash` on every `getStoredHash`) — the classic
+  // N+1 on a full-corpus sync. One parse per statement + one grouped read removes
+  // the per-file queries entirely.
+  const stmts = prepareStyleStatements(rawDb);
+  const storedHashes = scoped ? null : loadStoredHashes(rawDb);
+
   // Unread stylesheet sources (Spec 45 R5). When any exist, the
   // styles/undefined-class detector still fires and carries them as context
   // rather than asserting a class is undefined against the whole project.
+  // Only the content-level `<style lang="…">` reason is recorded here (from
+  // `extractDeclarations`); the walk-level reasons (dialect/read-failure/
+  // unknown-extension) are now produced by the traverse phase, not this indexer.
   const unreadSources: UnreadStyleSource[] = [];
 
   // Load Tailwind config only when a file will actually consume tokens. The load
@@ -143,12 +177,10 @@ export async function syncStyleIndex(
       // of whether extraction later finds declarations. A finding-free file the
       // indexer read is still "partially analyzed", not "not analyzed".
       result.consumedFiles.push(filePath);
-    } catch (err) {
+    } catch {
+      // Read failure is now recorded by the traverse phase's own read attempt
+      // (`runPhaseModel`); here it is only a sync error count.
       result.errors++;
-      unreadSources.push({
-        filePath,
-        reason: `read failed: ${err instanceof Error ? err.message : String(err)}`,
-      });
       continue;
     }
 
@@ -157,7 +189,7 @@ export async function syncStyleIndex(
 
       // Check if file is already indexed and unchanged
       if (!scoped) {
-        const existingHash = getStoredHash(rawDb, filePath);
+        const existingHash = storedHashes?.get(filePath) ?? null;
         if (existingHash === contentHash) {
           result.skipped++;
           continue;
@@ -165,7 +197,7 @@ export async function syncStyleIndex(
       }
 
       // Delete old entries for this file (both scoped and full)
-      deleteFileEntries(rawDb, filePath);
+      deleteFileEntries(stmts, filePath);
 
       // Extract declarations. Only reachable for an extractable file, so
       // `tailwindResult` is non-null here (loaded above when hasExtractableFile).
@@ -178,14 +210,14 @@ export async function syncStyleIndex(
 
       // Insert declarations
       if (declarations.length > 0) {
-        insertDeclarations(rawDb, filePath, declarations, contentHash);
+        insertDeclarations(rawDb, stmts, filePath, declarations, contentHash);
         contributed = true;
       }
 
       // Extract and insert class usage
       const classUsage = extractClassUsage(filePath, content);
       if (classUsage.length > 0) {
-        upsertClassUsage(rawDb, filePath, classUsage);
+        upsertClassUsage(rawDb, stmts, filePath, classUsage);
         contributed = true;
       }
 
@@ -199,20 +231,19 @@ export async function syncStyleIndex(
     }
   }
 
-  // Full runs: also record stylesheet dialects the indexer cannot read
-  // (Sass indented syntax, Less, Stylus) — a class may be defined there.
-  if (!scoped) {
-    unreadSources.push(...(await findUnreadStyleFiles(projectRoot)));
-  }
+  // The `.less`/`.styl`/`.sass` dialect walk now lives in the traverse phase
+  // (`runPhaseModel`) — it produces those walk-level unread reasons directly
+  // into the `unread-style-sources` fact, so this indexer no longer walks for
+  // them here.
 
-  // Persist unread sources. Full runs rebuild the table wholesale; scoped runs
-  // only upsert the read-failures they encountered (leaving prior full-run rows
-  // for the rest of the project intact).
+  // Persist unread sources (the content-level `<style lang>` reasons). Full runs
+  // rebuild the table wholesale; scoped runs only upsert what they encountered
+  // (leaving prior full-run rows for the rest of the project intact).
   persistUnreadSources(rawDb, unreadSources, scoped);
 
   // For full runs: remove stale entries for files not in the current set
   if (!scoped) {
-    result.removed = removeStaleEntries(rawDb, files);
+    result.removed = removeStaleEntries(rawDb, files, stmts);
   }
 
   // Insert Tailwind theme tokens as style tokens
@@ -220,7 +251,7 @@ export async function syncStyleIndex(
     const twTokens = tokensToStyleTokens(tailwindResult, projectRoot);
     if (twTokens.length > 0) {
       // Upsert each token individually (name is the unique key)
-      upsertTokens(rawDb, tailwindResult.configPath ?? 'tailwind-theme', twTokens);
+      upsertTokens(rawDb, stmts, tailwindResult.configPath ?? 'tailwind-theme', twTokens);
     }
   }
 
@@ -251,14 +282,10 @@ function extractForFile(
     return extractDeclarations(filePath, null as any, sourceCode, undefined, tailwindTokens, unreadSources);
   }
 
-  // Not a style-bearing extension. Known source (`.css`/`.scss` — handled by the
-  // styles-css visitor — plus TS/JS handled by styles-source, plus JSON/Go/SQL/
-  // TOML/Prisma owned by other analyzers) is skipped silently; any *other*
-  // extension is unhandled — record it so undefined-class surfaces the gap
-  // instead of silently dropping the file type (Spec 42 R2 backstop).
-  if (ext && !KNOWN_SOURCE_EXTENSIONS.includes(ext)) {
-    unreadSources?.push({ filePath, reason: `unsupported source extension: ${ext}` });
-  }
+  // Not a style-bearing extension — skipped silently here. The unknown-extension
+  // backstop (Spec 42 R2) now lives in the traverse phase's own read loop
+  // (`runPhaseModel`), which records `unsupported source extension: <ext>` and
+  // skips the parse; this indexer contributes no unread source for it.
   return [];
 }
 
@@ -344,25 +371,12 @@ export function extractClassUsage(
 // ---------------------------------------------------------------------------
 
 /**
- * Discover stylesheet files whose dialect the indexer cannot read (Sass indented
- * syntax, Less, Stylus). Each is recorded as an unread source so that
- * `styles/undefined-class` findings carry them as context: a class may be
- * defined in one of these files, so "undefined" means "not defined in any read
- * stylesheet".
- */
-async function findUnreadStyleFiles(projectRoot: string): Promise<UnreadStyleSource[]> {
-  const files = await findFiles(projectRoot, { extensions: UNREAD_STYLE_EXTENSIONS });
-  return files.map((filePath) => {
-    const ext = filePath.slice(filePath.lastIndexOf('.') + 1);
-    return { filePath, reason: `unsupported style dialect: ${ext}` };
-  });
-}
-
-/**
- * Persist unread stylesheet sources.
+ * Persist unread stylesheet sources (the content-level `<style lang="…">`
+ * reasons only — walk-level dialect/read-failure/unknown-extension reasons are
+ * produced by the traverse phase, not this indexer).
  *
- * Full runs rebuild the table wholesale so dialects/read-failures that no longer
- * exist are dropped. Scoped runs only upsert the read-failures they encountered,
+ * Full runs rebuild the table wholesale so content-level reasons that no longer
+ * exist are dropped. Scoped runs only upsert the reasons they encountered,
  * leaving prior full-run rows for the rest of the project intact.
  */
 function persistUnreadSources(
@@ -403,26 +417,72 @@ function computeFileHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
-function getStoredHash(rawDb: SqliteDatabase, filePath: string): string | null {
-  const row = rawDb.prepare(
-    'SELECT content_hash FROM style_declarations WHERE file_path = ? LIMIT 1',
-  ).get(filePath) as { content_hash: string } | undefined;
-  return row?.content_hash ?? null;
+/** The per-file statements — five clears and four inserts — prepared once per
+ *  sync and reused across every `deleteFileEntries`/`removeStaleEntries`/
+ *  `insertDeclarations`/`upsertClassUsage`/`upsertTokens` call. Keeping them as a
+ *  single bundle means the prepare cost is paid once at the top of
+ *  `syncStyleIndex` instead of on every file (the per-file `.prepare(...)` N+1
+ *  this replaces, both on the clear and the insert halves of the write path). */
+interface StyleStatements {
+  decl: SqliteStatement;
+  usage: SqliteStatement;
+  token: SqliteStatement;
+  unread: SqliteStatement;
+  class: SqliteStatement;
+  insertDecl: SqliteStatement;
+  insertClass: SqliteStatement;
+  insertUsage: SqliteStatement;
+  insertToken: SqliteStatement;
 }
 
-function deleteFileEntries(rawDb: SqliteDatabase, filePath: string): void {
-  rawDb.prepare(SQL_STYLE_CLEAR_DECL).run(filePath);
-  rawDb.prepare(SQL_STYLE_CLEAR_USAGE).run(filePath);
-  rawDb.prepare(SQL_STYLE_CLEAR_TOKEN).run(filePath);
-  rawDb.prepare(SQL_STYLE_CLEAR_UNREAD).run(filePath);
-  rawDb.prepare(SQL_STYLE_CLEAR_CLASS).run(filePath);
+function prepareStyleStatements(rawDb: SqliteDatabase): StyleStatements {
+  return {
+    decl: rawDb.prepare(SQL_STYLE_CLEAR_DECL),
+    usage: rawDb.prepare(SQL_STYLE_CLEAR_USAGE),
+    token: rawDb.prepare(SQL_STYLE_CLEAR_TOKEN),
+    unread: rawDb.prepare(SQL_STYLE_CLEAR_UNREAD),
+    class: rawDb.prepare(SQL_STYLE_CLEAR_CLASS),
+    insertDecl: rawDb.prepare(SQL_STYLE_INSERT_DECL),
+    insertClass: rawDb.prepare(SQL_STYLE_INSERT_CLASS),
+    insertUsage: rawDb.prepare(SQL_STYLE_INSERT_USAGE),
+    insertToken: rawDb.prepare(SQL_STYLE_INSERT_TOKEN),
+  };
 }
 
-function removeStaleEntries(rawDb: SqliteDatabase, currentFiles: string[]): number {
+/** One grouped read of every indexed file's content hash. All rows for a file
+ *  share a single hash (written uniformly by `insertDeclarations`), so
+ *  `GROUP BY file_path` collapses the table to one entry per file and replaces
+ *  the per-file `SELECT content_hash … LIMIT 1` that `getStoredHash` used to run
+ *  for every candidate file in a full sync. */
+function loadStoredHashes(rawDb: SqliteDatabase): Map<string, string> {
+  const rows = rawDb.prepare(
+    'SELECT file_path, MAX(content_hash) AS content_hash FROM style_declarations GROUP BY file_path',
+  ).all() as { file_path: string; content_hash: string | null }[];
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (row.content_hash != null) map.set(row.file_path, row.content_hash);
+  }
+  return map;
+}
+
+function deleteFileEntries(stmts: StyleStatements, filePath: string): void {
+  stmts.decl.run(filePath);
+  stmts.usage.run(filePath);
+  stmts.token.run(filePath);
+  stmts.unread.run(filePath);
+  stmts.class.run(filePath);
+}
+
+function removeStaleEntries(
+  rawDb: SqliteDatabase,
+  currentFiles: string[],
+  stmts: StyleStatements,
+): number {
   const filesSet = new Set(currentFiles);
-  // Union all three tables — style_class_usage and style_tokens can have
-  // entries for files that don't appear in style_declarations (e.g. TSX
-  // files that use Tailwind classes without defining CSS declarations).
+  // Union all four tables — style_class_usage, style_tokens, and
+  // style_defined_classes can have entries for files that don't appear in
+  // style_declarations (e.g. TSX files that use Tailwind classes without
+  // defining CSS declarations).
   const allIndexed = rawDb.prepare(
     `SELECT DISTINCT file_path FROM style_declarations
      UNION
@@ -436,10 +496,10 @@ function removeStaleEntries(rawDb: SqliteDatabase, currentFiles: string[]): numb
   let removed = 0;
   for (const { file_path } of allIndexed) {
     if (!filesSet.has(file_path)) {
-      rawDb.prepare(SQL_STYLE_CLEAR_DECL).run(file_path);
-      rawDb.prepare(SQL_STYLE_CLEAR_USAGE).run(file_path);
-      rawDb.prepare(SQL_STYLE_CLEAR_TOKEN).run(file_path);
-      rawDb.prepare(SQL_STYLE_CLEAR_CLASS).run(file_path);
+      stmts.decl.run(file_path);
+      stmts.usage.run(file_path);
+      stmts.token.run(file_path);
+      stmts.class.run(file_path);
       removed++;
     }
   }
@@ -448,25 +508,14 @@ function removeStaleEntries(rawDb: SqliteDatabase, currentFiles: string[]): numb
 
 function insertDeclarations(
   rawDb: SqliteDatabase,
+  stmts: StyleStatements,
   filePath: string,
   declarations: NormalizedDeclaration[],
   contentHash: string,
 ): void {
-  const insert = rawDb.prepare(`
-    INSERT INTO style_declarations
-      (property, raw_value, normalized_value, mechanism, file_path, line,
-       context, variant_context, token_ref, content_hash)
-    VALUES
-      (@property, @rawValue, @normalizedValue, @mechanism, @filePath, @line,
-       @context, @variantContext, @tokenRef, @contentHash)
-  `);
-  const insertClass = rawDb.prepare(
-    'INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
-  );
-
   const txn = rawDb.transaction(() => {
     for (const d of declarations) {
-      insert.run({
+      stmts.insertDecl.run({
         property: d.property,
         rawValue: d.rawValue,
         normalizedValue: d.normalizedValue ? JSON.stringify(d.normalizedValue) : null,
@@ -484,7 +533,7 @@ function insertDeclarations(
       // indexed `class_name IN (...)` lookup instead of a full-corpus scan.
       if (d.context) {
         for (const m of d.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-          insertClass.run(m[1], filePath);
+          stmts.insertClass.run(m[1], filePath);
         }
       }
     }
@@ -495,20 +544,16 @@ function insertDeclarations(
 
 function upsertTokens(
   rawDb: SqliteDatabase,
+  stmts: StyleStatements,
   filePath: string,
   tokens: StyleToken[],
 ): void {
   // Delete existing tokens from this file first, then insert fresh
-  rawDb.prepare(SQL_STYLE_CLEAR_TOKEN).run(filePath);
-
-  const insert = rawDb.prepare(`
-    INSERT INTO style_tokens (name, value, file_path, mechanism)
-    VALUES (@name, @value, @filePath, @mechanism)
-  `);
+  stmts.token.run(filePath);
 
   const txn = rawDb.transaction(() => {
     for (const token of tokens) {
-      insert.run({
+      stmts.insertToken.run({
         name: token.name,
         value: token.value,
         filePath: token.filePath,
@@ -522,22 +567,16 @@ function upsertTokens(
 
 function upsertClassUsage(
   rawDb: SqliteDatabase,
+  stmts: StyleStatements,
   filePath: string,
   usage: StyleClassUsage[],
 ): void {
   // Delete existing class usage for this file first
-  rawDb.prepare(SQL_STYLE_CLEAR_USAGE).run(filePath);
-
-  const insert = rawDb.prepare(`
-    INSERT INTO style_class_usage
-      (class_name, file_path, line, mechanism, unresolvable)
-    VALUES
-      (@className, @filePath, @line, @mechanism, @unresolvable)
-  `);
+  stmts.usage.run(filePath);
 
   const txn = rawDb.transaction(() => {
     for (const u of usage) {
-      insert.run({
+      stmts.insertUsage.run({
         className: u.className,
         filePath: u.filePath,
         line: u.line,

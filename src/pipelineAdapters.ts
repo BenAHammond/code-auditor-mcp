@@ -7,8 +7,6 @@
  *
  * Key patterns:
  *   - Per-file (solid, data-access, doc, schema): wrap analyzeAST()
- *   - DRY: wraps analyzeAST(), accumulates dryPairs internally →
- *     factory returns { visitor, getDryPairs } for post-pipeline extraction
  *   - React: wraps scanFile() per file, accumulates scan results →
  *     factory returns { visitor, finalizeCrossComponent }
  *   - DB-based (styles, conventions, cross-domain): reducers call
@@ -63,13 +61,14 @@ import {
   checkNamingConventions,
   checkQueryPatterns,
   checkSQLInjection,
-  checkUnresolvedQueries,
+  checkUnparseableSql,
   getNearestTableSuggestions,
 } from './analyzers/universal/schema/codeAnalysis.js';
 import {
   passesFileGate,
   extractTablesFromRegistry,
 } from './analyzers/universal/schema/discovery.js';
+import { buildBindingEnv, type RootResolutionEnv } from './analyzers/receiverRoot.js';
 import { applyMigrationOps, stripIdentifier } from './analyzers/universal/schema/migrations.js';
 import {
   buildOrgFilterTierSet,
@@ -77,6 +76,7 @@ import {
   type OrgFilterConfig,
 } from './analyzers/orgFilterTiers.js';
 import type { CrossLanguageEntity, CrossReference } from './types/crossLanguage.js';
+import type { Dialect } from './mcp-tools/discoveryQueries.js';
 
 // ── Rule ID helpers ──────────────────────────────────────────────────────────
 
@@ -191,39 +191,6 @@ export function createSolidVisitor(): SolidVisitorBundle {
     pick: (a): SizeSample[] => a.sizeSamples,
   });
   return { visitor, getSizeSamples: getAccumulated };
-}
-
-// ── DRY visitor ──────────────────────────────────────────────────────────────
-
-/** One duplicate-code pair accumulated by the DRY analyzer. */
-export interface DryPair {
-  pairFingerprint: string;
-  file1: string; symbol1: string; line1: number; contentHash1: string;
-  file2: string; symbol2: string; line2: number; contentHash2: string;
-  similarity: number;
-}
-
-export interface DryVisitorBundle {
-  visitor: Stage2Visitor;
-  /** Extract accumulated dryPairs after the pipeline finishes stage 2. */
-  getDryPairs: () => Promise<DryPair[]>;
-}
-
-/**
- * Create the DRY stage-2 visitor, which lazily loads the DRY analyzer and
- * exposes its accumulated duplicate-code pairs.
- *
- * @returns The DRY visitor bundle.
- */
-export function createDryVisitor(): DryVisitorBundle {
-  const { visitor, getAccumulated } = createAnalyzerBundle({
-    name: 'dry',
-    loader: () => import('./analyzers/universal/UniversalDRYAnalyzer.js').then((m) => new m.UniversalDRYAnalyzer()),
-    description: 'Detects code duplication across the codebase',
-    category: 'maintainability',
-    pick: (a): DryPair[] => a.dryPairs,
-  });
-  return { visitor, getDryPairs: getAccumulated };
 }
 
 // ── Data-Access visitor ──────────────────────────────────────────────────────
@@ -816,6 +783,12 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
 
       const fnEntries = collectFunctionEntries(root, sourceCode, importMap, filePath);
 
+      // File-level content hash, shared by every function row this file emits.
+      // detectChangedFunctions stores the same value (from its own read of the
+      // file) so a later `changed` run can skip the re-scan when the file's
+      // whole content is unchanged.
+      const fileHash = computeContentHash(sourceCode);
+
       // Build IndexFactsEntry for each function
       for (const fn of fnEntries) {
         const metadata: Record<string, unknown> = {
@@ -847,6 +820,7 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
             parameters: null,
             body: fn.body ?? null,
             content_hash: contentHash,
+            file_hash: fileHash,
             last_modified: now,
             metadata_json: JSON.stringify(metadata),
           },
@@ -1108,32 +1082,42 @@ const SQL_STYLE_INS_TOKEN = 'INSERT INTO style_tokens (name, value, file_path, m
 /** A prepared write statement (the shape `rawDb.prepare(sql)` returns). */
 type StyleWriteStmt = { run(...params: unknown[]): unknown };
 
-/** Run a style write through the prepared statement when available, else the
- *  index handle's prepare-per-call `run`. Collapses the dual-path dispatch
- *  (prepare-once vs. per-call) that `insertSourceStyleFacts` and the styles
- *  reducer both perform, so each write is a single call site instead of two. */
+/** Run a style write through its prepared statement. The index handle always
+ *  exposes a raw better-sqlite3 DB (`pipelineIndexHandle` in auditRunner is the
+ *  only construction and always sets `rawDb`), so the prepared statements are
+ *  always available — the former `else indexHandle.run(sql, params)` per-call
+ *  fallback was unreachable and has been removed. */
 function runStyleWrite(
-  stmts: Record<string, StyleWriteStmt> | null,
+  stmts: Record<string, StyleWriteStmt>,
   stmtKey: string,
-  sql: string,
   params: unknown[],
-  indexHandle: IndexHandle,
 ): void {
-  const stmt = stmts?.[stmtKey];
-  if (stmt) stmt.run(...params);
-  else indexHandle.run(sql, params);
+  stmts[stmtKey]!.run(...params);
 }
 
-/** Read a file's stored style content hash through the prepared statement when
- *  available, else the index handle's `query`. */
+/** Read a file's stored style content hash through its prepared statement. */
 function getStyleHash(
-  stmts: Record<string, StyleWriteStmt & { get(...params: unknown[]): unknown }> | null,
+  stmts: Record<string, StyleWriteStmt & { get(...params: unknown[]): unknown }>,
   filePath: string,
-  indexHandle: IndexHandle,
 ): { content_hash: string } | undefined {
-  return (stmts
-    ? stmts.getHash!.get(filePath)
-    : indexHandle.query(SQL_STYLE_GET_HASH, [filePath])[0]) as { content_hash: string } | undefined;
+  return stmts.getHash!.get(filePath) as { content_hash: string } | undefined;
+}
+
+/** Prepare the statements shared by both style inserters (source CSS-in-JS and
+ *  compiled CSS). Each site layers its own extras (`getHash`/`delUnread` for the
+ *  source path, `insTok` for the compiled-CSS path) on top of this common set. */
+function prepareCommonStyleStatements(
+  rawDb: { prepare(sql: string): StyleWriteStmt },
+): Record<string, StyleWriteStmt> {
+  return {
+    delDecl: rawDb.prepare(SQL_STYLE_DEL_DECL),
+    delUsage: rawDb.prepare(SQL_STYLE_DEL_USAGE),
+    delTok: rawDb.prepare(SQL_STYLE_DEL_TOKEN),
+    delClass: rawDb.prepare(SQL_STYLE_DEL_CLASS),
+    insDecl: rawDb.prepare(SQL_STYLE_INS_DECL),
+    insClass: rawDb.prepare(SQL_STYLE_INS_CLASS),
+    insUsage: rawDb.prepare(SQL_STYLE_INS_USAGE),
+  };
 }
 
 /**
@@ -1174,21 +1158,13 @@ function insertSourceStyleFacts(
   const rawDb = indexHandle.rawDb as {
     prepare(sql: string): { get(...params: unknown[]): unknown; run(...params: unknown[]): unknown };
     transaction<T extends (...args: unknown[]) => unknown>(fn: T): T;
-  } | undefined;
+  };
 
-  const stmts = rawDb
-    ? {
-        getHash: rawDb.prepare(SQL_STYLE_GET_HASH),
-        delDecl: rawDb.prepare(SQL_STYLE_DEL_DECL),
-        delUsage: rawDb.prepare(SQL_STYLE_DEL_USAGE),
-        delTok: rawDb.prepare(SQL_STYLE_DEL_TOKEN),
-        delUnread: rawDb.prepare(SQL_STYLE_DEL_UNREAD),
-        delClass: rawDb.prepare(SQL_STYLE_DEL_CLASS),
-        insDecl: rawDb.prepare(SQL_STYLE_INS_DECL),
-        insClass: rawDb.prepare(SQL_STYLE_INS_CLASS),
-        insUsage: rawDb.prepare(SQL_STYLE_INS_USAGE),
-      }
-    : null;
+  const stmts = {
+    ...prepareCommonStyleStatements(rawDb),
+    getHash: rawDb.prepare(SQL_STYLE_GET_HASH),
+    delUnread: rawDb.prepare(SQL_STYLE_DEL_UNREAD),
+  };
 
   let contributed = false;
 
@@ -1198,36 +1174,35 @@ function insertSourceStyleFacts(
     // Full-run content-hash skip: leave already-current rows untouched. Scoped
     // runs always re-write, matching the old style indexer's `if (!scoped)` guard.
     if (!isScoped) {
-      const stored = getStyleHash(stmts, filePath, indexHandle);
+      const stored = getStyleHash(stmts, filePath);
       if (stored?.content_hash === facts.contentHash) return;
     }
 
     // Delete stale rows — all five tables, mirroring the old deleteFileEntries
     // so a file that *lost* its styles also loses its stale unread-sources row.
-    runStyleWrite(stmts, 'delDecl', SQL_STYLE_DEL_DECL, [filePath], indexHandle);
-    runStyleWrite(stmts, 'delUsage', SQL_STYLE_DEL_USAGE, [filePath], indexHandle);
-    runStyleWrite(stmts, 'delTok', SQL_STYLE_DEL_TOKEN, [filePath], indexHandle);
-    runStyleWrite(stmts, 'delUnread', SQL_STYLE_DEL_UNREAD, [filePath], indexHandle);
-    runStyleWrite(stmts, 'delClass', SQL_STYLE_DEL_CLASS, [filePath], indexHandle);
+    runStyleWrite(stmts, 'delDecl', [filePath]);
+    runStyleWrite(stmts, 'delUsage', [filePath]);
+    runStyleWrite(stmts, 'delTok', [filePath]);
+    runStyleWrite(stmts, 'delUnread', [filePath]);
+    runStyleWrite(stmts, 'delClass', [filePath]);
 
     // Insert declarations (and their defined-class catalog entries).
     for (const decl of facts.declarations) {
-      runStyleWrite(stmts, 'insDecl', SQL_STYLE_INS_DECL, [decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash], indexHandle);
+      runStyleWrite(stmts, 'insDecl', [decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash]);
       if (decl.context) {
         for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-          runStyleWrite(stmts, 'insClass', SQL_STYLE_INS_CLASS, [m[1], decl.filePath], indexHandle);
+          runStyleWrite(stmts, 'insClass', [m[1], decl.filePath]);
         }
       }
     }
 
     // Insert class usage.
     for (const cu of facts.classUsage) {
-      runStyleWrite(stmts, 'insUsage', SQL_STYLE_INS_USAGE, [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0], indexHandle);
+      runStyleWrite(stmts, 'insUsage', [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0]);
     }
   };
 
-  if (stmts) rawDb!.transaction(() => { for (const [fp, f] of entries) insertOne(fp, f); })();
-  else for (const [fp, f] of entries) insertOne(fp, f);
+  rawDb.transaction(() => { for (const [fp, f] of entries) insertOne(fp, f); })();
 
   return contributed;
 }
@@ -1319,27 +1294,19 @@ export function createStylesReducer(): Stage3Reducer {
           const rawDb = context.indexHandle.rawDb as {
             prepare(sql: string): { run(...params: unknown[]): unknown };
             transaction<T extends (...args: unknown[]) => unknown>(fn: T): T;
-          } | undefined;
-          const stmts = rawDb
-            ? {
-                delDecl: rawDb.prepare(SQL_STYLE_DEL_DECL),
-                delTok: rawDb.prepare(SQL_STYLE_DEL_TOKEN),
-                delUsage: rawDb.prepare(SQL_STYLE_DEL_USAGE),
-                delClass: rawDb.prepare(SQL_STYLE_DEL_CLASS),
-                insDecl: rawDb.prepare(SQL_STYLE_INS_DECL),
-                insClass: rawDb.prepare(SQL_STYLE_INS_CLASS),
-                insTok: rawDb.prepare(SQL_STYLE_INS_TOKEN),
-                insUsage: rawDb.prepare(SQL_STYLE_INS_USAGE),
-              }
-            : null;
+          };
+          const stmts = {
+            ...prepareCommonStyleStatements(rawDb),
+            insTok: rawDb.prepare(SQL_STYLE_INS_TOKEN),
+          };
 
           const insertAll = (): void => {
             for (const [filePath, facts] of Object.entries(cssFacts)) {
               // Delete old entries for this file (replaces the styleIndexer path)
-              runStyleWrite(stmts, 'delDecl', SQL_STYLE_DEL_DECL, [filePath], indexHandle);
-              runStyleWrite(stmts, 'delTok', SQL_STYLE_DEL_TOKEN, [filePath], indexHandle);
-              runStyleWrite(stmts, 'delUsage', SQL_STYLE_DEL_USAGE, [filePath], indexHandle);
-              runStyleWrite(stmts, 'delClass', SQL_STYLE_DEL_CLASS, [filePath], indexHandle);
+              runStyleWrite(stmts, 'delDecl', [filePath]);
+              runStyleWrite(stmts, 'delTok', [filePath]);
+              runStyleWrite(stmts, 'delUsage', [filePath]);
+              runStyleWrite(stmts, 'delClass', [filePath]);
 
               // Compute content hash for the file
               const contentStr = JSON.stringify({ declarations: facts.declarations.length, tokens: facts.tokens.length, classUsage: facts.classUsage.length });
@@ -1347,31 +1314,30 @@ export function createStylesReducer(): Stage3Reducer {
 
               // Insert declarations
               for (const decl of facts.declarations) {
-                runStyleWrite(stmts, 'insDecl', SQL_STYLE_INS_DECL, [decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash], indexHandle);
+                runStyleWrite(stmts, 'insDecl', [decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash]);
                 // Populate the defined-class catalog (Spec 45) from any class
                 // selectors in the rule's context so styles/undefined-class can
                 // resolve names via `style_defined_classes` instead of a
                 // full-corpus regex scan over every declaration.
                 if (decl.context) {
                   for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-                    runStyleWrite(stmts, 'insClass', SQL_STYLE_INS_CLASS, [m[1], decl.filePath], indexHandle);
+                    runStyleWrite(stmts, 'insClass', [m[1], decl.filePath]);
                   }
                 }
               }
 
               // Insert tokens
               for (const tok of facts.tokens) {
-                runStyleWrite(stmts, 'insTok', SQL_STYLE_INS_TOKEN, [tok.name, tok.value, tok.filePath, tok.mechanism], indexHandle);
+                runStyleWrite(stmts, 'insTok', [tok.name, tok.value, tok.filePath, tok.mechanism]);
               }
 
               // Insert class usage
               for (const cu of facts.classUsage) {
-                runStyleWrite(stmts, 'insUsage', SQL_STYLE_INS_USAGE, [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0], indexHandle);
+                runStyleWrite(stmts, 'insUsage', [cu.className, cu.filePath, cu.line, cu.mechanism, cu.unresolvable ? 1 : 0]);
               }
             }
           };
-          if (rawDb) rawDb.transaction(insertAll)();
-          else insertAll();
+          rawDb.transaction(insertAll)();
         }
 
         // Short-circuit on non-style-bearing scoped runs — the source and CSS
@@ -2898,7 +2864,8 @@ export function createSchemaSqlVisitor(): Stage2Visitor {
     getRuleIds: () => [],
     async visit(_ast: unknown, _adapter: unknown, context: VisitorContext, sourceCode: string) {
       const { extractMigrationOpsFromFile } = await getMigrationExtractor();
-      const { ops, columns, tableColumns, skipped, bytes } = await extractMigrationOpsFromFile(context.filePath, sourceCode);
+      const dialect = context.config.sqlDialect as Dialect | null | undefined;
+      const { ops, columns, tableColumns, skipped, bytes } = await extractMigrationOpsFromFile(context.filePath, sourceCode, dialect ?? null);
       return {
         violations: [],
         facts: {
@@ -2917,6 +2884,219 @@ export function createSchemaSqlVisitor(): Stage2Visitor {
   };
 }
 
+/** The shared lazy `UniversalSchemaAnalyzer` for the schema-code visitor. Hoisted
+ *  to module scope so the factory below stays a thin descriptor and the analyzer
+ *  is constructed once, not per factory call. */
+const getSchemaCodeAnalyzer = lazySingleton<any>(() =>
+  import('./analyzers/universal/UniversalSchemaAnalyzer.js').then((m) => ({
+    analyzer: new m.UniversalSchemaAnalyzer(),
+    defaults: m.DEFAULT_SCHEMA_CONFIG,
+    parseMigrationOps: m.parseMigrationOps,
+    extractDdlColumnNames: m.extractDdlColumnNames,
+    extractDdlTableColumns: m.extractDdlTableColumns,
+  })),
+);
+
+/** The schema-code visitor's per-file `visit` body, extracted from
+ *  `createSchemaCodeVisitor` (which exceeded the 200-line `function-length`
+ *  budget) so the factory stays a thin descriptor over the shared analyzer. */
+async function runSchemaCodeVisit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
+  const { analyzer: a, defaults, parseMigrationOps, extractDdlColumnNames, extractDdlTableColumns } = await getSchemaCodeAnalyzer();
+  const pm = await _getProvenanceModule();
+  const violations: Violation[] = [];
+  const diagnostics: CoverageDiagnostic[] = [];
+  const indexFacts: IndexFactsEntry[] = [];
+
+  // Pipeline config for this analyzer (moved before table extraction, needed
+  // by the table-source registry and provenance context).
+  const schemaConfig = (context.config ?? {}) as Record<string, unknown>;
+  // Spec 70 R1 — the corpus's named dialect (or null) threads to the DDL
+  // extractors so DO-local DDL parses instead of regex. A null dialect is
+  // cannot-fire (no DDL facts).
+  const dialect = schemaConfig.sqlDialect as Dialect | null | undefined;
+
+  // Spec 29 R2: Extract ORM table names via declarative table-source registry.
+  // Adding an ORM is now a config entry, not code.  Falls back to Drizzle
+  // entries when no user-specified tableSources are configured.
+  const ormTables: string[] = [];
+  const tableProvenances: Array<{ table: string; source: any }> = [];
+  const tableSources = (schemaConfig.tableSources as any[]) ?? [
+    { kind: 'callee', name: 'pgTable', arg: 0, description: 'Drizzle PostgreSQL table' },
+    { kind: 'callee', name: 'mysqlTable', arg: 0, description: 'Drizzle MySQL table' },
+    { kind: 'callee', name: 'sqliteTable', arg: 0, description: 'Drizzle SQLite table' },
+  ];
+  if (tableSources.length > 0) {
+    const registered = extractTablesFromRegistry(tableSources, {
+      ast: ast as AST,
+      adapter: adapter as LanguageAdapter,
+      sourceCode,
+      filePath: context.filePath,
+    });
+    for (const { table, source } of registered) {
+      ormTables.push(table);
+      tableProvenances.push({ table, source });
+    }
+  }
+
+  // Extract DDL from sql.exec(...) string literals inside Durable Object classes.
+  // These are CREATE TABLE / DROP TABLE statements at runtime that migration
+  // discovery never sees.  Extracting them completes the authoritative catalog
+  // so unknown-table doesn't false-positive on DO-local tables.
+  const doDDL: string[] = [];
+  const doTemplateDDL = /`([^`]*(?:CREATE|DROP|ALTER)\s+(?:TABLE|VIRTUAL\s+TABLE)\s+[^`]+)`/gis;
+  const doStringDDL = /(["'])((?:\s*(?:CREATE|DROP|ALTER)\s+(?:TABLE|VIRTUAL\s+TABLE)\s+[^"']+))\1/gis;
+  let ddlMatch: RegExpExecArray | null;
+  while ((ddlMatch = doTemplateDDL.exec(sourceCode)) !== null) {
+    const sql = ddlMatch[1].trim();
+    if (sql) doDDL.push(sql);
+  }
+  while ((ddlMatch = doStringDDL.exec(sourceCode)) !== null) {
+    const sql = ddlMatch[2].trim();
+    if (sql) doDDL.push(sql);
+  }
+  const doDDLSql = doDDL.length > 0 ? doDDL.join(';\n') : null;
+  const doDDLColumns = doDDLSql ? extractDdlColumnNames(doDDLSql, dialect ?? null) : [];
+  const doDDLTableColumns = doDDLSql ? extractDdlTableColumns(doDDLSql, dialect ?? null) : {};
+
+  // Build provenance context for this file — defaults from DEFAULT_SCHEMA_CONFIG
+  const detectionMode = ((schemaConfig.detection as any)?.mode as string) ?? ('hybrid' as any);
+  const provenanceContext = pm.buildProvenanceContext(ast as AST, adapter as LanguageAdapter, sourceCode, {
+    mode: detectionMode,
+    dbBindingNames: (schemaConfig.dbBindingNames as string[]) ?? defaults.dbBindingNames,
+    dbWrapperNames: (schemaConfig.dbWrapperNames as string[]) ?? defaults.dbWrapperNames,
+    // Spec 70 criterion 8 — thread the corpus's named dialect so R3 can prove
+    // a receiver by its parsed SQL argument (the criterion-9 type-annotation
+    // tests are gone). Mirrors buildSchemaProvenanceContext in the analyzer.
+    sqlDialect: dialect ?? null,
+  });
+
+  // Spec 70 criterion 2 — the declaration-resolution environment `identifyHandle`
+  // reads for handle admission (mirrors buildSchemaHandleEnv). Absent for Go,
+  // which has no local binding env and resolves cross-file.
+  const handleEnv: RootResolutionEnv | undefined =
+    (adapter as LanguageAdapter).name === 'go'
+      ? undefined
+      : {
+          provenance: provenanceContext.dbProvenanced,
+          bindings: buildBindingEnv(ast as AST, adapter as LanguageAdapter, sourceCode),
+          adapter: adapter as LanguageAdapter,
+          sourceCode,
+        };
+
+  // File gate — skip files without DB usage
+  if (!passesFileGate(context.filePath, sourceCode, schemaConfig, provenanceContext)) {
+    const facts: Record<string, unknown> = { [context.filePath]: { tableRefs: [], ormTables, tableProvenance: tableProvenances } };
+    if (doDDL.length > 0) {
+      (facts[context.filePath] as any).ddlOps = parseMigrationOps(doDDLSql!, dialect ?? null);
+      if (doDDLColumns.length > 0) (facts[context.filePath] as any).ddlColumns = doDDLColumns;
+      if (Object.keys(doDDLTableColumns).length > 0) (facts[context.filePath] as any).ddlTableColumns = doDDLTableColumns;
+    }
+    return { violations: [], facts, ...(diagnostics.length > 0 && { diagnostics }) };
+  }
+
+  // Build known-tables set from schemas config (pre-pipeline + DB-loaded schemas)
+  const schemas = (schemaConfig.schemas as any[]) ?? [];
+  const knownTablesArr: string[] = (schemaConfig.knownTables as string[]) ?? [];
+  const allTables = new Set<string>();
+  for (const t of knownTablesArr) allTables.add(t);
+  for (const schema of schemas) {
+    for (const table of (schema.tables ?? [])) {
+      allTables.add(table.name);
+    }
+  }
+
+  // Find table references (per-file, uses allTables for short-id false-positive filtering)
+  // Spec 70 1b — `unresolved` is no longer consumed here: the `unresolved-query`
+  // diagnostic is re-derived corpus-side (classifyUnresolvedQuerySites →
+  // buildReceiverDiagnostics), so the legacy visitor stops emitting it.
+  const { references: tableRefs, unparseable } = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, { config: schemaConfig, provenanceContext, allTables, handleEnv });
+
+  // Record schema usage → emit as indexFacts via the shared instance
+  a.recordTableUsage(ast as AST, adapter as LanguageAdapter, context.filePath, tableRefs, sourceCode);
+  const pending = a.getPendingSchemaRecords();
+
+  // Emit clear-by-file + per-usage index facts
+  if (pending.clearFiles.length > 0) {
+    for (const filePath of pending.clearFiles) {
+      indexFacts.push({ table: 'schema_usage', data: { _action: 'clear-by-file', file_path: filePath } });
+    }
+  }
+  for (const usage of pending.usages) {
+    indexFacts.push({
+      table: 'schema_usage',
+      data: {
+        file_path: usage.filePath,
+        table_name: usage.tableName,
+        function_name: usage.functionName,
+        function_start_line: usage.functionStartLine,
+        function_start_column: usage.functionStartColumn,
+        usage_type: usage.usageType,
+        line: usage.line,
+        column: usage.column,
+        raw_query: usage.rawQuery,
+        origin: usage.origin ?? null,
+      },
+    });
+  }
+
+  // Check naming conventions
+  if (schemaConfig.checkNamingConventions !== false) {
+    violations.push(...checkNamingConventions(tableRefs, context.filePath));
+  }
+
+  // Spec 58 R1 — DB-call SQL held in an unresolvable identifier is a coverage
+  // diagnostic, not a finding. Emitted corpus-side now (Spec 70 1b:
+  // `classifyUnresolvedQuerySites` → `buildReceiverDiagnostics`), not by this
+  // visitor, so the phase model is the single home for the `unresolved-query`
+  // signal.
+
+  // Spec 70 R2 — a provenanced static SQL argument the named dialect cannot
+  // parse is unreadable, not "no tables". Emit a cannot-fire diagnostic so
+  // unknown-table / stale-table-reference don't read the empty reference set
+  // as clean (silent clean wearing a fact).
+  if (schemaConfig.reportUnresolvedQueries !== false) {
+    diagnostics.push(...checkUnparseableSql(unparseable, context.filePath));
+  }
+
+  // Check query patterns
+  if (schemaConfig.validateQueryPatterns !== false) {
+    violations.push(...checkQueryPatterns(ast as AST, adapter as LanguageAdapter, sourceCode, schemaConfig));
+  }
+
+  // Check SQL injection
+  violations.push(...checkSQLInjection(ast as AST, adapter as LanguageAdapter, sourceCode));
+
+  // Emit facts for the Stage 3 reducer. Fluent-builder references
+  // (`origin: 'query-builder'`) are excluded from the unknown-table check:
+  // a scratch/test table name carried by `db('t').select(...)` is not a
+  // schema catalog miss, and feeding it in flips the 10:1 fail-open ratio.
+  const fileFacts: Record<string, unknown> = {
+    tableRefs: tableRefs
+      .filter((r) => (r as { origin?: string }).origin !== 'query-builder')
+      .map((r: { table: string; type: string; location: { line: number; column: number }; context: string }) => ({
+        table: r.table,
+        type: r.type,
+        line: r.location.line,
+        column: r.location.column,
+        context: r.context,
+      })),
+    ormTables,
+    tableProvenance: tableProvenances,
+  };
+  if (doDDL.length > 0) {
+    (fileFacts as any).ddlOps = parseMigrationOps(doDDLSql!, dialect ?? null);
+    if (doDDLColumns.length > 0) (fileFacts as any).ddlColumns = doDDLColumns;
+    if (Object.keys(doDDLTableColumns).length > 0) (fileFacts as any).ddlTableColumns = doDDLTableColumns;
+  }
+
+  return {
+    violations,
+    facts: { [context.filePath]: fileFacts },
+    indexFacts: indexFacts.length > 0 ? indexFacts : undefined,
+    ...(diagnostics.length > 0 && { diagnostics }),
+  };
+}
+
 /**
  * Schema code visitor (.ts/.tsx/.js/.jsx) — per-file analysis for naming conventions,
  * query patterns, SQL injection, table references, and ORM table extraction.
@@ -2924,187 +3104,12 @@ export function createSchemaSqlVisitor(): Stage2Visitor {
  * @returns The schema-code stage-2 visitor.
  */
 export function createSchemaCodeVisitor(): Stage2Visitor {
-  const getAnalyzer = lazySingleton<any>(() =>
-    import('./analyzers/universal/UniversalSchemaAnalyzer.js').then((m) => ({
-      analyzer: new m.UniversalSchemaAnalyzer(),
-      defaults: m.DEFAULT_SCHEMA_CONFIG,
-      parseMigrationOps: m.parseMigrationOps,
-      extractDdlColumnNames: m.extractDdlColumnNames,
-      extractDdlTableColumns: m.extractDdlTableColumns,
-    })),
-  );
-
   return {
     name: 'schema-code',
     stage: 'visitor',
     extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'],
     getRuleIds: () => getRuleIdsFor('schema'),
-    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const { analyzer: a, defaults, parseMigrationOps, extractDdlColumnNames, extractDdlTableColumns } = await getAnalyzer();
-      const pm = await _getProvenanceModule();
-      const violations: Violation[] = [];
-      const diagnostics: CoverageDiagnostic[] = [];
-      const indexFacts: IndexFactsEntry[] = [];
-
-      // Pipeline config for this analyzer (moved before table extraction, needed
-      // by the table-source registry and provenance context).
-      const schemaConfig = (context.config ?? {}) as Record<string, unknown>;
-
-      // Spec 29 R2: Extract ORM table names via declarative table-source registry.
-      // Adding an ORM is now a config entry, not code.  Falls back to Drizzle
-      // entries when no user-specified tableSources are configured.
-      const ormTables: string[] = [];
-      const tableProvenances: Array<{ table: string; source: any }> = [];
-      const tableSources = (schemaConfig.tableSources as any[]) ?? [
-        { kind: 'callee', name: 'pgTable', arg: 0, description: 'Drizzle PostgreSQL table' },
-        { kind: 'callee', name: 'mysqlTable', arg: 0, description: 'Drizzle MySQL table' },
-        { kind: 'callee', name: 'sqliteTable', arg: 0, description: 'Drizzle SQLite table' },
-      ];
-      if (tableSources.length > 0) {
-        const registered = extractTablesFromRegistry(tableSources, {
-          ast: ast as AST,
-          adapter: adapter as LanguageAdapter,
-          sourceCode,
-          filePath: context.filePath,
-        });
-        for (const { table, source } of registered) {
-          ormTables.push(table);
-          tableProvenances.push({ table, source });
-        }
-      }
-
-      // Extract DDL from sql.exec(...) string literals inside Durable Object classes.
-      // These are CREATE TABLE / DROP TABLE statements at runtime that migration
-      // discovery never sees.  Extracting them completes the authoritative catalog
-      // so unknown-table doesn't false-positive on DO-local tables.
-      const doDDL: string[] = [];
-      const doTemplateDDL = /`([^`]*(?:CREATE|DROP|ALTER)\s+(?:TABLE|VIRTUAL\s+TABLE)\s+[^`]+)`/gis;
-      const doStringDDL = /(["'])((?:\s*(?:CREATE|DROP|ALTER)\s+(?:TABLE|VIRTUAL\s+TABLE)\s+[^"']+))\1/gis;
-      let ddlMatch: RegExpExecArray | null;
-      while ((ddlMatch = doTemplateDDL.exec(sourceCode)) !== null) {
-        const sql = ddlMatch[1].trim();
-        if (sql) doDDL.push(sql);
-      }
-      while ((ddlMatch = doStringDDL.exec(sourceCode)) !== null) {
-        const sql = ddlMatch[2].trim();
-        if (sql) doDDL.push(sql);
-      }
-      const doDDLSql = doDDL.length > 0 ? doDDL.join(';\n') : null;
-      const doDDLColumns = doDDLSql ? extractDdlColumnNames(doDDLSql) : [];
-      const doDDLTableColumns = doDDLSql ? extractDdlTableColumns(doDDLSql) : {};
-
-      // Build provenance context for this file — defaults from DEFAULT_SCHEMA_CONFIG
-      const detectionMode = ((schemaConfig.detection as any)?.mode as string) ?? ('hybrid' as any);
-      const provenanceContext = pm.buildProvenanceContext(ast as AST, adapter as LanguageAdapter, sourceCode, {
-        mode: detectionMode,
-        dbReceiverNames: (schemaConfig.dbReceiverNames as string[]) ?? defaults.dbReceiverNames,
-        dbBindingNames: (schemaConfig.dbBindingNames as string[]) ?? defaults.dbBindingNames,
-        dbCallMethods: (schemaConfig.dbCallMethods as string[]) ?? defaults.dbCallMethods,
-        dbWrapperNames: (schemaConfig.dbWrapperNames as string[]) ?? defaults.dbWrapperNames,
-      });
-
-      // File gate — skip files without DB usage
-      if (!passesFileGate(context.filePath, sourceCode, schemaConfig, provenanceContext)) {
-        const facts: Record<string, unknown> = { [context.filePath]: { tableRefs: [], ormTables, tableProvenance: tableProvenances } };
-        if (doDDL.length > 0) {
-          (facts[context.filePath] as any).ddlOps = parseMigrationOps(doDDLSql!);
-          if (doDDLColumns.length > 0) (facts[context.filePath] as any).ddlColumns = doDDLColumns;
-          if (Object.keys(doDDLTableColumns).length > 0) (facts[context.filePath] as any).ddlTableColumns = doDDLTableColumns;
-        }
-        return { violations: [], facts };
-      }
-
-      // Build known-tables set from schemas config (pre-pipeline + DB-loaded schemas)
-      const schemas = (schemaConfig.schemas as any[]) ?? [];
-      const knownTablesArr: string[] = (schemaConfig.knownTables as string[]) ?? [];
-      const allTables = new Set<string>();
-      for (const t of knownTablesArr) allTables.add(t);
-      for (const schema of schemas) {
-        for (const table of (schema.tables ?? [])) {
-          allTables.add(table.name);
-        }
-      }
-
-      // Find table references (per-file, uses allTables for short-id false-positive filtering)
-      const { references: tableRefs, unresolved } = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, { config: schemaConfig, provenanceContext, allTables });
-
-      // Record schema usage → emit as indexFacts via the shared instance
-      a.recordTableUsage(ast as AST, adapter as LanguageAdapter, context.filePath, tableRefs, sourceCode);
-      const pending = a.getPendingSchemaRecords();
-
-      // Emit clear-by-file + per-usage index facts
-      if (pending.clearFiles.length > 0) {
-        for (const filePath of pending.clearFiles) {
-          indexFacts.push({ table: 'schema_usage', data: { _action: 'clear-by-file', file_path: filePath } });
-        }
-      }
-      for (const usage of pending.usages) {
-        indexFacts.push({
-          table: 'schema_usage',
-          data: {
-            file_path: usage.filePath,
-            table_name: usage.tableName,
-            function_name: usage.functionName,
-            function_start_line: usage.functionStartLine,
-            function_start_column: usage.functionStartColumn,
-            usage_type: usage.usageType,
-            line: usage.line,
-            column: usage.column,
-            raw_query: usage.rawQuery,
-            origin: usage.origin ?? null,
-          },
-        });
-      }
-
-      // Check naming conventions
-      if (schemaConfig.checkNamingConventions !== false) {
-        violations.push(...checkNamingConventions(tableRefs, context.filePath));
-      }
-
-      // Spec 58 R1 — DB-call SQL held in an unresolvable identifier is a coverage
-      // diagnostic (the analyzer can't see the SQL), not a finding (the code isn't wrong).
-      if (schemaConfig.reportUnresolvedQueries !== false) {
-        diagnostics.push(...checkUnresolvedQueries(unresolved, context.filePath));
-      }
-
-      // Check query patterns
-      if (schemaConfig.validateQueryPatterns !== false) {
-        violations.push(...checkQueryPatterns(ast as AST, adapter as LanguageAdapter, sourceCode, schemaConfig));
-      }
-
-      // Check SQL injection
-      violations.push(...checkSQLInjection(ast as AST, adapter as LanguageAdapter, sourceCode));
-
-      // Emit facts for the Stage 3 reducer. Fluent-builder references
-      // (`origin: 'query-builder'`) are excluded from the unknown-table check:
-      // a scratch/test table name carried by `db('t').select(...)` is not a
-      // schema catalog miss, and feeding it in flips the 10:1 fail-open ratio.
-      const fileFacts: Record<string, unknown> = {
-        tableRefs: tableRefs
-          .filter((r) => (r as { origin?: string }).origin !== 'query-builder')
-          .map((r: { table: string; type: string; location: { line: number; column: number }; context: string }) => ({
-            table: r.table,
-            type: r.type,
-            line: r.location.line,
-            column: r.location.column,
-            context: r.context,
-          })),
-        ormTables,
-        tableProvenance: tableProvenances,
-      };
-      if (doDDL.length > 0) {
-        (fileFacts as any).ddlOps = parseMigrationOps(doDDLSql!);
-        if (doDDLColumns.length > 0) (fileFacts as any).ddlColumns = doDDLColumns;
-        if (Object.keys(doDDLTableColumns).length > 0) (fileFacts as any).ddlTableColumns = doDDLTableColumns;
-      }
-
-      return {
-        violations,
-        facts: { [context.filePath]: fileFacts },
-        indexFacts: indexFacts.length > 0 ? indexFacts : undefined,
-        ...(diagnostics.length > 0 && { diagnostics }),
-      };
-    },
+    visit: runSchemaCodeVisit,
     defaultConfig: {},
     description: 'Per-file schema analysis: naming conventions, query patterns, SQL injection, table references',
     category: 'database',

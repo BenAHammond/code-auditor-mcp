@@ -21,6 +21,17 @@ import { BetterSqlite3Database, isBetterSqlite3Available } from './betterSqlite3
 
 let activeBackend: SqliteBackend | undefined;
 
+/**
+ * SQLite busy timeout shared by every open path (the facade and the LokiJS
+ * migration). The database is shared across forked processes (a detached audit
+ * runner and its shard workers); better-sqlite3's default busy timeout (~5s) is
+ * too short for a running job's long completion transaction, so a queued job's
+ * lease `BEGIN IMMEDIATE` (or the runner's own writes) would throw SQLITE_BUSY
+ * ("database is locked") instead of waiting. A generous timeout makes
+ * contention block gracefully; the lease loop also retries SQLITE_BUSY.
+ */
+export const DB_BUSY_TIMEOUT_MS = 30_000;
+
 /** The backend selected by the most recent {@link openSqlite} call. */
 export function getActiveBackend(): SqliteBackend | undefined {
   return activeBackend;
