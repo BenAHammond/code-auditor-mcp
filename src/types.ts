@@ -199,8 +199,10 @@ export interface CoverageDiagnostic {
    *  (the analyzer couldn't see a region) or `config-error` / `engine-error` /
    *  `undefined-class-disabled` (the tool failed or skipped a check), or
    *  `cannot-fire` (a project config could not be read statically — Spec 61 R3),
-   *  or `config-key-rejected` (a file-sourced config key was dropped — Spec 61 R1). */
-  kind: 'unresolved-query' | 'unresolved-dynamic-import' | 'config-error' | 'engine-error' | 'undefined-class-disabled' | 'undefined-class-not-found' | 'cannot-fire' | 'config-key-rejected';
+   *  or `config-key-rejected` (a file-sourced config key was dropped — Spec 61 R1),
+   *  or `manifest-stale` (our ecosystem list names a package the project doesn't
+   *  depend on — a staleness self-check, never a verdict input). */
+  kind: 'unresolved-query' | 'unresolved-dynamic-import' | 'config-error' | 'engine-error' | 'undefined-class-disabled' | 'undefined-class-not-found' | 'cannot-fire' | 'config-key-rejected' | 'manifest-stale';
   /** Human-readable explanation of what could not be resolved. */
   message: string;
   /** File the unresolved construct is in. */
@@ -710,6 +712,19 @@ export interface AuditSummary {
   violationsByCategory: Record<string, number>;
   topIssues: Array<{ type: string; count: number }>;
   /**
+   * Spec 69 §10 R4 — per-analyzer rollup of the run's findings and coverage.
+   * `unprovenSites` is the count of query-shaped call sites whose DB receiver
+   * could not be resolved to a handle or a provable non-handle (the §10
+   * `cannot-fire` surface); those sites are the ones table-reference and
+   * data-access rules may have under-reported on.
+   */
+  byAnalyzer: Record<string, {
+    violations: number;
+    filesProcessed: number;
+    fatalErrors: number;
+    unprovenSites: number;
+  }>;
+  /**
    * Spec 57 — number of findings cleared by a committed dismissal. Reported
    * alongside `totalViolations` ("43 findings, 3 dismissed"), never subtracted
    * from it. Absent/0 when no dismissals apply.
@@ -964,6 +979,15 @@ export interface ProjectFileConfig {
   rationales?: Record<string, string>;
   importVirtualModules?: string[];
   daemon?: DaemonConfig;
+  /**
+   * Spec 70 R1 — the corpus's named SQL dialect, as a free-form string
+   * (`postgresql` | `mysql` | `sqlite`). Normalized to {@link Dialect} (or null)
+   * at exactly one point (`normalizeDialect`), then threaded to the data-access
+   * analyzer and to DB-receiver resolution. Absent → no dialect is named and the
+   * SQL-content facts `cannot-fire` rather than guessing at text. A plain string
+   * key, not a path or process sink, so no containment applies.
+   */
+  databaseType?: string;
   /** Invariant rules — the other half of `.codeauditor.json`, read by the
    *  invariants analyzer via the merged config. Passed through untouched
    *  (validated by `validateRulesConfig`, not the config loader). Not a path
@@ -986,7 +1010,7 @@ export const PROJECT_FILE_CONFIG_KEYS = [
   'outputDir', 'outputDirectory', 'minSeverity', 'failOnCritical',
   'showProgress', 'parallel', 'thresholds', 'pathProfiles', 'builtin',
   'churn', 'divergence', 'crossDomain', 'analyzerOptions', 'analyzerConfigs',
-  'rationales', 'importVirtualModules', 'daemon', 'rules', '$schema',
+  'rationales', 'importVirtualModules', 'daemon', 'databaseType', 'rules', '$schema',
 ] as const satisfies readonly (keyof ProjectFileConfig)[];
 
 // Compile-time proof the array covers the type exhaustively. Removing a key
@@ -1121,6 +1145,14 @@ export interface AuditRunnerOptions extends AuditOptions {
   outputDirectory?: string;
   configName?: string;
   projectRoot?: string;
+  /**
+   * Spec 70 R1 — the corpus's named SQL dialect, as a free-form string
+   * (`postgresql` | `mysql` | `sqlite`). Normalized to {@link Dialect} (or null)
+   * at exactly one point (`normalizeDialect`), then threaded to the data-access
+   * analyzer and to DB-receiver resolution. Absent → no dialect is named and the
+   * SQL-content facts `cannot-fire` rather than guessing at text.
+   */
+  databaseType?: string;
   analyzerConfigs?: Record<string, any>;
   /** Spec 36 R5 — written justifications for non-default thresholds, keyed `"<analyzer>.<key>"`. */
   rationales?: Record<string, string>;
@@ -1694,7 +1726,7 @@ export interface SchemaUsage {
    * a scratch/test table built and consumed through the fluent builder is not a
    * one-sided lifecycle defect. See `TableReference.origin`.
    */
-  origin?: 'query-builder';
+  origin?: 'query-builder' | 'collection-adapter';
 }
 
 export interface SchemaIndexMetadata {
