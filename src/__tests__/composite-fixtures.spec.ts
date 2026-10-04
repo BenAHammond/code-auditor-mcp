@@ -97,9 +97,6 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
         'cross-domain::cross-domain/written-never-read@src/mixed.ts:22',
         'data-access::loop-query@src/mixed.ts:31',
         'data-access::unfiltered-query@src/mixed.ts:38',
-        'documentation::parameter-documentation@src/mixed.ts:18',
-        'documentation::parameter-documentation@src/mixed.ts:28',
-        'documentation::return-documentation@src/db.ts:22',
       ]);
     });
   });
@@ -109,25 +106,15 @@ describe('composite fixtures — full analyzer set, complete finding set by equa
   //
   // Target rules: class-size (god class), liskov-substitution (override that
   // throws where the parent does not), open-closed (instanceof a user type
-  // inside a class method), and parameter-count (seven params). §10 made
-  // parameter-documentation and return-documentation unconditional, so the
-  // members' JSDoc (descriptions only, no exhaustive @param/@returns tags)
-  // now also fires those two rules.
+  // inside a class method), and parameter-count (seven params). The members'
+  // JSDoc (descriptions only, no exhaustive @param/@returns tags) does NOT fire
+  // parameter-documentation / return-documentation: those two rules are opt-in
+  // (requireParamDocs/requireReturnDocs default false), so they stay silent on
+  // the default run.
   // ─────────────────────────────────────────────────────────────────────
   describe('class-structure', () => {
-    it('fires the four SOLID rules and the now-unconditional documentation rules', async () => {
+    it('fires the four SOLID rules', async () => {
       await expectCompleteSet('class-structure', [
-        'documentation::parameter-documentation@src/classes.ts:27',
-        'documentation::parameter-documentation@src/classes.ts:64',
-        'documentation::parameter-documentation@src/classes.ts:73',
-        'documentation::parameter-documentation@src/classes.ts:73',
-        'documentation::parameter-documentation@src/classes.ts:73',
-        'documentation::parameter-documentation@src/classes.ts:73',
-        'documentation::parameter-documentation@src/classes.ts:73',
-        'documentation::parameter-documentation@src/classes.ts:73',
-        'documentation::parameter-documentation@src/classes.ts:73',
-        'documentation::return-documentation@src/classes.ts:27',
-        'documentation::return-documentation@src/classes.ts:64',
         'solid::solid/liskov-substitution@src/classes.ts:27',
         'solid::solid/open-closed@src/classes.ts:62',
         'solid::parameter-count@src/classes.ts:73',
