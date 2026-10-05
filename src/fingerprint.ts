@@ -19,6 +19,8 @@
  * rule id in a novel field, add that field HERE.
  */
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
 import type { Violation } from './types.js';
 import { extractSymbol } from './symbols.js';
 import { canonicalRuleId } from './ruleAliases.js';
@@ -28,6 +30,42 @@ export interface FingerprintInput {
   rule: string;
   file: string;
   symbol: string;
+}
+
+/**
+ * Canonicalize the `file` component of a fingerprint so the same physical file
+ * hashes identically however it was spelled. On macOS `/tmp` is a symlink to
+ * `/private/tmp`, so `changed -p /tmp/foo` (which carries the lexical path into
+ * every finding's `file`) and `dismiss` run from inside the project (whose
+ * `process.cwd()` is the resolved `/private/tmp/foo`) would otherwise produce
+ * two different fingerprints for the *same* finding — the exact workflow
+ * SKILL.md documents ("copy the fingerprint from `changed --json`, then
+ * `dismiss <fingerprint>`"). Resolving symlinks makes the tuple spelling-stable,
+ * mirroring `dataPaths.resolveRealPath`, which exists for the same reason.
+ *
+ * Only absolute paths are resolved: a relative `file` carries no symlink
+ * ambiguity, and resolving it against an arbitrary cwd would make the
+ * fingerprint cwd-dependent — the opposite of stable. The lookup is memoized
+ * because the same file path recurs across many findings and `realpathSync` is
+ * a syscall.
+ */
+const realpathCache = new Map<string, string>();
+
+function normalizeFile(file: string): string {
+  if (!file || !isAbsolute(file)) return file;
+  const cached = realpathCache.get(file);
+  if (cached !== undefined) return cached;
+  let canonical: string;
+  try {
+    canonical = realpathSync(file);
+  } catch {
+    // File may not exist (deleted since discovery, or an indexed file whose
+    // source is gone) — fall back to the lexical absolute path so the
+    // fingerprint stays deterministic for the same input string.
+    canonical = resolve(file);
+  }
+  realpathCache.set(file, canonical);
+  return canonical;
 }
 
 /**
@@ -67,7 +105,7 @@ export function buildFingerprintInput(violation: Violation): FingerprintInput {
   return {
     analyzer: violation.analyzer ?? '',
     rule,
-    file: violation.file ?? '',
+    file: normalizeFile(violation.file ?? ''),
     symbol: extractSymbol(violation),
   };
 }

@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fingerprint, buildFingerprintInput } from './fingerprint.js';
 import type { Violation } from './types.js';
 
@@ -124,5 +127,26 @@ describe('fingerprint', () => {
     // Verify the rules are correct
     expect(buildFingerprintInput(complexityViolation).rule).toBe('complexity');
     expect(buildFingerprintInput(errorBoundaryViolation).rule).toBe('no-error-boundary');
+  });
+
+  it('canonicalizes the file path so symlink aliases hash identically', () => {
+    // macOS `/tmp` is a symlink to `/private/tmp`: `changed -p /tmp/foo` carries
+    // the lexical path into `file`, while `dismiss` run from inside the project
+    // sees the resolved `/private/tmp/foo`. The same finding must hash the same
+    // either way (the SKILL.md "changed --json → dismiss" workflow depends on it).
+    const base = mkdtempSync(join(tmpdir(), 'ca-fp-'));
+    const real = join(base, 'real');
+    const link = join(base, 'link');
+    mkdirSync(real);
+    writeFileSync(join(real, 'a.ts'), '');
+    symlinkSync(real, link);
+    try {
+      const violation: Violation = { analyzer: 'data-access', rule: 'loop-query', file: join(real, 'a.ts'), symbol: 'f' };
+      const viaReal = fingerprint(buildFingerprintInput(violation));
+      const viaAlias = fingerprint(buildFingerprintInput({ ...violation, file: join(link, 'a.ts') }));
+      expect(viaAlias).toBe(viaReal);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
