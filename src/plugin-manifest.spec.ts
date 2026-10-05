@@ -9,9 +9,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
-import { resolve, dirname } from 'path';
+import { readFileSync, readdirSync } from 'fs';
+import { createHash } from 'node:crypto';
+import { resolve, dirname, join, relative } from 'path';
 import { fileURLToPath } from 'url';
+import { initializeLanguages } from './languages/index.js';
+import { getSourceExtensions } from './utils/fileDiscovery.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_DIR = resolve(__dirname, '..', 'plugin');
@@ -421,6 +424,130 @@ describe('Skill gate-model drift guard (Spec 46 R1)', () => {
     expect(content).toContain('critical');
     expect(content).toContain('severe');
     expect(content).toContain('high');
+  });
+});
+
+/**
+ * The source-file extension scoping block in hook-audit.sh is the second place
+ * an extension list lives (the first is the language registry, via
+ * `getSourceExtensions()`). It must be a fast no-op guard — skipping the CLI
+ * spin-up on a prose edit — and NOT a correctness gate, so a mismatch in either
+ * direction is harmless. But a *persistent* mismatch is board row 8's failure
+ * mode (a hand-maintained list drifting from the registry), so this pins the
+ * block's extension set to `getSourceExtensions()` exactly: adding a parser to
+ * the registry fails here until the block is updated, and dropping an extension
+ * from the registry fails here too.
+ */
+describe('Source-file extension scoping block (hook-audit.sh)', () => {
+  const content = readFileSync(
+    resolve(PLUGIN_DIR, 'scripts', 'hook-audit.sh'),
+    'utf-8',
+  );
+
+  const scoping = content.match(/case "\$\{file\}" in\s*\n\s*([^)]*?)\)\s*: ;;/);
+
+  it('has a source-file extension scoping block', () => {
+    expect(scoping).not.toBeNull();
+  });
+
+  it('scopes to exactly the extensions the CLI audits (registry + raw + style-markup)', () => {
+    initializeLanguages();
+    const expected = [...getSourceExtensions()].sort();
+    const actual = scoping![1]
+      .split('|')
+      .map((t) => t.trim().replace(/^\*\./, '.'))
+      .filter(Boolean)
+      .sort();
+    expect(actual).toEqual(expected);
+  });
+
+  it('exits 0 (a no-op), never the loud exit-1, on a non-source file', () => {
+    expect(content).toContain('*) exit 0 ;;');
+  });
+});
+
+/**
+ * The shipped plugin manifest (`.claude-plugin/manifest.json`) is the anchor for
+ * install-versus-source drift detection (board row 7): it records the sha256 of
+ * every plugin file as built, and `hook-drift-check.sh` re-hashes the installed
+ * files against it at SessionStart. This test pins the manifest to the source
+ * tree — a file that drifts (in either the manifest or the file) fails here — so
+ * a stale committed manifest cannot silently ship.
+ */
+describe('Shipped plugin manifest (manifest.json)', () => {
+  const manifestPath = resolve(PLUGIN_DIR, '.claude-plugin', 'manifest.json');
+  const manifest = loadJson(manifestPath);
+
+  it('carries the package version', () => {
+    const pkg = loadJson(resolve(__dirname, '..', 'package.json'));
+    expect(manifest.version).toBe(pkg.version);
+  });
+
+  it('lists every shipped plugin file except itself, with the correct sha256', () => {
+    const expected: Record<string, string> = {};
+    const walk = (dir: string, base: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === '.DS_Store') continue;
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) walk(full, base);
+        else if (entry.isFile()) {
+          if (full === manifestPath) continue; // a manifest cannot checksum itself
+          const rel = relative(base, full).split('/').join('/');
+          expected[rel] = createHash('sha256').update(readFileSync(full)).digest('hex');
+        }
+      }
+    };
+    walk(PLUGIN_DIR, PLUGIN_DIR);
+    expect(manifest.files).toEqual(expected);
+  });
+});
+
+/**
+ * The SessionStart drift-check hook (hook-drift-check.sh) — non-blocking, like
+ * hook-warm.sh, and the detection half of board row 7's fix. It must never fail
+ * the session, and it must warn (not block) when an installed file diverges from
+ * the shipped manifest.
+ */
+describe('SessionStart drift-check hook (hook-drift-check.sh)', () => {
+  const hooks = loadJson(resolve(PLUGIN_DIR, 'hooks', 'hooks.json'));
+  const driftContent = readFileSync(
+    resolve(PLUGIN_DIR, 'scripts', 'hook-drift-check.sh'),
+    'utf-8',
+  );
+
+  it('registers a SessionStart drift-check command', () => {
+    const entry = hooks.hooks.SessionStart[0];
+    const commands = entry.hooks.map((h: any) => h.command);
+    expect(commands.some((c: string) => c.includes('hook-drift-check.sh'))).toBe(true);
+  });
+
+  it('is silent on an unset CLAUDE_PLUGIN_ROOT (exit 0, not the loud exit-1)', () => {
+    const command = hooks.hooks.SessionStart[0].hooks
+      .map((h: any) => h.command)
+      .find((c: string) => c.includes('hook-drift-check.sh'));
+    expect(command).toContain('exit 0');
+    expect(command!.indexOf('exit 0')).toBeLessThan(command!.indexOf('hook-drift-check.sh'));
+  });
+
+  it('exists and is executable', () => {
+    const { accessSync, X_OK } = require('fs');
+    expect(() =>
+      accessSync(resolve(PLUGIN_DIR, 'scripts', 'hook-drift-check.sh'), X_OK),
+    ).not.toThrow();
+  });
+
+  it('never fails the session — always exits 0', () => {
+    expect(driftContent.trimEnd().endsWith('exit 0')).toBe(true);
+  });
+
+  it('compares each installed file against the shipped manifest via sha256', () => {
+    expect(driftContent).toContain('createHash(\'sha256\')');
+    expect(driftContent).toContain('manifest');
+  });
+
+  it('warns (not blocks) on drift', () => {
+    expect(driftContent).toContain('differs from shipped');
+    expect(driftContent).toContain('reinstall');
   });
 });
 

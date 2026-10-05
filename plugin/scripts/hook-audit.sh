@@ -48,6 +48,21 @@ if [ -n "${CLAUDE_PROJECT_DIR:-}" ] && [ -n "${file}" ]; then
   esac
 fi
 
+# Source-file extension scope (Spec 35 item 10). Skip the CLI entirely for an
+# edit to a non-source file (`.md`, `.txt`, `.yml`, …) so a prose edit never pays
+# the discovery + index-sync spin-up. The CLI already exits 0 quietly on a
+# no-auditable-files scope, so this is a fast no-op guard, not a correctness fix —
+# a mismatch in either direction is harmless (an extension listed here that the
+# CLI declines still audits to zero; one missing here just pays one wasted call).
+# The extension set mirrors `getSourceExtensions()` (the language-registry union
+# plus the raw and style-markup extensions the pipeline reads directly); a test in
+# `src/plugin-manifest.spec.ts` pins this list to that function so a newly
+# registered parser surfaces here instead of silently skipping its files.
+case "${file}" in
+  *.ts|*.tsx|*.mts|*.cts|*.js|*.jsx|*.mjs|*.cjs|*.go|*.json|*.css|*.scss|*.sql|*.toml|*.prisma|*.astro|*.vue|*.svelte|*.html) : ;;
+  *) exit 0 ;;
+esac
+
 CODE_AUDIT_BIN="$(resolve_code_audit)"
 
 # Pin the plugin to a compatible CLI version — fail loudly on mismatch.
