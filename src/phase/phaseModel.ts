@@ -55,7 +55,7 @@ import type { IndexHandle } from '../types.js';
 import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites } from './receiverConsumers.js';
-import { withRuleTimingAsync } from '../analyzers/ruleTiming.js';
+import { withRuleTiming, withRuleTimingAsync } from '../analyzers/ruleTiming.js';
 
 /**
  * The result of a phase-model run: the migrated rules' findings plus the
@@ -421,7 +421,7 @@ async function buildFacts(
   for (const kind of sortedCorpusKinds) {
     const producer = CORPUS_PRODUCERS[kind];
     const upstream = Object.fromEntries(producer.needs.map((n) => [n, facts.get(n)]));
-    facts.set(kind, producer.process(upstream as never, corpusCtx));
+    facts.set(kind, withRuleTiming(`producer:${producer.id}`, () => producer.process(upstream as never, corpusCtx)));
   }
 
   // Spec 70 — merge the traverse phase's walk-level unread reasons ahead of the
@@ -573,7 +573,13 @@ async function processFile(
       if (!producer) continue;
       try {
         await infra?.beforeProcess?.(kind, input.path);
-        const emitted = producer.process(parsed) as unknown[];
+        // Spec 38 R2 — per-producer timing on the phase path. The legacy
+        // `withRuleTiming` only wrapped the `Universal*Analyzer` visitors, so
+        // after the migration the gate's per-rule breakdown reported rule cost
+        // (~20 ms) against a ~320 ms gate with the producer cost invisible.
+        // Timing each producer's `process` under `producer:<id>` surfaces the
+        // fact-build cost in the same slowest-first breakdown as the rules.
+        const emitted = withRuleTiming(`producer:${producer.id}`, () => producer.process(parsed)) as unknown[];
         const acc = fragments.get(kind) ?? [];
         acc.push(...emitted);
         fragments.set(kind, acc);
