@@ -16,10 +16,12 @@ const PRAGMA_JOURNAL_WAL = 'journal_mode = WAL';
 const PRAGMA_FOREIGN_KEYS_ON = 'foreign_keys = ON';
 
 /** Leading bytes read from a candidate index file to decide whether it is a
- *  LokiJS JSON export. Both signature markers (`{"filename":` prefix and the
- *  top-level `"collections":` key) sit within the first line of any LokiJS
- *  export, so 64 KiB is a wide margin over a 16-byte SQLite header — and
- *  ~1/300th of a real index file, so the sniff stays sub-millisecond. */
+ *  LokiJS JSON export. Every LokiJS export begins with `{"filename":`, so the
+ *  prefix is the only marker checked — a substring search for `"collections":`
+ *  is deliberately NOT used, because a real SQLite index can legitimately store
+ *  that exact key inside a function body within the first 64 KiB and would be
+ *  misread as LokiJS. 64 KiB is a wide margin over a 16-byte SQLite header —
+ *  and ~1/300th of a real index file, so the sniff stays sub-millisecond. */
 const LOKIJS_SNIFF_BYTES = 64 * 1024;
 
 /** The full DDL for a fresh index, as a single idempotent script.
@@ -654,6 +656,20 @@ export function migrateLokiCollections(
   }
 
 /**
+ * Classify the leading bytes of a candidate index file as a LokiJS JSON export.
+ * A LokiJS export always begins with `{"filename":`; a SQLite binary begins with
+ * `SQLite format 3\0` and may legitimately store the JSON key `"collections":`
+ * inside a function body within the first 64 KiB. Only the prefix is matched —
+ * never a `"collections":` substring — so a real SQLite index is not misread as
+ * LokiJS.
+ * @param header The leading bytes of the candidate file, decoded as UTF-8.
+ * @returns true when the header is a LokiJS export.
+ */
+export function isLokiJSHeader(header: string): boolean {
+  return header.startsWith('{"filename":');
+}
+
+/**
  * Migrate a legacy LokiJS index file at `dbPath` to SQLite. Returns whether a
  * migration occurred. Extracted from `CodeIndexDB.maybeMigrateFromLokiJS` so the
  * facade no longer carries the 19-branch migration routine; the function opens
@@ -678,11 +694,13 @@ export function migrateFromLokiJS(dbPath: string): { migrated: boolean; counts?:
   } catch { /* no backup */ }
 
   // Check if dbPath is a LokiJS file. A LokiJS export is a single JSON object
-  // whose `filename`/`collections` keys sit at the very top, so the leading
-  // bytes are enough to tell it apart from a SQLite binary (`SQLite format 3\0`).
-  // Reading only a header chunk instead of the whole file avoids slurping a
-  // multi-MB index into memory on every process start (measured ~55 ms CPU on a
-  // 19.7 MB index) just to decide the answer is "not LokiJS".
+  // that always begins with `{"filename":`; a SQLite binary begins with
+  // `SQLite format 3\0`. Matching only the prefix keeps a real SQLite index from
+  // being misread as LokiJS when a stored function body happens to contain the
+  // JSON key `"collections":` within the first 64 KiB. Reading only a header
+  // chunk instead of the whole file avoids slurping a multi-MB index into memory
+  // on every process start (measured ~55 ms CPU on a 19.7 MB index) just to
+  // decide the answer is "not LokiJS".
   try {
     const fd = openSync(dbPath, 'r');
     let header = '';
@@ -693,7 +711,7 @@ export function migrateFromLokiJS(dbPath: string): { migrated: boolean; counts?:
     } finally {
       closeSync(fd);
     }
-    if (!header.startsWith('{"filename":') && !header.includes('"collections":')) {
+    if (!isLokiJSHeader(header)) {
       return { migrated: false };
     }
   } catch {

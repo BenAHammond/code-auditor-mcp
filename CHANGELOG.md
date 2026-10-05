@@ -118,8 +118,8 @@ threading; a `.codeauditor.json` that still sets it is now a no-op.
 **Every `CodeIndexDB.initialize()` in every 4.x release read the entire index
 file into memory as a UTF-8 string just to decide whether it was a legacy
 LokiJS file to migrate.** `migrateFromLokiJS` ran `readFileSync(dbPath, 'utf-8')`
-up front, then checked the first bytes for the LokiJS `filename`/`collections`
-marker — a full-file read whose only purpose was a format sniff, on a path that
+up front, then checked the first bytes for the LokiJS `{"filename":` prefix — a
+full-file read whose only purpose was a format sniff, on a path that
 almost always answers "not LokiJS" (the file is already SQLite). The cost scaled
 with index size: ~55 ms CPU and ~19.7 MB slurped into memory (roughly double that
 as a JS UTF-16 string) per process start on a 19.7 MB index, and it grew with the
@@ -127,10 +127,17 @@ project.
 
 **The fix reads a 64 KiB header instead** (`openSync`/`readSync` of the leading
 `LOKIJS_SNIFF_BYTES`), which is enough to distinguish a LokiJS JSON export (whose
-`filename`/`collections` keys sit at the very top) from a SQLite binary. The
+`{"filename":` key sits at the very top) from a SQLite binary. The sniff matches
+only that prefix — deliberately *not* a `"collections":` substring, which a real
+SQLite index can legitimately contain inside a stored function body and which
+would false-positive the migration into firing on a healthy 4.x index. The
 full-file read now runs only when the sniff has already confirmed the file *is*
 LokiJS and a migration is actually about to happen — ~2 ms CPU, and no index-sized
-allocation on the common path.
+allocation on the common path. The prefix-only classification (`isLokiJSHeader`)
+and the upgrade path itself are pinned by `upgrade-path.spec.ts` against a real
+4.1.1-written SQLite index and a genuine `lokijs@1.5.12` export, so the
+"read, not rebuilt" transition is tested on the one surface a clean-install gate
+cannot exercise.
 
 ### `verify:close` no longer short-circuits on the first failing gate
 
