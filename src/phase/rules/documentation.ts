@@ -21,12 +21,11 @@
  * `ctx.thresholds`, so the merge is idempotent in production and load-bearing
  * only for the parity test, which passes raw config to both sides.
  *
- * The `requireParamDocs` / `requireReturnDocs` booleans are the same opt-in
- * gates the legacy analyzer read (default `false`): the tag-completeness rules
- * fire only when their gate is enabled, so the default run — and the self-audit
- * — does not flag every function whose doc lacks an exhaustive `@param`/`@returns`
- * tag list. The parity test exercises them with the flags on; the default-off
- * case is the reason these two booleans survive on the config type.
+ * The three rules read only their tuning thresholds; §10 removed the
+ * `requireParamDocs` / `requireReturnDocs` opt-in gates — these rules now fire
+ * unconditionally. The two booleans survive on this config type only for
+ * merge-shape parity with the legacy analyzer (deleted in §15); no rule body
+ * reads them.
  */
 
 import type {
@@ -265,7 +264,6 @@ const parameterDocumentation: RuleDefinition<DocumentationNeeds> = {
   samples: META['parameter-documentation'].samples,
   analyze(ctx): Finding[] {
     const cfg = resolveConfig(ctx.thresholds);
-    if (!cfg.requireParamDocs) return [];
     const out: Finding[] = [];
     for (const item of tagEligibleItems(ctx.facts['file-symbols'], cfg)) {
       for (const param of checkParameterDocumentation(item.jsDoc, item.parameterNames)) {
@@ -293,7 +291,6 @@ const returnDocumentation: RuleDefinition<DocumentationNeeds> = {
   samples: META['return-documentation'].samples,
   analyze(ctx): Finding[] {
     const cfg = resolveConfig(ctx.thresholds);
-    if (!cfg.requireReturnDocs) return [];
     const out: Finding[] = [];
     for (const item of tagEligibleItems(ctx.facts['file-symbols'], cfg)) {
       if (!item.returnType || item.returnType === 'void') continue;

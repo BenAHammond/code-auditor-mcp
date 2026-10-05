@@ -92,9 +92,8 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
   //                  node-sql-parser's sqlite grammar cannot parse, so under
   //                  §13 it is pinned at the unit level as cannot-fire — see
   //                  spec-52.test.ts — rather than silently clean here.)
-  //   escapes.ts     (dependency-inversion removed in Spec 68 — the file's
-  //                  remaining constructs stay silent: the parameter/return
-  //                  documentation rules are opt-in and off by default.)
+  //   escapes.ts     (dependency-inversion removed in Spec 68 — the file now
+  //                  only exercises the unconditional documentation rules.)
   //
   // The dialect signal is `wrangler.toml`'s `[[d1_databases]]` binding (a D1
   // binding is SQLite). Without it, `detectDialect` names no dialect and every
@@ -112,6 +111,13 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
       await expectCompleteSet('d1-workers', [
         'cross-domain::cross-domain/written-never-read@src/statements.ts:26',
         'data-access::loop-query@src/statements.ts:43',
+        'documentation::parameter-documentation@src/escapes.ts:40',
+        'documentation::parameter-documentation@src/statements.ts:22',
+        'documentation::parameter-documentation@src/statements.ts:32',
+        'documentation::parameter-documentation@src/statements.ts:40',
+        'documentation::return-documentation@src/db.ts:22',
+        'documentation::return-documentation@src/escapes.ts:40',
+        'documentation::return-documentation@src/statements.ts:32',
       ]);
     });
   });
@@ -144,6 +150,7 @@ describe('corpus-derived fixtures — full analyzer set, complete finding set by
     it('fires only the bare-UPDATE unfiltered write', async () => {
       await expectCompleteSet('crowd-answer-game', [
         'data-access::unfiltered-query@src/writes.ts:21',
+        'documentation::return-documentation@src/db.ts:18',
       ]);
     });
   });
