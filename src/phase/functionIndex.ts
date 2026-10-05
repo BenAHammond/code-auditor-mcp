@@ -105,7 +105,7 @@ export function extractFunctionIndex(file: AstFile): FunctionIndexFact[] {
   const sourceCode = file.source;
 
   const lang = getLanguageFromPath(filePath);
-  if (lang === 'unknown') return [];
+  if (lang !== 'typescript' && lang !== 'javascript') return [];
 
   const importMap = buildImportMap(root, sourceCode);
   // Item 4 2b — the import local-name set `extractIdentifierUsage` keys on,

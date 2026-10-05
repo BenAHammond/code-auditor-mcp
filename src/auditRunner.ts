@@ -31,7 +31,7 @@ import {
   type SizeDistribution,
   type CoverageDiagnostic,
 } from './types.js';
-import { discoverFiles, discoverFilesDetailed, RAW_EXTENSIONS, STYLE_MARKUP_EXTENSIONS } from './utils/fileDiscovery.js';
+import { discoverFiles, discoverFilesDetailed, getSourceExtensions } from './utils/fileDiscovery.js';
 import { FileAccounting } from './services/fileAccounting.js';
 import { loadConfig, findConfigFileUp, type RejectedConfigEntry } from './config/configLoader.js';
 import { mergePathProfiles } from './config/defaults.js';
@@ -51,7 +51,7 @@ import { normalizeDialect, type Dialect } from './mcp-tools/discoveryQueries.js'
 import { detectDialect } from './languages/sql/dialectDetection.js';
 
 // Import universal analyzers
-import { initializeLanguages, LanguageRegistry } from './languages/index.js';
+import { initializeLanguages } from './languages/index.js';
 import { initializeOrmAdapters } from './analyzers/orm/index.js';
 import { syncStyleIndex } from './styles/styleIndexer.js';
 
@@ -2056,27 +2056,12 @@ function resolveGitScopeFiles(options: AuditRunnerOptions, ref: string): string[
 }
 
 /**
- * Every extension the analysis layer understands as source — the language
- * registry's adapter union plus the raw and style-markup extensions no adapter
- * owns but the pipeline reads directly (`.sql`/`.toml`/`.prisma` migrations,
- * `.astro`/`.vue`/`.svelte`/`.html` style sources). This is the registry-driven
- * replacement for the hand-maintained `KNOWN_SOURCE_EXTENSIONS` in
- * `fileDiscovery.ts` (board row 8): a parser registered with an adapter is in
- * scope here without a second edit to any extension list.
- */
-const SOURCE_EXTENSIONS = new Set<string>([
-  ...LanguageRegistry.getInstance().getSupportedExtensions(),
-  ...RAW_EXTENSIONS,
-  ...STYLE_MARKUP_EXTENSIONS,
-]);
-
-/**
  * Resolve files scope: paths can be file paths or globs.
  * Absolute paths are used directly; relative paths are resolved
  * against the project root; globs use discoverFiles. A direct path whose
  * extension no analyzer claims (nor a raw/markup extension the pipeline reads
- * directly) is dropped — see `SOURCE_EXTENSIONS` — so a prose edit never reaches
- * the pipeline as a "dark analyzer" and trips the zero-files gate.
+ * directly) is dropped — see `getSourceExtensions` — so a prose edit never
+ * reaches the pipeline as a "dark analyzer" and trips the zero-files gate.
  *
  * @param options - The merged audit-runner options (`projectRoot`, `excludePaths`,
  *   `fileExtensions`).
@@ -2109,12 +2094,12 @@ export async function resolveFilesScope(
       // as a "dark analyzer", which would turn a prose edit into an exit-2 hook
       // failure. The Spec 32 parse-failure gate is untouched — a claimed-but-
       // unparseable file (a `.ts` that fails to parse) still reaches the
-      // pipeline and stays loud. The gate is the registry union, not the
-      // hand-maintained KNOWN_SOURCE_EXTENSIONS list, so a parser added to the
-      // registry is in scope here without a second edit.
+      // pipeline and stays loud. The gate is the registry union (via
+      // `getSourceExtensions`), not a hand-maintained extension list, so a parser
+      // added to the registry is in scope here without a second edit.
       const resolved = path.isAbsolute(item) ? item : path.resolve(rootDir, item);
       const ext = path.extname(resolved).toLowerCase();
-      if (!SOURCE_EXTENSIONS.has(ext)) continue;
+      if (!getSourceExtensions().has(ext)) continue;
       try {
         await fs.stat(resolved);
         result.add(resolved);

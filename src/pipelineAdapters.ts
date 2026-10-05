@@ -757,9 +757,12 @@ export function createFunctionIndexVisitor(): Stage2Visitor {
 
       const indexFacts: IndexFactsEntry[] = [];
 
-      // Only index TS/JS files
+      // Only index TS/JS files. The registry now maps `.json`/`.css` to their
+      // adapter language ids rather than `unknown`, so gate on the two languages
+      // this visitor indexes instead of on `unknown` (which would newly admit
+      // JSON/CSS ASTs to `buildImportMap`/`collectFunctionEntries`).
       const lang = getLanguageFromPath(filePath);
-      if (lang === 'unknown') return { violations: [], facts: {} };
+      if (lang !== 'typescript' && lang !== 'javascript') return { violations: [], facts: {} };
 
       // Clear existing entries for this file
       indexFacts.push({
@@ -2070,7 +2073,7 @@ export function createCrossLanguageEntityVisitor(): Stage2Visitor {
       const filePath = context.filePath;
       if (!filePath) return { violations: [], facts: {} };
       const lang = getLanguageFromPath(filePath);
-      if (lang === 'unknown') return { violations: [], facts: {} };
+      if (lang !== 'typescript' && lang !== 'javascript' && lang !== 'go') return { violations: [], facts: {} };
 
       const root = (ast as AST).root;
       const entities: CrossLanguageEntity[] = [];

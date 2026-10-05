@@ -178,6 +178,14 @@ export interface LanguageParser {
    * Check if this adapter supports a file
    */
   supportsFile(filePath: string): boolean;
+
+  /**
+   * Map a file to the language id recorded on indexed facts, when it differs
+   * from `name` (the TypeScript adapter serves both `.ts` and `.js`, which index
+   * as `typescript` and `javascript` respectively). Optional: falls back to
+   * `name` when absent.
+   */
+  getLanguageId?(filePath: string): string;
 }
 
 /**

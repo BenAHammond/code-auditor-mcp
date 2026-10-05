@@ -10,6 +10,7 @@ import { promises as fs } from 'fs';
 import { execFileSync } from 'node:child_process';
 import path from 'path';
 import type { FileAccounting } from '../services/fileAccounting.js';
+import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 
 /**
  * Spec 44 — the excluded-directory split. The two halves of the default
@@ -158,15 +159,24 @@ export const RAW_EXTENSIONS = [...SQL_EXTENSIONS, ...TOML_EXTENSIONS, ...PRISMA_
 // files (spec dumps) and reading them all would blow up the audit. Markup
 // extensions are added because they are real component files with styles.
 export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS, ...CSS_EXTENSIONS, ...RAW_EXTENSIONS, ...MARKUP_EXTENSIONS];
-// Every extension the analysis layer understands as source — style-bearing
-// (TS/JS/markup/CSS) plus non-style (JSON/Go/SQL/TOML/Prisma), with `.html`
-// added since scoped runs may pass it even though it is not discovered by
-// default. Single source of truth for the style extractor's "loud" default
-// branch: an extension that reaches it unhandled is recorded as an unread
-// source (Spec 42 R2) *only* when it is NOT in this set, so a genuinely unknown
-// dialect (`.mdx`, `.md`, …) surfaces instead of a silent zero while legitimate
-// non-style source and `.css`/`.scss` (handled by the AST pipeline) stay silent.
-export const KNOWN_SOURCE_EXTENSIONS = [...ALL_EXTENSIONS, '.html'];
+// Every extension the analysis layer understands as source — the language
+// registry's adapter union plus the raw and style-markup extensions no adapter
+// owns but the pipeline reads directly. Single source of truth for the style
+// extractor's "loud" default branch: an extension that reaches it unhandled is
+// recorded as an unread source (Spec 42 R2) *only* when it is NOT in this set,
+// so a genuinely unknown dialect (`.mdx`, `.md`, …) surfaces instead of a silent
+// zero while legitimate non-style source and `.css`/`.scss` (handled by the AST
+// pipeline) stay silent. Registry-driven: a parser registered with an adapter is
+// in scope here without a second edit to any extension list. Computed fresh each
+// call so it always reflects the current registry (and a caller that runs before
+// `initializeLanguages()` cannot cache an empty adapter union).
+export function getSourceExtensions(): ReadonlySet<string> {
+  return new Set<string>([
+    ...LanguageRegistry.getInstance().getSupportedExtensions(),
+    ...RAW_EXTENSIONS,
+    ...STYLE_MARKUP_EXTENSIONS,
+  ]);
+}
 
 /**
  * Single source of truth for extension → language-id mapping. Both the audit
@@ -176,15 +186,19 @@ export const KNOWN_SOURCE_EXTENSIONS = [...ALL_EXTENSIONS, '.html'];
  * of `unknown`. Consolidating to one function means a language is either mapped
  * here for everyone or not at all — it cannot be forgotten in one call path.
  *
+ * Reads the language registry rather than a hand-maintained extension list, so a
+ * newly registered adapter (`.json`, `.css`, …) is mapped without a second edit
+ * here. The adapter's `getLanguageId` wins over its `name` when the two differ
+ * (the TypeScript adapter serves both `.ts` and `.js`, which index as
+ * `typescript` and `javascript` respectively).
+ *
  * @param filePath - The file path whose extension determines the language.
- * @returns The language id, or 'unknown' for unrecognized extensions.
+ * @returns The language id, or 'unknown' for extensions no adapter claims.
  */
 export function getLanguageFromPath(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase();
-  if (TYPESCRIPT_EXTENSIONS.includes(ext)) return 'typescript';
-  if (JAVASCRIPT_EXTENSIONS.includes(ext)) return 'javascript';
-  if (GO_EXTENSIONS.includes(ext)) return 'go';
-  return 'unknown';
+  const adapter = LanguageRegistry.getInstance().getAdapterForFile(filePath);
+  if (!adapter) return 'unknown';
+  return adapter.getLanguageId?.(filePath) ?? adapter.name;
 }
 
 export interface FileDiscoveryOptions {
@@ -425,7 +439,7 @@ async function findFilesRecursive(
           // is simply not in the discovery set.
           options.fileAccounting?.recordDropped('extension not known', fullPath, {
             ext,
-            kind: KNOWN_SOURCE_EXTENSIONS.includes(ext) ? 'known-but-not-discovered' : 'unknown',
+            kind: getSourceExtensions().has(ext) ? 'known-but-not-discovered' : 'unknown',
           });
         }
       }

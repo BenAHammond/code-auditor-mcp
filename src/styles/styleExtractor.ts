@@ -16,7 +16,7 @@ import type { NormalizedDeclaration, StyleMechanism, StyleToken, UnreadStyleSour
 import { normalizeValue, expandShorthand } from './normalizer.js';
 import { expandUtility } from './tailwindExpander.js';
 import { loadTailwindConfig, tokensToStyleTokens, type TailwindThemeTokens } from './tailwindConfigLoader.js';
-import { STYLE_MARKUP_EXTENSIONS, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileDiscovery.js';
+import { STYLE_MARKUP_EXTENSIONS, getSourceExtensions } from '../utils/fileDiscovery.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -77,7 +77,7 @@ export function extractDeclarations(
       // undefined-class findings carry it as incomplete-definition context instead
       // of silently dropping the file type. This is the loud backstop for the next
       // dialect that isn't added to the known set.
-      if (unreadSources && ext && !KNOWN_SOURCE_EXTENSIONS.includes(ext)) {
+      if (unreadSources && ext && !getSourceExtensions().has(ext)) {
         unreadSources.push({ filePath, reason: `unsupported source extension: ${ext}` });
       }
       return [];

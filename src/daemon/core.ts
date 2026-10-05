@@ -31,7 +31,7 @@ import {
   detectRunInput,
 } from '../ledger.js';
 import { findConfigFileUp, loadConfig } from '../config/configLoader.js';
-import { discoverFilesDetailed, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileDiscovery.js';
+import { discoverFilesDetailed, getSourceExtensions } from '../utils/fileDiscovery.js';
 import { initParsers, LanguageRegistry } from '../languages/index.js';
 import {
   hashAndStatFiles,
@@ -770,7 +770,7 @@ function isSourcePath(abs: string, projectRoot: string): boolean {
   if (!rel || rel === '.' || rel.startsWith('..') || path.isAbsolute(rel)) return false;
   const parts = rel.split(path.sep);
   if (parts.some((p) => p === 'node_modules' || p === '.git' || p === '.cache')) return false;
-  return KNOWN_SOURCE_EXTENSIONS.includes(path.extname(abs).toLowerCase());
+  return getSourceExtensions().has(path.extname(abs).toLowerCase());
 }
 
 /** Claim the daemon lease row and start the heartbeat (R5). Returns the lease id + timer. */

@@ -31,7 +31,7 @@ import { fileProducerFor, PRODUCERS, CORPUS_PRODUCERS } from './producers.js';
 import { oracleShortfall } from './oracles.js';
 import { formatFor, parseOne, type InputFile } from './runner.js';
 import { loadTailwindConfig, tokensToStyleTokens } from '../styles/tailwindConfigLoader.js';
-import { findFiles, UNREAD_STYLE_EXTENSIONS, KNOWN_SOURCE_EXTENSIONS } from '../utils/fileDiscovery.js';
+import { findFiles, UNREAD_STYLE_EXTENSIONS, getSourceExtensions } from '../utils/fileDiscovery.js';
 import type {
   CorpusContext,
   DataAccessCallCandidate,
@@ -222,7 +222,7 @@ export async function runPhaseModel(
     // and skip the parse — `formatFor` would map it to `typescript` and mis-parse
     // it as TS rather than leaving it unhandled.
     const ext = p.includes('.') ? p.slice(p.lastIndexOf('.')) : '';
-    if (ext && !KNOWN_SOURCE_EXTENSIONS.includes(ext)) {
+    if (ext && !getSourceExtensions().has(ext)) {
       unread.push({ filePath: p, reason: `unsupported source extension: ${ext}` });
       continue;
     }

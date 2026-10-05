@@ -860,6 +860,15 @@ class TsPublicApi extends TsExtraction {
     return this.fileExtensions.some((ext) => filePath.endsWith(ext));
   }
 
+  getLanguageId(filePath: string): string {
+    // The one adapter that spans two language ids: `.js`/`.jsx`/`.mjs`/`.cjs`
+    // index as `javascript`, everything else this adapter parses as `typescript`.
+    return filePath.endsWith('.js') || filePath.endsWith('.jsx') ||
+      filePath.endsWith('.mjs') || filePath.endsWith('.cjs')
+      ? 'javascript'
+      : 'typescript';
+  }
+
   async parse(filePath: string, content: string): Promise<AST> {
     const isTsx = filePath.endsWith('.tsx') || filePath.endsWith('.jsx');
     const lang = isTsx ? 'tsx' : filePath.endsWith('.go') ? 'go' : 'typescript';

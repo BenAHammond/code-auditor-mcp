@@ -6,8 +6,11 @@ import {
   TYPESCRIPT_EXTENSIONS,
   JAVASCRIPT_EXTENSIONS,
   ALL_EXTENSIONS,
+  getLanguageFromPath,
+  getSourceExtensions,
 } from './fileDiscovery.js';
 import { FileAccounting } from '../services/fileAccounting.js';
+import { initializeLanguages } from '../languages/index.js';
 import { execFileSync } from 'node:child_process';
 import path from 'path';
 import { promises as fs } from 'fs';
@@ -21,6 +24,46 @@ function gitAvailable(): boolean {
     return false;
   }
 }
+
+describe('registry-derived language + source-extension helpers', () => {
+  beforeAll(() => {
+    initializeLanguages();
+  });
+
+  it('getLanguageFromPath maps every adapter-claimed extension to its language id', () => {
+    expect(getLanguageFromPath('/x/a.ts')).toBe('typescript');
+    expect(getLanguageFromPath('/x/a.tsx')).toBe('typescript');
+    expect(getLanguageFromPath('/x/a.js')).toBe('javascript');
+    expect(getLanguageFromPath('/x/a.mjs')).toBe('javascript');
+    expect(getLanguageFromPath('/x/a.go')).toBe('go');
+    expect(getLanguageFromPath('/x/a.json')).toBe('json');
+    expect(getLanguageFromPath('/x/a.css')).toBe('css');
+    // No adapter owns raw/markup/prose — still unknown.
+    expect(getLanguageFromPath('/x/a.sql')).toBe('unknown');
+    expect(getLanguageFromPath('/x/a.astro')).toBe('unknown');
+    expect(getLanguageFromPath('/x/a.md')).toBe('unknown');
+  });
+
+  it('getSourceExtensions is the registry union plus raw and markup', () => {
+    const ext = getSourceExtensions();
+    // Adapter-claimed.
+    expect(ext.has('.ts')).toBe(true);
+    expect(ext.has('.js')).toBe(true);
+    expect(ext.has('.json')).toBe(true);
+    expect(ext.has('.go')).toBe(true);
+    expect(ext.has('.css')).toBe(true);
+    // Raw (no adapter owns it).
+    expect(ext.has('.sql')).toBe(true);
+    expect(ext.has('.toml')).toBe(true);
+    expect(ext.has('.prisma')).toBe(true);
+    // Style-markup (no adapter owns it).
+    expect(ext.has('.astro')).toBe(true);
+    expect(ext.has('.html')).toBe(true);
+    // Not source.
+    expect(ext.has('.md')).toBe(false);
+    expect(ext.has('.mdx')).toBe(false);
+  });
+});
 
 describe('fileDiscovery', () => {
   describe('should not exclude filesystem roots', () => {
