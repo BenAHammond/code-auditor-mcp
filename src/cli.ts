@@ -775,7 +775,7 @@ program
       // Spec 57 — dismissed count is reported alongside the total, never
       // subtracted from it. The hook surface (`changed`) is agent-facing, so it
       // must show the same "N findings, M dismissed" figure as the full report.
-      const dismissedCount = result.summary.dismissed ?? 0;
+      const dismissedCount = result.summary?.dismissed ?? 0;
 
       // Blocking gate decision (Spec 45 R1/R4, Spec 54 R3), computed once so the
       // agent-facing before/after count (Spec 45 A2) and the exit code agree on
@@ -1001,11 +1001,58 @@ function printCountSummary(
  */
 async function buildChangedResultFromDiagnostics(violations: any[], projectRoot: string): Promise<any> {
   const analyzerResults: Record<string, any> = {};
+  const byAnalyzer: Record<string, { violations: number }> = {};
+  let totalViolations = 0;
+  let criticalIssues = 0;
+  let severe = 0;
+  let high = 0;
+  let dismissed = 0;
+  const violationsByCategory: Record<string, number> = {};
+
   for (const v of violations) {
     const key = v.analyzer || 'unknown';
     (analyzerResults[key] = analyzerResults[key] || { violations: [] }).violations.push(v);
+
+    totalViolations++;
+    switch (v.severity) {
+      case 'critical': criticalIssues++; break;
+      case 'severe': severe++; break;
+      case 'high': high++; break;
+    }
+    const rule = v.rule || 'unknown';
+    violationsByCategory[rule] = (violationsByCategory[rule] ?? 0) + 1;
+    const bucket = byAnalyzer[key] ?? (byAnalyzer[key] = { violations: 0 });
+    bucket.violations++;
+    if (v.dismissed) dismissed++;
   }
-  return { analyzerResults, metadata: { configUsed: undefined, diagnostics: [] } };
+
+  const topIssues = Object.entries(violationsByCategory)
+    .sort(([, a], [, b]) => (b as number) - (a as number))
+    .slice(0, 5)
+    .map(([type, count]) => ({ type, count }));
+
+  // A *real* summary derived from the diagnostics the daemon served — not a
+  // zero-filled placeholder (a stub satisfying the type, with a `dismissed: 0`
+  // that was never measured). Every field here is computed from the actual
+  // findings: severity/category/byAnalyzer rollups, plus `dismissed` from each
+  // diagnostic's own `dismissed` flag. `totalFiles` and the per-analyzer
+  // `filesProcessed`/`fatalErrors`/`unprovenSites` are not derivable from a flat
+  // per-file diagnostic list, so they are omitted; the guarded read
+  // (`result.summary?.dismissed ?? 0`) tolerates their absence.
+  return {
+    analyzerResults,
+    summary: {
+      totalViolations,
+      criticalIssues,
+      severe,
+      high,
+      violationsByCategory,
+      topIssues,
+      byAnalyzer,
+      dismissed,
+    },
+    metadata: { configUsed: undefined, diagnostics: [] },
+  };
 }
 
 // Self-audit gate (Spec 33 Item 15 + Spec 44 remediation). Runs the full
