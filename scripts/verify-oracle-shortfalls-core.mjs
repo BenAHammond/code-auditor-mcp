@@ -50,7 +50,18 @@ export function compareOracleShortfalls(measured, baselineKinds) {
       } else {
         for (const field of ['files', 'expected', 'actual']) {
           if (actual[field] !== expected[field]) {
-            drift.push(`${kind} on ${corpus} ${field} ${actual[field]} != baseline ${expected[field]}`);
+            // A producer emitting *fewer* facts than its last recording is a
+            // defect, not drift: it means an extractor silently stopped emitting,
+            // which a routine re-record would paper over. It is marked distinctly
+            // so a human cannot mistake it for the benign inverse (a producer
+            // recovering facts, or a corpus drift under the read-only contract).
+            if (field === 'actual' && actual.actual < expected.actual) {
+              drift.push(
+                `REGRESSION ${kind} on ${corpus} actual ${actual.actual} < baseline ${expected.actual} (producer emitted fewer facts than its last recording — a defect until attributed)`,
+              );
+            } else {
+              drift.push(`${kind} on ${corpus} ${field} ${actual[field]} != baseline ${expected[field]}`);
+            }
           }
         }
       }

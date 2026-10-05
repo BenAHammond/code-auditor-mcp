@@ -410,6 +410,26 @@ describe('verify:oracle-shortfalls — liveness', () => {
     );
   });
 
+  it('marks an actual decrease as a producer regression, not drift', () => {
+    const measured = {
+      'file-symbols': { 'recall-protocol': { files: 99, expected: 1847, actual: 1200 } },
+      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
+    };
+    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
+      'REGRESSION file-symbols on recall-protocol actual 1200 < baseline 1338 (producer emitted fewer facts than its last recording — a defect until attributed)',
+    );
+  });
+
+  it('does not mark an actual increase as a regression', () => {
+    const measured = {
+      'file-symbols': { 'recall-protocol': { files: 99, expected: 1847, actual: 1400 } },
+      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
+    };
+    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
+      'file-symbols on recall-protocol actual 1400 != baseline 1338',
+    );
+  });
+
   it('reports a (kind, corpus) the gate failed to measure', () => {
     const measured = {
       'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
