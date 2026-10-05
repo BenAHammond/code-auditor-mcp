@@ -2073,7 +2073,16 @@ const SOURCE_EXTENSIONS = new Set<string>([
 /**
  * Resolve files scope: paths can be file paths or globs.
  * Absolute paths are used directly; relative paths are resolved
- * against the project root; globs use discoverFiles.
+ * against the project root; globs use discoverFiles. A direct path whose
+ * extension no analyzer claims (nor a raw/markup extension the pipeline reads
+ * directly) is dropped — see `SOURCE_EXTENSIONS` — so a prose edit never reaches
+ * the pipeline as a "dark analyzer" and trips the zero-files gate.
+ *
+ * @param options - The merged audit-runner options (`projectRoot`, `excludePaths`,
+ *   `fileExtensions`).
+ * @param scopeFiles - Candidate paths or globs to resolve into an absolute file
+ *   set.
+ * @returns The sorted set of absolute paths that are in audit scope.
  */
 export async function resolveFilesScope(
   options: AuditRunnerOptions,
