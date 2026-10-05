@@ -63,7 +63,9 @@ import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
 /** Rehydrate one file's `receiver-activity` fact back to the three provenance
  *  inputs `classifyBuildProvenance` reads: the `Binding` map (`identifyHandle`'s
  *  declaration resolution), the `R3Site[]` (`applyR3FromSites`), and the DB-shaped
- *  activity set (`passesFileGate`'s `dbActivity` signal). */
+ *  activity set (`passesFileGate`'s `dbActivity` signal).
+ * @param fact - The serialized `receiver-activity` fact (may be absent).
+ * @returns The rehydrated bindings, R3 sites, and DB-activity set. */
 export function rehydrateReceiverActivity(fact: ReceiverActivityFact | undefined): {
   bindings: Map<string, Binding>;
   r3Sites: R3Site[];
@@ -95,7 +97,9 @@ export function rehydrateReceiverActivity(fact: ReceiverActivityFact | undefined
 
 /** Rehydrate the `receiver-provenance` fact's `files` back to a per-file seed
  *  map — the exact `FileProvenance[file]` the legacy `file.receiverProvenance`
- *  carried, keyed by file path so a consumer can look up its seed. */
+ *  carried, keyed by file path so a consumer can look up its seed.
+ * @param fact - The serialized `receiver-provenance` fixed point.
+ * @returns A per-file map of provenanced-name → evidence. */
 export function rehydrateReceiverProvenance(fact: ReceiverProvenanceFact): Map<string, Map<string, ProvenanceEvidence>> {
   const byFile = new Map<string, Map<string, ProvenanceEvidence>>();
   for (const f of fact.files) {
@@ -109,7 +113,9 @@ export function rehydrateReceiverProvenance(fact: ReceiverProvenanceFact): Map<s
 
 /** Rehydrate the TS-family `within-file-provenance` facts back to a per-file
  *  `TsWithinFileProvenanceExtract` map (Go facts are skipped — the receiver
- *  consumers are TS-family-only). */
+ *  consumers are TS-family-only).
+ * @param withinFacts - The `within-file-provenance` facts (TS-family + Go).
+ * @returns A per-file map of rehydrated `TsWithinFileProvenanceExtract` (Go skipped). */
 export function rehydrateWithinTsExtracts(
   withinFacts: readonly WithinFileProvenanceFact[],
 ): Map<string, TsWithinFileProvenanceExtract> {
@@ -126,7 +132,9 @@ export function rehydrateWithinTsExtracts(
  *  `GoWithinFileProvenanceExtract` map (TS facts are skipped). The Go extract is
  *  the binding + import env the Go arm of `identifyHandle` reads — `data-access-calls`
  *  is the one receiver consumer that runs for the `go` format, so its corpus
- *  producer needs the Go extracts in addition to the TS ones. */
+ *  producer needs the Go extracts in addition to the TS ones.
+ * @param withinFacts - The `within-file-provenance` facts (TS-family + Go).
+ * @returns A per-file map of rehydrated `GoWithinFileProvenanceExtract` (TS skipped). */
 export function rehydrateWithinGoExtracts(
   withinFacts: readonly WithinFileProvenanceFact[],
 ): Map<string, GoWithinFileProvenanceExtract> {
@@ -223,6 +231,7 @@ function passesFileGateRehydrated(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @returns the classified query-site facts (one per admitted TS-family site)
  */
 export function classifyQuerySites(
   candidates: readonly QuerySiteCandidatesFact[],
@@ -440,6 +449,7 @@ function admitDbCall(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @returns the classified schema-usage facts (strategies 1/2/4/5/6, in order)
  */
 export function classifySchemaUsage(
   candidates: readonly SchemaUsageCandidatesFact[],
@@ -509,6 +519,7 @@ export function classifySchemaUsage(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @returns the unresolved-query site records re-admitted via `identifyHandle`
  */
 export function classifyUnresolvedQuerySites(
   candidates: readonly SchemaUsageCandidatesFact[],
@@ -813,6 +824,7 @@ function buildDataAccessCall(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts (TS-family only)
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @returns the resolved DB calls, deduped and rebuilt with no AST
  */
 export function classifyDataAccessCalls(
   candidates: readonly DataAccessCallCandidate[],
@@ -896,6 +908,7 @@ export function classifyDataAccessCalls(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @returns the resolved loop-query facts (deduped, stable symbols assigned)
  */
 export function classifyLoopQueries(
   candidates: readonly LoopQueryRawCandidate[],
@@ -987,6 +1000,7 @@ function describeGoUnprovenReceiver(receiver: string, method: string, root: stri
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts (TS-family only)
  * @param sqlDialect the corpus's named dialect, or null
+ * @returns the unproven query-receiver records, deduped and rebuilt
  */
 export function classifyUnprovenQueryReceivers(
   candidates: readonly DataAccessCallCandidate[],

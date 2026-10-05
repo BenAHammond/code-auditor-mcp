@@ -342,7 +342,9 @@ export const countTypeDeclarations = goNodeCount(['type_spec']);
  *  bounds the deduped `bindings.length` exactly. A raw node-type count would
  *  over-count (a `type_spec`/`var_spec` may nest inside a function body), so this
  *  walks the root's named children exactly as the producer does. Exempts
- *  `*_test.go`. */
+ *  `*_test.go`.
+ * @param file - The parsed file to count package-scope bindings for.
+ * @returns The number of package-scope bindings `buildGoFileBindings` would emit. */
 export function countGoPackageBindings(file: ParsedFile): number {
   if (isTestFile('go', file.file)) return 0;
   const astFile = file as AstFile;
@@ -541,7 +543,9 @@ export function measuredQuerySites(fragments: readonly unknown[]): number {
  *  fragments. One fragment per TS-family file carries the five candidate arrays
  *  (`ormRefs`, `queryBuilderRefs`, `collectionAdapterRefs`, `tagged`, `dbCalls`);
  *  this sums their lengths (the unit `countSchemaUsage` upper-bounds), not the
- *  fragment count. */
+ *  fragment count.
+ * @param fragments - The schema-usage-candidates fragments to sum candidate counts across.
+ * @returns The total candidate count across all fragments. */
 export function measuredSchemaUsageCandidates(fragments: readonly unknown[]): number {
   return (fragments as SchemaUsageCandidatesFact[]).reduce(
     (n, f) =>

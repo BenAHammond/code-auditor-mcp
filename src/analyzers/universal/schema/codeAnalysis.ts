@@ -295,7 +295,12 @@ function dbCallVerdict(
   );
 }
 
-/** Walk a member chain to see whether it bottoms out at `this`/`super`. */
+/**
+ * Walk a member chain to see whether it bottoms out at `this`/`super`.
+ * @param callee - The member/selector expression to walk.
+ * @param adapter - The language adapter (drives child access).
+ * @returns True when the chain's root is `this` or `super`.
+ */
 export function receiverIsThisRootedLocal(callee: ASTNode, adapter: LanguageAdapter): boolean {
   let current: ASTNode = callee;
   while (current.type === 'member_expression' || current.type === 'selector_expression') {
@@ -377,6 +382,10 @@ function extractDbCallRefs(
  * Strategy (4): ORM-aware extraction (Drizzle + Prisma) via the registered
  * adapter. Complements raw-SQL extraction by picking up ORM-specific patterns
  * like db.select().from(users) and prisma.user.findMany().
+ * @param ast - The file's parsed AST.
+ * @param adapter - The language adapter (for ORM adapter dispatch).
+ * @param sourceCode - The file's source text.
+ * @returns The ORM-extracted table references (empty when no ORM adapter applies).
  */
 export function extractOrmRefs(
   ast: AST,
@@ -443,7 +452,12 @@ const QUERY_BUILDER_RECEIVER_NAMES = ['trx', 'knex'] as const;
 /** Strategy (5): fluent query-builder reads — `trx('table').method(` and the
  *  `knex` receiver. Records the *read* only, tagged `origin: 'query-builder'`,
  *  so a scratch/test table name carried in a fluent builder call is not a schema
- *  violation and does not flood the naming/unknown-table/lifecycle checks. */
+ *  violation and does not flood the naming/unknown-table/lifecycle checks.
+ * @param ast - The file's parsed AST.
+ * @param adapter - The language adapter (drives node discovery + text reads).
+ * @param sourceCode - The file's source text.
+ * @param ctx - Shared table-reference extraction context.
+ * @returns The query-builder table references (read-only, `origin: 'query-builder'`). */
 export function extractQueryBuilderRefs(
   ast: AST,
   adapter: LanguageAdapter,
@@ -523,7 +537,11 @@ const COLLECTION_ADAPTER_NAMES: ReadonlySet<string> = new Set(['SqliteCollection
  *  SqliteCollectionAdapter(db, 'table')`. Records the *read* the facade issues
  *  (tagged `origin: 'collection-adapter'`) so a migration-seeded table read
  *  through a facade is not flagged `written-never-read`; the facade's writes are
- *  already seeded by migrations and left unrecorded to avoid double-counting. */
+ *  already seeded by migrations and left unrecorded to avoid double-counting.
+ * @param ast - The file's parsed AST.
+ * @param adapter - The language adapter (drives `new_expression` discovery).
+ * @param sourceCode - The file's source text.
+ * @returns The collection-facade table references (`origin: 'collection-adapter'`). */
 export function extractCollectionAdapterRefs(
   ast: AST,
   adapter: LanguageAdapter,

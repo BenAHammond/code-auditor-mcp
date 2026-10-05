@@ -72,6 +72,9 @@ export function withRuleTiming<T>(ruleId: string, fn: () => T): T {
  * which may be async (corpus-shaped rules build derived structures the legacy
  * reducers computed over the index). Times the full await, not just the
  * synchronous prefix. Otherwise identical to `withRuleTiming`.
+ * @param ruleId - The rule ID to attribute the duration to.
+ * @param fn - The (possibly async) work to time.
+ * @returns The awaited result of `fn`, unchanged.
  */
 export async function withRuleTimingAsync<T>(ruleId: string, fn: () => T | Promise<T>): Promise<T> {
   if (!isRuleTimingEnabled()) return fn();

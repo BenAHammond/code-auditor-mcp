@@ -1136,6 +1136,10 @@ export function buildProvenanceContext(
  * a dynamic SQL argument (`db.prepare(sql)`) has no provable dialect but the
  * site is still DB-shaped, so the file must reach the analyzers rather than be
  * silently dropped. Runs unconditionally, before R3's dialect gate.
+ * @param ast - The file's parsed AST.
+ * @param adapter - The language adapter (used for the callee walk and Go skip).
+ * @param sourceCode - The file's source text (for node-text reads).
+ * @returns The set of DB-shaped receiver roots, or an empty set for Go.
  */
 export function collectDbActivity(
   ast: AST,
@@ -1280,6 +1284,10 @@ export interface R3Site {
  * records the site instead of folding `identifyHandle`. The corpus-side
  * `applyR3FromSites` mirror re-runs the verdict once the seeded provenance and
  * bindings are known.
+ * @param ast - The file's parsed AST.
+ * @param adapter - The language adapter (used for the callee walk and Go skip).
+ * @param sourceCode - The file's source text (for static-argument reads).
+ * @returns The recorded R3 sites, or `[]` for Go.
  */
 export function extractR3Sites(
   ast: AST,
@@ -2278,6 +2286,10 @@ const CLASS_FIELD_EXCLUDED = new Set([
  * so it can run once at parse time and be carried as a file fact. The semantic
  * resolution — which name a value resolves to under the current provenance map —
  * is deferred to the classify arm.
+ * @param ast - The file's parsed AST.
+ * @param adapter - The language adapter (drives the walk + node-text reads).
+ * @param sourceCode - The file's source text (for structural reads).
+ * @returns The provenance-free `TsWithinFileProvenanceExtract` projection.
  */
 export function extractTsWithinFileProvenance(
   ast: AST,

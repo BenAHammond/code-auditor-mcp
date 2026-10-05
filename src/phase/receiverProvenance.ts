@@ -298,6 +298,7 @@ export function computeReceiverProvenance(
  * @param bindings the file's rehydrated binding environment
  * @param r3Sites the file's R3 sites (from the `receiver-activity` fact)
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @returns the file's DB-provenanced name map after the within-file fixed point
  */
 export function classifyBuildProvenance(
   extract: TsWithinFileProvenanceExtract,

@@ -333,7 +333,12 @@ function classifyPropagationRule(
 // The fixed point (classify)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Mirror of `propagateProvenance` over the projection's rule list. */
+/**
+ * Mirror of `propagateProvenance` over the projection's rule list.
+ * @param extract - The provenance-free within-file projection (rules + seeds).
+ * @param provenanceMap - The starting provenance map to propagate into.
+ * @returns The map after the propagation rules reach a fixed point.
+ */
 export function propagateProvenanceFromExtract(
   extract: TsWithinFileProvenanceExtract,
   provenanceMap: ReadonlyMap<string, ProvenanceEvidence>,
@@ -389,6 +394,9 @@ function detectDbWrappersFromExtract(
  * provenance the four receiver consumers read stops at function wrappers; the
  * classify-side fixed point (`classifyTsWithinFileProvenance`) additionally scans
  * classes and returning functions, so the two need distinct mirrors.
+ * @param extract - The provenance-free within-file projection (wrapper functions).
+ * @param provenanceMap - The provenance map to fold wrapper names into.
+ * @returns The map with any function wrappers marked provenanced.
  */
 export function detectDbWrapperFunctionsFromExtract(
   extract: TsWithinFileProvenanceExtract,
@@ -440,6 +448,9 @@ function detectDbReturningFunctionsFromExtract(
  * projection, with no AST. `classifyTsWithinFileProvenance(
  * extractTsWithinFileProvenance(ast, …), extraSeeds)` must equal
  * `computeTsWithinFileProvenance(ast, …, extraSeeds)` — pinned by the parity spec.
+ * @param extract - The provenance-free within-file projection to classify.
+ * @param extraSeeds - Additional cross-file provenanced names to seed the map with.
+ * @returns The file's provenance map after the fixed point converges.
  */
 export function classifyTsWithinFileProvenance(
   extract: TsWithinFileProvenanceExtract,

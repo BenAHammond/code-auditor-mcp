@@ -867,7 +867,10 @@ function stripSqlQuotes(text: string): string {
 /** The explicit lowercased column list of a raw-SQL INSERT/REPLACE, or null for
  *  a positional INSERT (`INSERT INTO t VALUES (…)`, no column list). Mirrors
  *  sqlAst's `insertColumns` but preserves the null-vs-empty distinction the
- *  tenant-predicate rule needs. */
+ *  tenant-predicate rule needs.
+ * @param sqlAst - The parsed SQL statement to read the column list from.
+ * @returns The lowercased explicit column list, or `null` for a positional
+ *   insert or a non-INSERT/REPLACE statement. */
 export function rawInsertColumnsFromAst(sqlAst: SqlAst): string[] | null {
   if (sqlAst.type !== 'insert' && sqlAst.type !== 'replace') return null;
   const columns = (sqlAst as { columns?: unknown }).columns;
@@ -3873,6 +3876,11 @@ function buildDataAccessCallCandidate(
  * (a bound bare call and a member call on the same line), so the corpus producer
  * dedups after re-folding admission. Config is the §10 tuning surface; omitted
  * here, extraction runs on {@link DEFAULT_DATA_ACCESS_CONFIG}.
+ * @param ast - The file's parsed AST.
+ * @param adapter - The language adapter (drives node discovery + text reads).
+ * @param sourceCode - The file's source text.
+ * @param config - Optional data-access config; defaults to the shared config.
+ * @returns The raw, provenance-free `data-access-calls-candidates`.
  */
 export function extractDataAccessCallCandidates(
   ast: AST,
@@ -3903,6 +3911,11 @@ export function extractDataAccessCallCandidates(
  * corpus producer re-folds once `dbProvenanced` is re-derived. The provenance-free
  * discriminators (statement-construction, sql-string-construction, for-of-iterable,
  * hoisted-reuse, batch-argument, LLM/queue suppression) already ran here.
+ * @param ast - The file's parsed AST.
+ * @param adapter - The language adapter (drives node discovery + text reads).
+ * @param sourceCode - The file's source text.
+ * @param config - Optional data-access config; defaults to the shared config.
+ * @returns The raw, provenance-free `loop-query-candidates`.
  */
 export function extractLoopQueryRawCandidates(
   ast: AST,

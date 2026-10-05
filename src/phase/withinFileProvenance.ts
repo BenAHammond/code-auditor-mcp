@@ -28,7 +28,10 @@ import { isTestFile } from '../languages/testConventions.js';
 /** Project a `ProvenanceEvidence` (interface) into its §4-serializable `type`.
  *  Exported so the `receiver-provenance` corpus producer projects the fixed
  *  point's `Map<string, ProvenanceEvidence>` through the *same* mapping — one
- *  projection, not two that could drift. */
+ *  projection, not two that could drift.
+ * @param e - The interface-form evidence to project into its serializable type.
+ * @returns The §4-serializable `ProvenanceEvidenceFact`, with `packageName`
+ *   present only when the evidence carries one. */
 export function evidenceToFact(e: ProvenanceEvidence): ProvenanceEvidenceFact {
   const base = {
     identifier: e.identifier,

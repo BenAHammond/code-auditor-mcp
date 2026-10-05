@@ -352,6 +352,10 @@ function detectDbUsageByName(sourceCode: string, config: SchemaAnalyzerConfig): 
  * CTE-leading `sql\`WITH …\`` or `sql\`PRAGMA …\`` would not match and the file
  * would be skipped, silently dropping its table references. A non-SQL template
  * admitted here is a cheap cannot-fire, never a false finding.
+ * @param sourceCode - The file's source text, scanned for a tag template.
+ * @param config - Schema analyzer configuration carrying `sqlTagNames`.
+ * @returns True when the source contains a `<tag>\`` template for any
+ *   configured SQL tag name.
  */
 export function hasSqlTag(sourceCode: string, config: SchemaAnalyzerConfig): boolean {
   const sqlTags = config.sqlTagNames ?? [...SQL_TAG_NAMES];
