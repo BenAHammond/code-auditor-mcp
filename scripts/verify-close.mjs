@@ -56,6 +56,7 @@ export const GATES = [
   { name: 'verify:clean-install', dist: false },
   { name: 'verify:dist', dist: true },
   { name: 'verify:self', dist: true },
+  { name: 'verify:daemon-smoke', dist: true },
 ];
 
 /**

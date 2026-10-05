@@ -309,7 +309,7 @@ describe('verify:close — run-all planning (the short-circuit fix)', () => {
 
   it('skips the dist-consuming gates (loudly) when dist is stale', () => {
     const plan = planRun(GATES, true);
-    for (const name of ['test', 'test:integration', 'verify:gate-budget', 'verify:self', 'verify:dist']) {
+    for (const name of ['test', 'test:integration', 'verify:gate-budget', 'verify:self', 'verify:dist', 'verify:daemon-smoke']) {
       const p = plan.find((x) => x.name === name)!;
       expect(p.action).toBe('skip');
       expect(p.reason).toBe('dist stale');

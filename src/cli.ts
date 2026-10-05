@@ -1721,7 +1721,9 @@ configCmd
       try {
         const raw = readFileSync(configPath, 'utf-8');
         const config = JSON.parse(raw);
-        const rules = config?.rules ?? [];
+        // `rules` is an array by schema; tolerate the `{}` shorthand some fixtures
+        // and hand-edited configs use for "no rules" — `.map` on `{}` would throw.
+        const rules = Array.isArray(config?.rules) ? config.rules : [];
         if (options.json) {
           process.stdout.write(JSON.stringify({
             rules: rules.map((r: any) => ({ id: r.id, kind: r.kind, severity: r.severity, message: r.message || null })),

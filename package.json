@@ -38,6 +38,7 @@
     "verify:clean-install": "bash scripts/verify-clean-install.sh",
     "verify:dist": "npm pack --silent && bash scripts/verify-dist.sh && rm -f code-auditor-mcp-*.tgz",
     "verify:self": "node scripts/verify-self.mjs && node scripts/verify-languages.mjs",
+    "verify:daemon-smoke": "node scripts/verify-daemon-smoke.mjs",
     "verify:languages": "node scripts/verify-languages.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
     "verify:recall-value-drift": "tsx scripts/verify-recall-value-drift.ts",
