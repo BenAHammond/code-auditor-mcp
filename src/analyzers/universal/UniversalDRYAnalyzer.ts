@@ -481,6 +481,23 @@ function groupByHash(
 }
 
 /**
+ * Reserved words left intact by `normalizeStructure` — hoisted so the replace
+ * callback does not re-allocate a 70-entry Set for every identifier match.
+ * Mirrors the phase path's `STRUCTURE_KEYWORDS` (`phase/codeBlocks.ts:35`); the
+ * two lists must stay in sync or structural-similarity drifts between the legacy
+ * DRY visitor and the phase `code-block` producer.
+ */
+const STRUCTURE_KEYWORDS = new Set([
+  'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
+  'return', 'throw', 'try', 'catch', 'finally', 'new', 'delete', 'typeof',
+  'instanceof', 'in', 'of', 'class', 'extends', 'super', 'this', 'function',
+  'const', 'let', 'var', 'async', 'await', 'yield', 'import', 'export',
+  'default', 'from', 'as', 'static', 'get', 'set', 'enum', 'type', 'interface',
+  'implements', 'abstract', 'public', 'private', 'protected', 'readonly',
+  'ID', 'LIT',
+]);
+
+/**
  * R3.3: Normalize code to its token-kind sequence.
  * Identifiers → ID, string/number/regex literals → LIT.
  */
@@ -508,17 +525,8 @@ function normalizeStructure(code: string): string {
   // Identifiers → ID (after literals so we don't replace inside strings)
   // Match camelCase, PascalCase, snake_case, dollar-prefixed, underscore-prefixed
   normalized = normalized.replace(/\b[a-zA-Z_$][a-zA-Z0-9_$]*\b/g, (match) => {
-    // Keep keywords intact
-    const keywords = new Set([
-      'if', 'else', 'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
-      'return', 'throw', 'try', 'catch', 'finally', 'new', 'delete', 'typeof',
-      'instanceof', 'in', 'of', 'class', 'extends', 'super', 'this', 'function',
-      'const', 'let', 'var', 'async', 'await', 'yield', 'import', 'export',
-      'default', 'from', 'as', 'static', 'get', 'set', 'enum', 'type', 'interface',
-      'implements', 'abstract', 'public', 'private', 'protected', 'readonly',
-      'ID', 'LIT',
-    ]);
-    if (keywords.has(match)) return match;
+    // Keep keywords intact (Set hoisted to module scope above).
+    if (STRUCTURE_KEYWORDS.has(match)) return match;
     return 'ID';
   });
 
