@@ -253,6 +253,74 @@ export function normalizeTemplateSubstitutions(sql: string): string {
 }
 
 /**
+ * Rewrite sqlite's length-qualified `TEXT(N)` type spelling to `VARCHAR(N)`.
+ * Drizzle's sqlite dialect emits `text(N)` for string columns, and
+ * node-sql-parser's sqlite grammar accepts the length form only for `varchar(N)`
+ * — it rejects `text(N)` even though sqlite itself accepts it. SQLite gives
+ * `TEXT(N)` and `VARCHAR(N)` the same TEXT affinity, so the rewrite is lossless
+ * for every fact an AST walk reads (table/column names, types, declared lengths)
+ * and recovers a statement that would otherwise report a spurious `cannot-fire`.
+ * Only the `text` keyword *immediately followed by `(`* is rewritten — a bare
+ * `text` (no length), a longer identifier (`textual`), and any occurrence inside
+ * a string literal or quoted identifier are left intact.
+ * @param sql The SQL text to rewrite.
+ * @returns The SQL with length-qualified `text(N)` rewritten to `varchar(N)`.
+ */
+export function normalizeSqliteTextLength(sql: string): string {
+  let out = '';
+  let i = 0;
+  let quote: QuoteChar | null = null;
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (quote !== null) {
+      if (ch === quote) {
+        if (sql[i + 1] === quote) { out += ch + ch; i += 2; continue; }
+        quote = null;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+    // `text` as a whole word, followed by optional whitespace then `(`.
+    if (ch === 't' || ch === 'T') {
+      const word = sql.slice(i, i + 4);
+      if (word.toLowerCase() === 'text') {
+        const prev = i === 0 ? '' : sql[i - 1];
+        const next = sql[i + 4] ?? '';
+        const wordStart = i === 0 || !/[a-zA-Z0-9_$]/.test(prev);
+        const wordEnd = !/[a-zA-Z0-9_$]/.test(next);
+        let j = i + 4;
+        while (j < sql.length && /\s/.test(sql[j])) j++;
+        if (wordStart && wordEnd && sql[j] === '(') {
+          out += 'varchar';
+          i += 4;
+          continue;
+        }
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * Apply the declared input normalizations for a dialect: D1 numbered parameters
+ * `?n` → `?`, template substitutions `${…}` → `?`, and — sqlite only, since it is
+ * a sqlite-specific spelling — length-qualified `text(N)` → `varchar(N)`.
+ */
+function applyDeclaredNormalizations(trimmed: string, dialect: Dialect): string {
+  const normalized = normalizeTemplateSubstitutions(normalizePositionalParams(trimmed));
+  return dialect === 'sqlite' ? normalizeSqliteTextLength(normalized) : normalized;
+}
+
+/**
  * Split a (possibly multi-statement) SQL string on top-level `;`. Semicolons
  * inside single/double-quoted strings and backtick identifiers are not statement
  * boundaries, and empty fragments (a trailing `;`) are dropped. A single string
@@ -436,7 +504,7 @@ export function parseSql(text: string, dialect: Dialect): SqlParseResult {
   if (isStandaloneTransactionControl(trimmed)) {
     return { ok: true, ast: TRANSACTION_MARKER, kind: 'other' };
   }
-  const normalized = normalizeTemplateSubstitutions(normalizePositionalParams(trimmed));
+  const normalized = applyDeclaredNormalizations(trimmed, dialect);
   const statements = splitSqlStatements(normalized);
   if (statements.length === 0) {
     // Only top-level `;` (or a substitution that normalized to nothing) — no
@@ -532,7 +600,7 @@ export function parseSqlProgram(text: string, dialect: Dialect): SqlProgramResul
   if (TEMPLATE_PLACEHOLDER.test(stripComments(trimmed))) {
     return { ok: false, reason: 'templated migration (contains {{…}} placeholder — not SQL until rendered)' };
   }
-  const normalized = normalizeTemplateSubstitutions(normalizePositionalParams(trimmed));
+  const normalized = applyDeclaredNormalizations(trimmed, dialect);
   let astified: AstifyResult;
   try {
     astified = parser.astify(normalized, { database: dialect });
@@ -582,7 +650,7 @@ export function parseSqlProgramTolerant(text: string, dialect: Dialect): Toleran
   if (TEMPLATE_PLACEHOLDER.test(stripComments(trimmed))) {
     return { statements: [], failures: [{ index: 0, reason: 'templated migration (contains {{…}} placeholder — not SQL until rendered)' }], truncatedConflictIndices: [] };
   }
-  const normalized = normalizeTemplateSubstitutions(normalizePositionalParams(trimmed));
+  const normalized = applyDeclaredNormalizations(trimmed, dialect);
   const parts = splitSqlStatements(normalized);
   const statements: AST[] = [];
   const failures: SqlStatementFailure[] = [];

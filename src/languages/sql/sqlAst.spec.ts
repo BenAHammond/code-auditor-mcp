@@ -15,6 +15,7 @@ import {
   collectTypedRelations,
   truncateConflictClause,
   normalizePositionalParams,
+  normalizeSqliteTextLength,
   splitSqlStatements,
   extractTableNames,
   cteNames,
@@ -88,6 +89,37 @@ describe('declared input normalization (Spec 70 R1 step 2)', () => {
 
   it('does not rewrite a ? inside a quoted identifier', () => {
     expect(normalizePositionalParams('SELECT * FROM "t?1"')).toBe('SELECT * FROM "t?1"');
+  });
+
+  it('rewrites a length-qualified text(N) to varchar(N) for the sqlite grammar', () => {
+    expect(normalizeSqliteTextLength('CREATE TABLE t (name text(256))')).toBe(
+      'CREATE TABLE t (name varchar(256))',
+    );
+    expect(normalizeSqliteTextLength('CREATE TABLE t (name TEXT(2))')).toBe(
+      'CREATE TABLE t (name varchar(2))',
+    );
+  });
+
+  it('leaves a bare text and other length-qualified types untouched', () => {
+    expect(normalizeSqliteTextLength('CREATE TABLE t (name text)')).toBe('CREATE TABLE t (name text)');
+    expect(normalizeSqliteTextLength('CREATE TABLE t (x varchar(255))')).toBe(
+      'CREATE TABLE t (x varchar(255))',
+    );
+    // `textual` is a whole word on its own, not `text` + a suffix.
+    expect(normalizeSqliteTextLength('CREATE TABLE t (x textual)')).toBe('CREATE TABLE t (x textual)');
+  });
+
+  it('does not rewrite text( inside a string literal or quoted identifier', () => {
+    expect(normalizeSqliteTextLength("SELECT 'text(256)'")).toBe("SELECT 'text(256)'");
+    expect(normalizeSqliteTextLength('SELECT "text(256)"')).toBe('SELECT "text(256)"');
+  });
+
+  it('parses a text(N) column type under sqlite once normalized', () => {
+    const r = sql('CREATE TABLE t (name text(256))');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(ddlColumnDefinitions(r.ast)[0].dataType).toMatch(/varchar/i);
+    }
   });
 
   it('fails cleanly on a literal with only a statement separator, not a crash', () => {
