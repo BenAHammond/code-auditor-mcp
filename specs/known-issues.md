@@ -64,6 +64,9 @@ dropped.
 | 4 | **SQL literal dequoting gap.** `stripSqlQuotes` strips only the outer quote, not the inner JS escapes (`\'`, `\"`, `` \` ``), so a static literal whose SQL contains an escaped quote/backtick is fed to the parser with the backslash attached. One of the 128 knex static-`.raw` failures — `create table bar (\`i3\` integer primary key)` — is valid SQLite once un-escaped and fails *only* on this gap (a further site, the mixed-quoting `create table TEST (…'i1'…[i2]…)`, fails regardless). | `app/src/analyzers/provenance.ts:1302`, `app/specs/spec70-acceptance.md` §11 | open |
 | 5 | **Drizzle-Kit `text(N)` length qualifier is rejected as sqlite.** openstatus's Drizzle-Kit migrations emit `text(2)`/`text(256)`; node-sql-parser's sqlite grammar accepts `text` but rejects `text(N)` (`varchar(255)` parses). This is a **grammar defect** — sqlite accepts `TEXT(N)` — not a dialect-detection issue, so it is filed separately from the null-dialect abstention above. Latent under the current gate (openstatus's null dialect already abstains), it would surface the moment openstatus declares a sqlite driver. Fixable in our layer (a pre-parse normalization mapping `text(N)` → `varchar(N)`, alongside `normalizePositionalParams`); also an upstream node-sql-parser limitation (its sqlite type-name rule omits the `TEXT(N)` length form). | `app/src/languages/sql/sqlAst.ts` (`parseSingleStatement`), `app/specs/known-issues.md` §ddl-declarations | open |
 | 6 | **Spec 38 R2 per-rule timing on the phase path missed the producers.** After the phase-model migration, `withRuleTiming` only wrapped the legacy `Universal*Analyzer` visitors, so `CODE_AUDIT_RULE_TIMING=1` reported the migrated rules (~20 ms) against a ~320–359 ms gate with the fact-build cost invisible. The rule half was restored separately (`withRuleTimingAsync` in `analyzeAll`); the producer half remained. **Fixed** — `processFile` and `buildFacts` now time every producer's `process` under `producer:<id>` (`withRuleTiming`, the sync form), so the gate's breakdown surfaces `producer:schema-usage-candidates.typescript` (16.3 ms), `producer:file-symbols.typescript` (7.3 ms), `producer:code-block.typescript` (5.9 ms), … alongside the rules in one slowest-first list. Producers (~75 ms) + rules (~20 ms) of the ~359 ms gate are now attributed; the remainder is the legacy pipeline + parse + discovery (issue 2, double-parse). | `app/src/phase/phaseModel.ts:582` (file producer), `:424` (corpus producer), `app/src/analyzers/ruleTiming.ts` | done |
+| 7 | **Installed plugin and source tree drift silently, in both directions, and nothing detects it.** `~/.claude/plugins/marketplaces/code-auditor-mcp/plugin/scripts/hook-audit.sh` gained a source-file extension-scoping block (Sep 21) that never landed in `plugin/scripts/hook-audit.sh` (Sep 5); meanwhile the installed `plugin.json`/`SKILL.md` sit at 4.1.0 while the source tree is 5.0.0. A version or checksum check at SessionStart would catch it — that is a spec, not a fix. | `app/plugin/scripts/hook-audit.sh`, `app/plugin/.claude-plugin/plugin.json` | open |
+| 8 | **Extension knowledge lives in two hand-maintained places: the per-adapter `fileExtensions` (which `LanguageRegistry` correctly unions) and `fileDiscovery.ts`'s central arrays.** The adapters already do the right thing — `readonly fileExtensions` on each (`TreeSitterTypeScriptAdapter.ts:857`, `GoAdapter.ts:457`, `JsonAdapter.ts:362`, `TreeSitterCssAdapter.ts:50`) and `LanguageRegistry.registerAdapter` builds the `extensionMap` union (`LanguageRegistry.ts:37`). But discovery does not derive from that registry: `findFiles`/`discoverFiles` default to `fileDiscovery.ts`'s hand-rolled `ALL_EXTENSIONS` / `KNOWN_SOURCE_EXTENSIONS`, and `getLanguageFromPath` (`fileDiscovery.ts:172`, "single source of truth" in name only) is a third copy that already drifts — it maps only TS/JS/Go and returns `unknown` for JSON/CSS/SQL, which the adapters *do* claim. Adding a parser today is one file (the adapter) *plus* three edits in `fileDiscovery.ts`. The spec is: each adapter declares its extensions, the registry is the union, discovery derives from the registry (plus the raw/markup sets the adapters don't own), and a registered format with no declared extensions fails to compile. That is what makes Python/Rust affordable later. | `app/src/languages/types.ts:170`, `app/src/languages/LanguageRegistry.ts:37`, `app/src/utils/fileDiscovery.ts:172` | open |
+| 9 | **No end-to-end smoke test runs the installed CLI's main commands.** `verify:dist` proves the tarball installs; nothing runs `code-audit changed` against a live daemon — which is how a crash sat undetected in the hook's primary path. The `changed` daemon fast-path returned a `result` with no `summary` (`buildChangedResultFromDiagnostics` returned only `analyzerResults` + `metadata`), so `result.summary.dismissed` threw a TypeError on every `.ts` edit against a ready daemon (exit 1 — a broken hook by the contract's own definition). Fixed and folded into 5.0.0: a guarded read (`result.summary?.dismissed ?? 0`) plus a real summary derived from the served diagnostics (severity/rule/analyzer rollups, measured `dismissed`, non-derivable fields omitted). The gap this row names is the missing gate: start a daemon against a fixture project, run each shipped command the hook and skill actually invoke (`changed --json`, `changed` plain, `audit`, …), assert exit codes and that a real summary comes back. Whether that becomes a 14th gate is Ben's call, not a spec written here. | `app/src/cli.ts:778` (guarded read), `app/src/cli.ts:1002` (`buildChangedResultFromDiagnostics`) | open |
 
 ### ddl-declarations oracle shortfall — oracle/producer mismatch fixed, not recorded
 
@@ -123,13 +126,159 @@ These are the Spec 68 board tail, re-measured on the new pipeline — still
 outstanding after Spec 68 (listed here as the single source of truth so they are
 not scattered across reports):
 
-| # | Issue | Where known |
-|---|-------|-------------|
-| 5 | Spec 63 R1–R3 — emitted-field set, seam-conformance class, dead-spot disposition. | `specs/spec-68-phases-and-declared-inputs.md:597` |
-| 6 | Spec 64 R1–R3 and R5–R7 — Go function index (R1's gate becomes a `needs.formats` declaration). | `specs/spec-68-phases-and-declared-inputs.md:597` |
-| 7 | Spec 62 Amendment B R4 — reporting-boundary assertion. | `specs/spec-68-phases-and-declared-inputs.md:597` |
-| 8 | Board §6.1 — 27 emitted-but-untested rules get behaviour fixtures. | `specs/spec-68-phases-and-declared-inputs.md:597` |
-| 9 | Board §6.2 — 11 rules never through the authenticity ledger. | `specs/spec-68-phases-and-declared-inputs.md:597` |
-| 10 | Board §7 — cross-file duplicate detection. | `specs/spec-68-phases-and-declared-inputs.md:597` |
-| 11 | Board §8 — rule precision (`method-complexity`, `pgx`, `sqlc`, `ent`). | `specs/spec-68-phases-and-declared-inputs.md:597` |
-| 12 | Board §9 — the API contract surface. | `specs/spec-68-phases-and-declared-inputs.md:597` |
+| # | Issue | Where known | Status |
+|---|-------|-------------|--------|
+| 5 | Spec 63 R1–R3 — emitted-field set, seam-conformance class, dead-spot disposition. | `specs/spec-68-phases-and-declared-inputs.md:597` | open |
+| 6 | Spec 64 R1–R3 and R5–R7 — Go function index (R1's gate becomes a `needs.formats` declaration). | `specs/spec-68-phases-and-declared-inputs.md:597` | open |
+| 7 | Spec 62 Amendment B R4 — reporting-boundary assertion. | `specs/spec-68-phases-and-declared-inputs.md:597` | open |
+| 8 | Board §6.1 — 27 emitted-but-untested rules get behaviour fixtures. | `specs/spec-68-phases-and-declared-inputs.md:597` | done |
+| 9 | Board §6.2 — 11 rules never through the authenticity ledger. | `specs/spec-68-phases-and-declared-inputs.md:597` | done |
+| 10 | Board §7 — cross-file duplicate detection. | `specs/spec-68-phases-and-declared-inputs.md:597` | open |
+| 11 | Board §8 — rule precision (`method-complexity`, `pgx`, `sqlc`, `ent`). | `specs/spec-68-phases-and-declared-inputs.md:597` | open |
+| 12 | Board §9 — the API contract surface. | `specs/spec-68-phases-and-declared-inputs.md:597` | open |
+
+### §6.1 & §6.2 — the 27 rules now have behaviour fixtures and ledger rows
+
+Board §6.1 ("27 emitted-but-untested rules get behaviour fixtures") is closed.
+The 27 are the 16 schema-JSON rules plus the 11 non-schema-JSON rules, and each
+of the 11 has a test asserting it **fires** (produces a finding), not merely that
+the area is touched:
+
+- **16 schema-JSON rules** — `jsonSchemaLiveness.spec.ts`, via `analyzeJsonSchemas`,
+  "every schema-JSON rule fires".
+
+- **6 data-access rules** (`spec68-data-access-rules.spec.ts`, pure
+  `dataAccessRules(ctx)` classification unless noted):
+  - `sql-injection-risk` — "flags raw unescaped interpolation as critical"
+  - `complex-query` — "flags a query referencing more tables than the joined-table threshold"
+  - `unfiltered-query` — "flags a filterless UPDATE as an unfiltered write"
+  - `missing-org-filter` — "raw-SQL INSERT that omits the tenant column fires (row would be unscoped)"
+  - `hardcoded-connection` — `spec68-hardcoded-connection-parity.spec.ts` (fires via `runSecuritySlice`)
+  - `loop-query` — `spec68-loop-query-parity.spec.ts` (fires via `runLoopQueriesSlice`)
+
+- **5 schema-code rules**:
+  - `dynamic-sql-construction` — `spec68-dynamic-sql-construction-parity.spec.ts` (fires via `runDynamicSqlSlice`)
+  - `table-naming-convention` — `spec68-schema-rules.spec.ts` "flags a camelCase table name"
+  - `unknown-table` — `spec68-schema-rules.spec.ts` "flags a reference to a name absent from the catalog"
+  - `stale-table-reference` — `spec68-stale-table-reference-parity.spec.ts` (fires via `analyzeSchemaRules`)
+  - `too-many-queries` — `spec68-too-many-queries-parity.spec.ts` (fires via `runQuerySitesSlice`)
+
+No rule lacked a fires-assertion; none needed writing.
+
+Board §6.2 ("11 rules never through the authenticity ledger") is closed: all 11
+carry a row in `specs/rule-authenticity-ledger.md` (running total 115 rows), and
+`registry-ledger-membership.test.ts` pins the bidirectional registry ↔ ledger
+membership so a silent re-removal would fail the suite.
+
+### 744 propagation — 846 `db`-rooted unproven sites close list-free
+
+The next spec's candidate fix is **verdict propagation**, not a type-annotation
+manifest. On recall-protocol there are **846 `db`-rooted unproven sites**; of
+these **787 (93%)** have a `handle`-verdict sibling sharing the same root in the
+same file, so a verdict already proven at one site (via its SQL argument) can be
+carried to the sibling sites — closing the largest unproven population in the
+product with **no list, no manifest, and no type names**. The remaining **59**
+are type-only (no handle-verdict sibling), small enough that the type-annotation
+seam may never need building. This supersedes the type-annotation manifest as the
+candidate fix.
+
+### oracle-shortfalls — how the gate went green (a drift ratchet, re-recorded after two real fixes)
+
+`verify:oracle-shortfalls` is a **drift ratchet, not an absolute shortfall check**:
+it pins the `files` / `expected` / `actual` aggregate per (fact-kind, corpus)
+and fails on any field change (`compareOracleShortfalls` in
+`scripts/verify-oracle-shortfalls-core.mjs`). The `residual` (`expected −
+actual`) is derived, never pinned — it is the by-design gap the per-kind
+`composition` prose explains. So the gate "failed" on the query-sites / schema-usage
+numbers because the measured aggregates no longer matched the pinned baseline,
+not because a threshold was exceeded. It is green now through **three causes in
+sequence**, and the re-record was legitimate only because the fixes landed first:
+
+1. **Oracle fixed (ddl-declarations only).** `countDdlOps`
+   (`src/phase/oracles.ts:254`) counted every `ALTER TABLE` header, including
+   `ADD/DROP/ALTER COLUMN` (a column change recorded in `tableColumns`, not as an
+   op). The oracle now counts only op-producing statements — `CREATE/DROP TABLE`
+   and `ALTER TABLE … RENAME TO`. `expected` dropped 376 → 29 on recall-protocol.
+2. **Producer recovered facts (the `-candidates` kinds).** The phase-model
+   migration made the producer emit the full candidate set it had been
+   under-emitting. recall-protocol `actual`: schema-usage ~1,909 → 17,640 (~9×),
+   data-access-calls ~1,848 → 31,074 (~17×). These are recoveries, not drops.
+3. **Baseline re-recorded (3e05d10) after the populations were stable**, with the
+   fact kinds renamed to `-candidates` (Spec 69 R2) — `query-sites`→
+   `query-site-candidates`, `schema-usage`→`schema-usage-candidates`,
+   `data-access-calls`→`data-access-calls-candidates`, `loop-queries`→
+   `loop-query-candidates` — and a `composition` prose entry filled for all 20
+   kinds. The directive "don't re-record until populations established" was
+   honored: the re-record pinned the corrected populations, not the pre-fix
+   under-emission.
+
+The residual that remains is by design: the oracle is a broad upper-bound
+superset (e.g. `countQuerySites` counts every `\.\w+\s*\(` member call plus SQL
+keyword occurrences, so recall-protocol query-site-candidates pins
+`expected` 58,547 vs `actual` 2,699), while the producer emits only what the
+receiver-resolution proves. The gate exists to catch the inverse — a producer
+emitting *more* than the oracle, or a corpus drifting under the read-only
+contract — not to drive `expected ≈ actual`.
+
+A property of that gate worth naming: a ratchet that fails on **any** change gets
+re-recorded routinely, and routine re-recording is how `schema-usage` sitting at
+zero on two corpora got through earlier. It catches corpus drift well and
+producer regression weakly — the `files`/`expected`/`actual` pins would trip on a
+corpus edit under the read-only contract, but a producer that silently stops
+emitting a fact kind is only visible if someone inspects the re-recorded baseline
+against the `composition` prose, which nothing forces.
+
+### `normalizeStructure` — per-block regex work is irreducible, not a per-file win
+
+`normalizeStructure` maps identifiers→`ID` / literals→`LIT` / keywords intact via
+9 global regex replaces plus an identifier callback. It runs **once per extracted
+code block**: phase `src/phase/codeBlocks.ts:138` (inside `createCodeBlock`, the
+per-block loop at `:163`) and legacy
+`src/analyzers/universal/UniversalDRYAnalyzer.ts:679` (the per-block
+structural-similarity pass, via `normalizeCodeForStructure` at `:548`).
+
+It is **not hoistable to per-file**: it operates on each block's `normalizeCode`
+output (whitespace/comment-stripped, non-length-preserving), which is only
+derivable per block, and it feeds a per-block `hashCode`. The one genuine
+redundancy is that nested blocks re-normalize overlapping text (a function *and*
+its inner loops), so total cost is O(nesting × file) — but the unit cost is small:
+the phase `code-block` producer is ~5.9 ms of the ~320 ms gate.
+
+The one fixable inefficiency was already half-fixed: the ~70-entry keyword Set is
+hoisted to module scope on the phase path (`codeBlocks.ts:35`,
+`STRUCTURE_KEYWORDS`, commit 4700b5b) but the legacy
+`UniversalDRYAnalyzer.ts:512` still allocates `const keywords = new Set([…])`
+*inside* the identifier callback on every match. A mirror hoist is a one-line
+change of low value — the legacy DRY visitor is on the decommissioning path
+(board 2d).
+
+### plugin hook — the guard is present; the drift is in the source tree, not the install
+
+The `${CLAUDE_PLUGIN_ROOT}` reference in `plugin/hooks/hooks.json` is **not
+unguarded**. All three commands carry an `if [ -z "${CLAUDE_PLUGIN_ROOT}" ]`
+guard — PostToolUse exits 1 loudly ("CLAUDE_PLUGIN_ROOT is unset; audit hook did
+not run"), SessionStart exits 0 silently (a warm-the-cache nicety must never fail
+the session) — and the guard precedes the script invocation so a missing root can
+never resolve to an absolute `/scripts/hook-audit.sh`. This is pinned by
+`src/plugin-manifest.spec.ts` (52 tests) and `src/__tests__/hookResolver.spec.ts`
+(8 tests).
+
+The PostToolUse audit hook **did fire** during the release edits:
+`CLAUDE_PLUGIN_ROOT` is set in the Claude Code environment, the guard passes,
+`resolve_code_audit` resolves a version-matched CLI, and `code-audit changed`
+reported benign "Baseline file has schemaVersion 1" notices — no gating findings
+on the release commits.
+
+**Correction (2026-10-05) — the drift direction was inverted.** The installed
+`hook-audit.sh` is **ahead** of the source tree, not behind: it carries the
+source-file extension-scoping block
+(`case "${file}" in *.ts|…|*.scss) : ;; *) exit 0 ;; esac`, dated Sep 21, that
+`plugin/scripts/hook-audit.sh` (Sep 5) still lacks. Copying source → installed
+would have *removed* the scoping and reintroduced the spurious zero-files audit
+on every `.md`/`.txt`/`.yml` edit. At the same time the installed `plugin.json`
+and `SKILL.md` are **behind** on version (4.1.0, Sep 23) while the source tree is
+5.0.0 (Oct 4). The divergence is two-way and silent — filed as board row 7 below.
+The fix is to port the scoping block *into* the source tree so the repo is the
+single source of truth again, then reinstall; the version divergence resolves on
+that same reinstall. (`hooks.json`, `hook-common.sh`, `hook-self-audit.sh`,
+`hook-warm.sh` and the three `skills/*` files are byte-identical.)
