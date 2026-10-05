@@ -175,6 +175,25 @@ and the upgrade path itself are pinned by `upgrade-path.spec.ts` against a real
 "read, not rebuilt" transition is tested on the one surface a clean-install gate
 cannot exercise.
 
+### `changed` against a live daemon no longer crashes on a missing summary
+
+**The `changed` daemon fast-path returned a `result` with no `summary`, so
+`result.summary.dismissed` threw a `TypeError` on every `.ts` edit run against a
+ready daemon — an exit-1, which by the hook contract is a broken hook.** The
+fast-path had been built to serve diagnostics back without a summary, and nothing
+exercised the assembled object end to end, so the crash sat in the hook's primary
+path undetected.
+
+**The fix derives a real summary from the served diagnostics** (severity/rule/
+analyzer rollups, measured `dismissed`, with the non-derivable fields omitted) and
+guards the dismissed read (`result.summary?.dismissed ?? 0`) so a summary-less
+result can never throw again. The gap that let the crash through — no gate ran the
+shipped commands against a live daemon — is closed by the **14th release gate**,
+`verify:daemon-smoke`: it starts a daemon against a fixture project and runs every
+command the hook and skill invoke (`changed --json`, `changed` plain, `audit`, …),
+asserting exit codes and that a real summary comes back. See `specs/known-issues.md`
+(board row 9).
+
 ### `verify:close` no longer short-circuits on the first failing gate
 
 **`verify:close` was a single `&&` conjunction of thirteen gates, and a `&&`
