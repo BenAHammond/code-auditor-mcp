@@ -15,6 +15,7 @@ import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode } from '../../languages/types.js';
+import { findNodeByLocation } from '../../languages/locationIndex.js';
 import * as crypto from 'crypto';
 
 /**
@@ -600,34 +601,6 @@ function computePairFingerprint(original: CodeBlock, block: CodeBlock): string {
 }
 
 /**
- * Find a node by its location via BFS.
- */
-function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
-  // Search from the root's children, never the root itself. The root is a
-  // whole-file wrapper (`program`/`source_file`) whose start location collides
-  // with its first top-level child (a non-`export`ed declaration starts at
-  // column 1, the same as the wrapper). Returning the wrapper for the first
-  // top-level declaration made `deduplicateBlocks` absorb it as an outer block,
-  // silently dropping the file's first declaration from comparison.
-  const queue: ASTNode[] = [...(root.children ?? [])];
-
-  while (queue.length > 0) {
-    const node = queue.shift()!;
-
-    if (node.location.start.line === location.line &&
-        node.location.start.column === location.column) {
-      return node;
-    }
-
-    if (node.children) {
-      queue.push(...node.children);
-    }
-  }
-
-  return null;
-}
-
-/**
  * Translate a minimal glob (`*`, `**`, `?`) to an anchored regex. A globstar
  * (`**`) matches any run of characters including the path separator, and a
  * globstar followed by a slash becomes an optional segment prefix so it also
@@ -728,7 +701,10 @@ function collectBlock(
   location: { line: number; column: number },
   blocks: CodeBlock[]
 ): void {
-  const node = findNodeByLocation(ctx.ast.root, location);
+  // `true` preserves the legacy skip-root semantics: the DRY block search starts
+  // from `root.children`, never the whole-file wrapper, so the first top-level
+  // declaration is not absorbed as an outer block by `deduplicateBlocks`.
+  const node = findNodeByLocation(ctx.ast.root, location, true);
   if (!node) return;
   const block = createCodeBlock(ctx, node);
   if (block && isBlockLargeEnough(block, ctx.config)) {

@@ -22,6 +22,7 @@
 
 import * as crypto from 'crypto';
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
+import { buildLocationIndex, locationKey } from '../languages/locationIndex.js';
 import type { AstFile, CodeBlockFact } from './types.js';
 
 // ── Normalization (re-homed verbatim; the default ignore flags are fixed) ──
@@ -99,33 +100,6 @@ function countLines(text: string): number {
   return text.split('\n').filter((line) => line.trim().length > 0).length;
 }
 
-/**
- * Index every node by its start `line:column` in one BFS pass (starting from the
- * root's children, never the root — the root is a whole-file wrapper whose start
- * collides with the first top-level child). Built once per file so block lookup
- * is O(1); the previous per-block BFS (`queue.shift()` on an array) was O(n²)
- * and was the gate-budget's bimodal ~29 ms tail.
- */
-function buildLocationIndex(root: ASTNode): Map<string, ASTNode> {
-  const index = new Map<string, ASTNode>();
-  const queue: ASTNode[] = [...(root.children ?? [])];
-  let head = 0;
-
-  while (head < queue.length) {
-    const node = queue[head++];
-
-    const start = node.location.start;
-    const key = start.line + ':' + start.column;
-    if (!index.has(key)) index.set(key, node);
-
-    if (node.children) {
-      for (const child of node.children) queue.push(child);
-    }
-  }
-
-  return index;
-}
-
 /** Walk the AST depth-first, invoking the callback on every node. */
 function walkAST(node: ASTNode, callback: (node: ASTNode) => void): void {
   callback(node);
@@ -184,7 +158,7 @@ function collectBlock(
   location: { line: number; column: number },
   blocks: CodeBlockFact[],
 ): void {
-  const node = index.get(location.line + ':' + location.column);
+  const node = index.get(locationKey(location));
   if (!node) return;
   const block = createCodeBlock(ctx, node);
   if (block) blocks.push(block);
@@ -193,7 +167,9 @@ function collectBlock(
 /** Extract all code blocks from an AST: functions, classes + methods, control-flow. */
 function extractBlocks(ctx: BlockContext): CodeBlockFact[] {
   const blocks: CodeBlockFact[] = [];
-  const index = buildLocationIndex(ctx.ast.root);
+  // `true` skips the whole-file wrapper: the block producer's legacy search
+  // started from `root.children`, never the root (see locationIndex.ts).
+  const index = buildLocationIndex(ctx.ast.root, true);
 
   for (const func of ctx.adapter.extractFunctions(ctx.ast)) {
     collectBlock(ctx, index, func.location.start, blocks);

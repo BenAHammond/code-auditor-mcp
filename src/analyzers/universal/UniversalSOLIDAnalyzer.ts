@@ -7,6 +7,7 @@ import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import { withRuleTiming } from '../ruleTiming.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, ClassInfo, FunctionInfo, InterfaceInfo } from '../../languages/types.js';
+import { findNodeByLocation } from '../../languages/locationIndex.js';
 import { detectFunctionConcerns, countConcernGroups, votingConcerns, CONCERN_LABELS, isFunctionNodeType } from './functionConcerns.js';
 
 /**
@@ -646,26 +647,6 @@ function fileTypeOf(filePath: string): string {
   const base = filePath.replace(/\\/g, '/').split('/').pop() ?? '';
   const dot = base.lastIndexOf('.');
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
-}
-
-/** Breadth-first search for the node whose start position matches `location`. */
-function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
-  const queue: ASTNode[] = [root];
-
-  while (queue.length > 0) {
-    const node = queue.shift()!;
-
-    if (node.location.start.line === location.line &&
-        node.location.start.column === location.column) {
-      return node;
-    }
-
-    if (node.children) {
-      queue.push(...node.children);
-    }
-  }
-
-  return null;
 }
 
 /**

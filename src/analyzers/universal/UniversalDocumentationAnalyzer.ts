@@ -15,6 +15,7 @@
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { Violation } from '../../types.js';
 import type { AST, LanguageAdapter, ASTNode, ClassInfo, FunctionInfo } from '../../languages/types.js';
+import { findNodeByLocation } from '../../languages/locationIndex.js';
 import { isTestFile, isTestFunction } from '../../languages/testConventions.js';
 import picomatch from 'picomatch';
 
@@ -793,30 +794,6 @@ function isSubstantiveDoc(doc: string): boolean {
     .toLowerCase();
   const words = prose.split(/\s+/).filter((w) => w.length >= 2 && !DOC_STOP_WORDS.has(w));
   return words.length > 0;
-}
-
-/**
- * Find a node by its location via BFS.
- */
-function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
-  const queue: ASTNode[] = [root];
-
-  while (queue.length > 0) {
-    const node = queue.shift()!;
-
-    if (
-      node.location.start.line === location.line &&
-      node.location.start.column === location.column
-    ) {
-      return node;
-    }
-
-    if (node.children) {
-      queue.push(...node.children);
-    }
-  }
-
-  return null;
 }
 
 /**

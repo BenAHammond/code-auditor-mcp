@@ -18,6 +18,7 @@
 import type { AstFile, FileSymbols, FileFunctionSymbol, FileClassSymbol } from './types.js';
 import type { ASTNode, ClassInfo, FunctionInfo } from '../languages/types.js';
 import { walkAST } from '../languages/adapterBridge.js';
+import { findNodeByLocation } from '../languages/locationIndex.js';
 import { detectFunctionConcerns, votingConcerns, CONCERN_LABELS, isFunctionNodeType } from '../analyzers/universal/functionConcerns.js';
 
 /**
@@ -332,19 +333,6 @@ function extractInstanceofTargets(
     if (m && !BUILTIN_TYPES.has(m[1])) targets.add(m[1]);
   });
   return [...targets];
-}
-
-/** BFS for the node whose start position matches `location`. */
-function findNodeByLocation(root: ASTNode, location: { line: number; column: number }): ASTNode | null {
-  const queue: ASTNode[] = [root];
-  while (queue.length > 0) {
-    const node = queue.shift()!;
-    if (node.location.start.line === location.line && node.location.start.column === location.column) {
-      return node;
-    }
-    if (node.children) queue.push(...node.children);
-  }
-  return null;
 }
 
 /** Find the function/method node at `location`, disambiguating the program root. */
