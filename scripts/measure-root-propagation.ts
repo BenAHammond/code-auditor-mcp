@@ -20,6 +20,7 @@
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { resolveCorpusReceivers } from '../src/analyzers/receiverResolution.js';
+import { detectDialect } from '../src/languages/sql/dialectDetection.js';
 import { identifyHandle } from '../src/analyzers/handleIdentification.js';
 import { buildBindingEnv, resolveReceiverRoot, type RootResolutionEnv } from '../src/analyzers/receiverRoot.js';
 import {
@@ -82,7 +83,22 @@ async function main() {
   initializeLanguages();
   await initParsers();
 
-  const report = await resolveCorpusReceivers(projectRoot);
+  // Spec 70 Item 1 — propagate a handle verdict proven at one site to sibling
+  // sites sharing the root. `resolveCorpusReceivers` applies the R3 propagation
+  // step when a dialect is named (mirroring the phase path's `applyR3FromSites`),
+  // so pass the detected dialect here — a null dialect still works, but the
+  // propagation is then gated off (a site can only be proven by a parse, and no
+  // dialect was named).
+  const detection = detectDialect(projectRoot);
+  console.log(`dialect: ${detection.dialect ?? 'null'}${detection.reason ? ` (${detection.reason})` : ''}`);
+
+  // Baseline: no dialect → propagation gated off (the pre-fix count). Reported
+  // so a single run attributes the movement (before → after) per corpus.
+  const baseline = await resolveCorpusReceivers(projectRoot, undefined, null);
+  const baselineDb = baseline.unprovenQueryReceivers.filter((s) => s.root === 'db');
+  console.log(`BASELINE (dialect=null, pre-fix) root 'db' unproven: ${baselineDb.length}`);
+
+  const report = await resolveCorpusReceivers(projectRoot, undefined, detection.dialect);
   const sites = report.unprovenQueryReceivers;
   const dbSites = sites.filter((s) => s.root === 'db');
   console.log(`total unproven sites: ${sites.length}`);
@@ -139,7 +155,7 @@ async function main() {
             typeAnnotations: new Map(),
             bindings: new Map(),
             withinFileProvenance: new Map(),
-            sqlDialect: null,
+            sqlDialect: detection.dialect,
             resolution: { dialect: 'ts', env },
           },
         );

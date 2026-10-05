@@ -170,17 +170,22 @@ carry a row in `specs/rule-authenticity-ledger.md` (running total 115 rows), and
 `registry-ledger-membership.test.ts` pins the bidirectional registry ↔ ledger
 membership so a silent re-removal would fail the suite.
 
-### 744 propagation — 846 `db`-rooted unproven sites close list-free
+### 744 propagation — 846 `db`-rooted unproven sites close list-free — **done**
 
-The next spec's candidate fix is **verdict propagation**, not a type-annotation
-manifest. On recall-protocol there are **846 `db`-rooted unproven sites**; of
-these **787 (93%)** have a `handle`-verdict sibling sharing the same root in the
-same file, so a verdict already proven at one site (via its SQL argument) can be
-carried to the sibling sites — closing the largest unproven population in the
-product with **no list, no manifest, and no type names**. The remaining **59**
-are type-only (no handle-verdict sibling), small enough that the type-annotation
-seam may never need building. This supersedes the type-annotation manifest as the
-candidate fix.
+The next spec's candidate fix was **verdict propagation**, not a type-annotation
+manifest: on recall-protocol there were **846 `db`-rooted unproven sites**, of
+which **787 (93%)** had a `handle`-verdict sibling sharing the same root in the
+same file. **Done** — Spec 70 Item 1. The Spec 69 §10 S5a enumerator
+(`collectUnprovenQueryReceivers` → `applySqlArgumentInference`) now applies the
+R3 propagation step, mirroring the phase model's `applyR3FromSites`, so a handle
+proven at one site carries to sibling sites sharing the root. Six-corpus
+`db`-rooted unproven after: recall-protocol **59** (846 → 59, the −787 exactly the
+propagatable population), endless-guessing **3** (23 → 3, postgresql), hhra-org
+**1** and knex **3** (gated by an ambiguous null dialect — honest abstention),
+blitz and primer-css **0**. The remaining 59 recall-protocol sites are type-only
+(a `D1Database`-typed parameter with no literal-SQL sibling), small enough that
+the type-annotation seam may never need building. Recorded in `CHANGELOG.md`
+("Handle verdicts propagate to sibling sites sharing a root").
 
 ### oracle-shortfalls — how the gate went green (a drift ratchet, re-recorded after two real fixes)
 

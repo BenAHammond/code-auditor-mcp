@@ -1188,7 +1188,7 @@ export function collectDbActivity(
  * `combineVerdicts`' `handle > not-handle > unproven` precedence lets the
  * sql-argument proof win. A receiver already in the map is left untouched.
  */
-function applySqlArgumentInference(
+export function applySqlArgumentInference(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,

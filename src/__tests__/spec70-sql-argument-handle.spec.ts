@@ -43,13 +43,14 @@ function unproven(
   path: string,
   source: string,
   provenance: ReadonlyMap<string, ProvenanceEvidence> = new Map(),
+  sqlDialect: 'sqlite' | null = 'sqlite',
 ) {
   const { ast, adapter, source: sourceCode } = parse(path, source);
   try {
     return collectUnprovenQueryReceivers(
       { filePath: path, sourceCode, ast, adapter },
       provenance,
-      { sqlDialect: 'sqlite' },
+      { sqlDialect },
     );
   } finally {
     ast.dispose?.();
@@ -94,6 +95,32 @@ describe('Spec 70 R3 — a parsed SQL argument makes the receiver a handle', () 
       expect(out).toHaveLength(1);
       expect(out[0].receiver).toBe('dataSource');
       expect(out[0].reason).not.toContain('SQL argument does not parse');
+    });
+
+    // Spec 70 Item 1 — a handle verdict proven at one site carries to sibling
+    // sites sharing the same root in the same scope. `db.prepare('SELECT …')`
+    // proves `db` via its SQL argument; `db.first()` / `db.all()` carry no SQL,
+    // so their receiver root is proven only by the propagated verdict.
+    it('a handle proven at one site propagates to sibling sites sharing the root', () => {
+      const src = [
+        'const db = getDb();',
+        'db.prepare("SELECT * FROM users");',
+        'db.first();',
+        'db.all();',
+      ].join('\n');
+      expect(unproven('/fixture/ts-sibling.ts', src)).toEqual([]);
+    });
+
+    it('propagation is gated on a named dialect — a null dialect leaves siblings unproven', () => {
+      const src = [
+        'const db = getDb();',
+        'db.prepare("SELECT * FROM users");',
+        'db.first();',
+        'db.all();',
+      ].join('\n');
+      const out = unproven('/fixture/ts-sibling-null.ts', src, new Map(), null);
+      expect(out).toHaveLength(2);
+      expect(out.map((s) => s.method)).toEqual(['first', 'all']);
     });
   });
 

@@ -34,6 +34,7 @@ import {
   getCallExpressionCallee,
   getMemberExpressionReceiver,
   extractMemberExpressionProperty,
+  applySqlArgumentInference,
   type ProvenanceEvidence,
 } from './provenance.js';
 import { DB_CALL_METHODS } from './tsEcosystem.js';
@@ -621,8 +622,19 @@ export function collectUnprovenQueryReceivers(
   }
   const { ast, adapter, sourceCode, filePath } = parsed;
   const bindings = buildBindingEnv(ast, adapter, sourceCode);
+  // Spec 70 Item 1 — verdict propagation: a root proven `handle` at one site (via
+  // a static SQL argument) carries to sibling sites sharing the root in the same
+  // scope, so `db.prepare('SELECT …').bind(x).first()` resolves `bind`/`first` a
+  // handle too, not unproven. The phase path does this in `classifyBuildProvenance`
+  // (step 3 R3); this legacy enumerator must mirror it so its unproven population
+  // agrees with production. R3 is TS-only (Go resolves cross-file), matching
+  // `applyR3FromSites` — `applySqlArgumentInference` returns its input unchanged
+  // for the Go adapter.
+  const r3Provenance = resolution?.sqlDialect
+    ? applySqlArgumentInference(ast, adapter, sourceCode, new Map(provenance), resolution.sqlDialect)
+    : provenance;
   const env: RootResolutionEnv = {
-    ...resolutionEnvBase(provenance, bindings, adapter, sourceCode),
+    ...resolutionEnvBase(r3Provenance, bindings, adapter, sourceCode),
     resolveImport: resolution?.filesByPath
       ? (source: string) => resolveSpecifier(source, filePath, resolution.filesByPath!, resolution.projectRoot)
       : undefined,
