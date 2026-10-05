@@ -1187,6 +1187,13 @@ export function collectDbActivity(
  * type-annotated receiver it now returns `unproven` (criterion 9), and
  * `combineVerdicts`' `handle > not-handle > unproven` precedence lets the
  * sql-argument proof win. A receiver already in the map is left untouched.
+ *
+ * @param ast - the parsed file AST whose call sites R3 folds over.
+ * @param adapter - the language adapter (name, extraction helpers) for the file.
+ * @param sourceCode - the raw file source, for callee/method text extraction.
+ * @param dbProvenanced - the running receiver→evidence map to extend in place.
+ * @param sqlDialect - the corpus's named SQL dialect (or null), threaded to the SQL parser.
+ * @returns the same `dbProvenanced` map, now also carrying every receiver R3 proved.
  */
 export function applySqlArgumentInference(
   ast: AST,

@@ -159,17 +159,21 @@ export const RAW_EXTENSIONS = [...SQL_EXTENSIONS, ...TOML_EXTENSIONS, ...PRISMA_
 // files (spec dumps) and reading them all would blow up the audit. Markup
 // extensions are added because they are real component files with styles.
 export const ALL_EXTENSIONS = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS, ...JSON_EXTENSIONS, ...GO_EXTENSIONS, ...CSS_EXTENSIONS, ...RAW_EXTENSIONS, ...MARKUP_EXTENSIONS];
-// Every extension the analysis layer understands as source — the language
-// registry's adapter union plus the raw and style-markup extensions no adapter
-// owns but the pipeline reads directly. Single source of truth for the style
-// extractor's "loud" default branch: an extension that reaches it unhandled is
-// recorded as an unread source (Spec 42 R2) *only* when it is NOT in this set,
-// so a genuinely unknown dialect (`.mdx`, `.md`, …) surfaces instead of a silent
-// zero while legitimate non-style source and `.css`/`.scss` (handled by the AST
-// pipeline) stay silent. Registry-driven: a parser registered with an adapter is
-// in scope here without a second edit to any extension list. Computed fresh each
-// call so it always reflects the current registry (and a caller that runs before
-// `initializeLanguages()` cannot cache an empty adapter union).
+/**
+ * Every extension the analysis layer understands as source — the language
+ * registry's adapter union plus the raw and style-markup extensions no adapter
+ * owns but the pipeline reads directly. Single source of truth for the style
+ * extractor's "loud" default branch: an extension that reaches it unhandled is
+ * recorded as an unread source (Spec 42 R2) *only* when it is NOT in this set,
+ * so a genuinely unknown dialect (`.mdx`, `.md`, …) surfaces instead of a silent
+ * zero while legitimate non-style source and `.css`/`.scss` (handled by the AST
+ * pipeline) stay silent. Registry-driven: a parser registered with an adapter is
+ * in scope here without a second edit to any extension list. Computed fresh each
+ * call so it always reflects the current registry (and a caller that runs before
+ * `initializeLanguages()` cannot cache an empty adapter union).
+ *
+ * @returns the adapter-union source extensions plus raw and style-markup, as a set.
+ */
 export function getSourceExtensions(): ReadonlySet<string> {
   return new Set<string>([
     ...LanguageRegistry.getInstance().getSupportedExtensions(),
