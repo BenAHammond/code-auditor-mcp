@@ -25,7 +25,7 @@
  * dispatch on, and nothing else.
  */
 
-import { DB_CALL_METHODS, ORM_METHODS } from './tsEcosystem.js';
+import { classifyRootIdentifier, type Binding, type RootResolutionEnv } from './receiverRoot.js';
 import type { ProvenanceEvidence } from './provenance.js';
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -92,6 +92,15 @@ export type ClassCall =
 export interface TsWithinFileProvenanceExtract {
   /** `extractDBProvenancedImports` — the DB-package import seeds. */
   readonly seeds: ReadonlyMap<string, ProvenanceEvidence>;
+  /**
+   * `buildBindingEnv` — the file's binding environment, projected at extract time
+   * so the classify arm can run the package discriminant (`classifyRootIdentifier`)
+   * over a receiver root's declaration with no AST. Carried whole rather than
+   * reconstructed: `buildBindingEnv` already serializes every binding as a
+   * `Binding`/`ValueDescriptor`, so re-deriving it from the propagation rules would
+   * be a lossy replica.
+   */
+  readonly bindings: ReadonlyMap<string, Binding>;
   /** `collectLocalFunctionNames` — S5f refuses to forward through these. */
   readonly localFunctions: ReadonlySet<string>;
   /** The propagation rules, in `walkAST` pre-order. */
@@ -138,32 +147,49 @@ function resolveReceiverRootText(desc: TsExpressionDescriptor | null): string | 
 }
 
 /**
- * Mirror of `dbMethodInMemberChain`: true when any property in the member chain is
- * a DB or ORM method. Walks outermost-first (the top member's property, then the
- * object's), matching the source descent via `children[0]`.
+ * Mirror of `resolveReceiverRoot`: resolve a member/call/identifier descriptor to
+ * its leftmost root identifier, descending through builder-chain calls and
+ * `this`/`super` first-segments. A `this`/`super` object collapses to `unproven`
+ * in the descriptor, so it is recovered from the member's folded `text` — the
+ * property after `this.`/`super.` is the same first segment `resolveReceiverRoot`
+ * returns. A literal receiver resolves to null, matching the source.
  */
-function dbMethodInMemberChain(desc: TsExpressionDescriptor): boolean {
-  let current: TsExpressionDescriptor | null = desc;
-  while (current && current.kind === 'member') {
-    if (current.property) {
-      const lower = current.property.toLowerCase();
-      if (DB_CALL_METHODS.has(lower) || ORM_METHODS.has(lower) || ORM_METHODS.has(current.property)) {
-        return true;
+function resolveDescriptorRoot(desc: TsExpressionDescriptor | null): string | null {
+  if (!desc) return null;
+  switch (desc.kind) {
+    case 'identifier':
+      return desc.name;
+    case 'member':
+      if (desc.receiver?.kind === 'unproven') {
+        const text = desc.text ?? '';
+        if ((text.startsWith('this.') || text.startsWith('super.')) && desc.property) {
+          return desc.property;
+        }
+        return null; // a literal receiver — not an identifier root
       }
-    }
-    current = current.receiver?.kind === 'member' ? current.receiver : null;
+      return resolveDescriptorRoot(desc.receiver);
+    case 'call':
+      return resolveDescriptorRoot(desc.callee);
+    case 'await':
+      return desc.operand ? resolveDescriptorRoot(desc.operand) : null;
+    default:
+      return null;
   }
-  return false;
 }
 
 /**
  * Mirror of `delegatesToProvenanced`: a call delegates when its callee is a
  * provenanced identifier, or a member whose receiver (full text or any dotted
- * segment) is provenanced *and* whose chain carries a DB/ORM method.
+ * segment) is provenanced *and* whose root's declaration is DB-shaped. The root
+ * disposition comes from `classifyRootIdentifier` with an empty provenance env, so
+ * the receiver's own declaration (a JS global / primitive / literal → not-handle)
+ * is consulted rather than its propagated provenance — `join` is
+ * `Array.prototype.join` and also `SQL JOIN`, so the method name cannot decide.
  */
 function delegatesToProvenanced(
   callee: TsExpressionDescriptor | null,
   provenanceMap: ReadonlyMap<string, ProvenanceEvidence>,
+  bindings: ReadonlyMap<string, Binding>,
 ): boolean {
   if (!callee) return false;
 
@@ -179,7 +205,15 @@ function delegatesToProvenanced(
       // Compound receivers ("env.DB", "db.users") — match any dotted segment.
       receiver.split('.').some((part) => provenanceMap.has(part));
     if (!receiverProvenanced) return false;
-    return dbMethodInMemberChain(callee);
+    const root = resolveDescriptorRoot(callee);
+    if (root === null) return false;
+    const env = {
+      provenance: new Map(),
+      bindings,
+      adapter: undefined,
+      sourceCode: '',
+    } as unknown as RootResolutionEnv;
+    return classifyRootIdentifier(root, env) !== 'not-handle';
   }
 
   return false;
@@ -373,7 +407,7 @@ function detectDbWrappersFromExtract(
       if (cc.kind === 'new') {
         return cc.ctorName !== null && provenanceMap.has(cc.ctorName);
       }
-      return cc.isD1Rest || delegatesToProvenanced(cc.callee, provenanceMap);
+      return cc.isD1Rest || delegatesToProvenanced(cc.callee, provenanceMap, extract.bindings);
     });
     if (isWrapper) {
       provenanceMap.set(cls.name, {
@@ -405,7 +439,7 @@ export function detectDbWrapperFunctionsFromExtract(
   for (const fn of extract.wrapperFunctions) {
     if (provenanceMap.has(fn.name)) continue;
     const isWrapper = fn.ownCalls.some(
-      (call) => call.isD1Rest || delegatesToProvenanced(call.callee, provenanceMap),
+      (call) => call.isD1Rest || delegatesToProvenanced(call.callee, provenanceMap, extract.bindings),
     );
     if (isWrapper) {
       provenanceMap.set(fn.name, {

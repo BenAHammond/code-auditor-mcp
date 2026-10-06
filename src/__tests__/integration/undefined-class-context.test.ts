@@ -50,8 +50,9 @@ const TSX_SRC = [
 // the undefined-class detector.
 const CSS_SRC = '.real-card { color: red; }\n';
 
-// A Sass indented-syntax file — a dialect the indexer cannot read, so it is
-// recorded in `style_unread_sources` as "unsupported style dialect: sass".
+// A Sass indented-syntax file — a dialect the indexer cannot read, so the
+// traverse phase's dialect walk records it as "unsupported style dialect: sass"
+// (a walk-level `unread-style-sources` reason, not the index-table half).
 const SASS_SRC = '.also-real-card\n  color: blue\n';
 
 beforeAll(async () => {

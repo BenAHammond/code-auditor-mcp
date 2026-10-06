@@ -59,32 +59,12 @@ describe('resolvePersistedIndexPath', () => {
     expect(resolvePersistedIndexPath(link)).toBe(resolvePersistedIndexPath(real));
   });
 
-  it('uses the project-local node_modules/.cache when the project has node_modules', () => {
+  it('never defaults into the project tree — a project with node_modules still gets the OS cache', () => {
+    // The old default wrote `<root>/node_modules/.cache/code-auditor` — inside the
+    // audited repo. That dirtied read-only corpora with tool scratch. A
+    // `node_modules` in the tree must NOT redirect the default back into it.
     const root = makeTempDir('ca-project-');
     fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
-    expect(resolvePersistedIndexPath(root)).toBe(
-      path.join(root, 'node_modules', '.cache', 'code-auditor', 'index.db')
-    );
-  });
-
-  it('scopes by project hash when node_modules is hoisted (ancestor)', () => {
-    const mono = makeTempDir('ca-mono-');
-    fs.mkdirSync(path.join(mono, 'node_modules'), { recursive: true });
-    const pkg = path.join(mono, 'packages', 'foo');
-    fs.mkdirSync(pkg, { recursive: true });
-    const hash = createHash('sha256').update(fs.realpathSync(pkg)).digest('hex').substring(0, 16);
-    expect(resolvePersistedIndexPath(pkg)).toBe(
-      path.join(mono, 'node_modules', '.cache', 'code-auditor', 'projects', hash, 'index.db')
-    );
-  });
-
-  it('skips a symlinked node_modules and falls back to the OS cache (Spec 61 R5.4)', () => {
-    const root = makeTempDir('ca-project-');
-    const realTarget = makeTempDir('ca-nm-target-');
-    // A `node_modules` that is a symlink points elsewhere on disk; following it
-    // would let a link redirect the cache root out of the project tree, so it
-    // must be skipped (lstat, not stat) and the OS cache used instead.
-    fs.symlinkSync(realTarget, path.join(root, 'node_modules'));
     const xdg = makeTempDir('ca-xdg-');
     process.env.XDG_CACHE_HOME = xdg;
     const hash = createHash('sha256').update(fs.realpathSync(root)).digest('hex').substring(0, 16);

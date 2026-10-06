@@ -551,6 +551,19 @@ function applyFailOnGates(
     }
   }
 
+  // Pipeline-failure gate — the audit pipeline itself threw (schema drift,
+  // DB write failure, …). One error, reported once by the runner; this exits
+  // non-zero (broken tool) so a swallowed pipeline throw can never read as a
+  // clean pass.
+  {
+    const diagnostics = result.metadata?.diagnostics ?? [];
+    const pipelineErrors = diagnostics.filter((d: any) => d.kind === 'pipeline-error');
+    if (pipelineErrors.length > 0) {
+      console.error(`Pipeline failure: ${pipelineErrors[0].message}`);
+      process.exit(1);
+    }
+  }
+
   // Zero-files gate — any enabled analyzer matching zero source files is a
   // dark-analyzer failure; fail the run so the bug can't hide.
   {
@@ -836,6 +849,18 @@ program
 
         if (blocking.length > 0) {
           process.exit(2);
+        }
+      }
+
+      // Pipeline-failure gate — the audit pipeline itself threw. One error,
+      // reported once by the runner; exit non-zero (broken tool) so a swallowed
+      // pipeline throw can never read as a clean pass.
+      {
+        const diagnostics = result.metadata?.diagnostics ?? [];
+        const pipelineErrors = diagnostics.filter((d: any) => d.kind === 'pipeline-error');
+        if (pipelineErrors.length > 0) {
+          console.error(`Pipeline failure: ${pipelineErrors[0].message}`);
+          process.exit(1);
         }
       }
 

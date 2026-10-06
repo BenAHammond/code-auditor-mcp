@@ -194,9 +194,16 @@ describe('Spec 69 R3 motivating fixtures — local binding resolution (#316)', a
 
     it('pins the defect: the producer reads `${safe}` as unescaped', async () => {
       const out = await calls('/fixture/r3-hoisted.ts', source);
-      expect(out).toHaveLength(1);
-      expect(out[0].hasSqlInjectionRisk).toBe(true);
-      expect(out[0].sqlEscaped).toBe(false);
+      // Spec 70 R3 deletes the method-name candidacy gate, so the untyped
+      // `keyword.replace(/'/g, "''")` — whose string argument `"''"` is not SQL —
+      // is now admitted as an unproven query beside the real `db.query`. The
+      // `sql-injection-risk` finding (next test) is unchanged: the extra unproven
+      // fact does not fire it.
+      expect(out).toHaveLength(2);
+      const query = out.find((q) => q.queryText.includes('SELECT'));
+      expect(query).toBeDefined();
+      expect(query!.hasSqlInjectionRisk).toBe(true);
+      expect(query!.sqlEscaped).toBe(false);
     });
 
     it('and the rule over-reports critical — FLIP to high when R3 resolves `safe`', async () => {

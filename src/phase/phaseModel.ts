@@ -384,7 +384,7 @@ async function buildFacts(
     const twTokens = tokensToStyleTokens(loadTailwindConfig(projectRoot), projectRoot);
     if (twTokens.length > 0) {
       const acc = (facts.get('style-declarations') as StyleDeclarationsFile[] | undefined) ?? [];
-      acc.push({ declarations: [], tokens: twTokens, classUsage: [] });
+      acc.push({ declarations: [], tokens: twTokens, classUsage: [], unreadSources: [] });
       facts.set('style-declarations', acc);
     }
   }
@@ -425,12 +425,14 @@ async function buildFacts(
   }
 
   // Spec 70 — merge the traverse phase's walk-level unread reasons ahead of the
-  // corpus producer's table-derived content-level reasons (`<style lang>`). The
-  // walk-level half is the traverse's own read/dialect record; the table half is
-  // what `syncStyleIndex` still persists for embedded style blocks.
+  // corpus producer's fact-derived content-level reasons (`<style lang>`). The
+  // walk-level half is the traverse's own read/dialect record; the content-level
+  // half is what the `unread-style-sources` producer flattens from the markup
+  // `style-declarations` fact (`extractStylesMarkup` collects it during its
+  // `extractDeclarations` pass — no `style_unread_sources` table re-read).
   if (needed.has('unread-style-sources')) {
-    const table = (facts.get('unread-style-sources') as UnreadStyleSourceFact[] | undefined) ?? [];
-    facts.set('unread-style-sources', [...unread, ...table]);
+    const content = (facts.get('unread-style-sources') as UnreadStyleSourceFact[] | undefined) ?? [];
+    facts.set('unread-style-sources', [...unread, ...content]);
   }
 
   // Spec 70 2c — the fifth receiver consumer (a plain reduction, not a registry

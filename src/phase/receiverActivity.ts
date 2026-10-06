@@ -24,9 +24,10 @@
  * no bindings/activity still yields a fragment so the corpus producer sees the file).
  */
 
-import type { AstFile, ReceiverActivityFact, TsBindingFact } from './types.js';
+import type { AstFile, ReceiverActivityFact } from './types.js';
 import { buildBindingEnv } from '../analyzers/receiverRoot.js';
 import { collectDbActivity, extractR3Sites } from '../analyzers/provenance.js';
+import { bindingToFact } from './withinFileProvenance.js';
 
 /**
  * One file's receiver-resolution inputs, as a single `ReceiverActivityFact`.
@@ -44,13 +45,7 @@ export function extractReceiverActivity(file: AstFile): ReceiverActivityFact[] {
     {
       file: file.file,
       format: file.format as 'typescript' | 'tsx' | 'javascript',
-      bindings: [...bindings.entries()].map(([name, b]): TsBindingFact => ({
-        name,
-        kind: b.kind,
-        ...(b.source !== undefined ? { source: b.source } : {}),
-        ...(b.typeText !== undefined ? { typeText: b.typeText } : {}),
-        ...(b.value !== undefined ? { value: b.value } : {}),
-      })),
+      bindings: [...bindings.entries()].map(([name, b]) => bindingToFact(name, b)),
       r3Sites: r3Sites.map((s) => ({
         root: s.root,
         receiver: s.receiver,

@@ -54,7 +54,6 @@ import {
   extractMemberExpressionProperty,
 } from '../analyzers/provenance.js';
 import { resolveReceiverRoot } from '../analyzers/receiverRoot.js';
-import { DB_CALL_METHODS, isOrmMethod } from '../analyzers/tsEcosystem.js';
 import { DEFAULT_SCHEMA_CONFIG, SQL_TAG_NAMES } from '../analyzers/universal/schema/config.js';
 import { hasSqlTag } from '../analyzers/universal/schema/discovery.js';
 import type { TableReference } from '../analyzers/universal/schema/types.js';
@@ -164,8 +163,6 @@ export function extractSchemaUsageCandidates(file: AstFile): SchemaUsageCandidat
     if (callee.type !== 'member_expression' && callee.type !== 'selector_expression') continue;
     const method = extractMemberExpressionProperty(callee, adapter, source);
     if (!method) continue;
-    const m = method.toLowerCase();
-    if (!DB_CALL_METHODS.has(m) && !isOrmMethod(method)) continue;
     const root = resolveReceiverRoot(callee, adapter, source);
     if (root === null) continue;
     const sqlArgument = getFirstStringArgument(callNode, adapter, source);

@@ -1075,7 +1075,6 @@ const SQL_STYLE_GET_HASH = 'SELECT content_hash FROM style_declarations WHERE fi
 const SQL_STYLE_DEL_DECL = 'DELETE FROM style_declarations WHERE file_path = ?';
 const SQL_STYLE_DEL_USAGE = 'DELETE FROM style_class_usage WHERE file_path = ?';
 const SQL_STYLE_DEL_TOKEN = 'DELETE FROM style_tokens WHERE file_path = ?';
-const SQL_STYLE_DEL_UNREAD = 'DELETE FROM style_unread_sources WHERE file_path = ?';
 const SQL_STYLE_DEL_CLASS = 'DELETE FROM style_defined_classes WHERE file_path = ?';
 const SQL_STYLE_INS_DECL = 'INSERT INTO style_declarations (property, raw_value, normalized_value, mechanism, file_path, line, context, variant_context, token_ref, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
 const SQL_STYLE_INS_CLASS = 'INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)';
@@ -1107,8 +1106,8 @@ function getStyleHash(
 }
 
 /** Prepare the statements shared by both style inserters (source CSS-in-JS and
- *  compiled CSS). Each site layers its own extras (`getHash`/`delUnread` for the
- *  source path, `insTok` for the compiled-CSS path) on top of this common set. */
+ *  compiled CSS). Each site layers its own extras (`getHash` for the source path,
+ *  `insTok` for the compiled-CSS path) on top of this common set. */
 function prepareCommonStyleStatements(
   rawDb: { prepare(sql: string): StyleWriteStmt },
 ): Record<string, StyleWriteStmt> {
@@ -1166,7 +1165,6 @@ function insertSourceStyleFacts(
   const stmts = {
     ...prepareCommonStyleStatements(rawDb),
     getHash: rawDb.prepare(SQL_STYLE_GET_HASH),
-    delUnread: rawDb.prepare(SQL_STYLE_DEL_UNREAD),
   };
 
   let contributed = false;
@@ -1181,12 +1179,11 @@ function insertSourceStyleFacts(
       if (stored?.content_hash === facts.contentHash) return;
     }
 
-    // Delete stale rows — all five tables, mirroring the old deleteFileEntries
-    // so a file that *lost* its styles also loses its stale unread-sources row.
+    // Delete stale rows — all four tables, mirroring the old deleteFileEntries
+    // so a file that *lost* its styles also loses its stale rows.
     runStyleWrite(stmts, 'delDecl', [filePath]);
     runStyleWrite(stmts, 'delUsage', [filePath]);
     runStyleWrite(stmts, 'delTok', [filePath]);
-    runStyleWrite(stmts, 'delUnread', [filePath]);
     runStyleWrite(stmts, 'delClass', [filePath]);
 
     // Insert declarations (and their defined-class catalog entries).

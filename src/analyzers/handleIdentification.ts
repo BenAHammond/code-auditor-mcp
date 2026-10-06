@@ -46,6 +46,7 @@ import {
   buildGoImportMap,
   buildGoBindingEnv,
   classifyGoBindings,
+  describeGoUnprovenCause,
   type GoResolutionEnv,
   type GoBinding,
 } from '../languages/go/goResolution.js';
@@ -236,7 +237,7 @@ export interface ResolutionImplementation {
    * adapter, no source text. `extraSeeds` carries names provenanced *outside*
    * this file (cross-file import resolution); `goPackageBindings` carries Go
    * package-scope symbols from sibling `.go` files. `classify(extract(ast, …))`
-   * must equal the legacy `withinFileProvenance(ast, …)` for the same file.
+   * must equal `computeTsWithinFileProvenance(ast, …)` for the same file.
    */
   classify(
     extract: WithinFileProvenanceExtract,
@@ -407,7 +408,11 @@ const typescriptResolution: ResolutionImplementation = {
       return { root: site.root, disposition: 'unproven', reason: 'missing TypeScript resolution environment' };
     }
     const env = facts.resolution.env;
-    const disposition = classifyRootIdentifier(site.root, env, 0, { thisField: site.thisField });
+    const classified = classifyRootIdentifier(site.root, env, 0, { thisField: site.thisField });
+    // The package discriminant (not the method name) decides the disposition: an
+    // unrecognized root is `unproven` (cannot-fire), never downgraded by method
+    // shape — `join` is `Array.prototype.join` and also `SQL JOIN`.
+    const disposition = classified;
     return {
       root: site.root,
       disposition,
@@ -436,13 +441,17 @@ const goResolution: ResolutionImplementation = {
       return { root: site.root, disposition: 'unproven', reason: 'missing Go resolution environment' };
     }
     const env = facts.resolution.env;
-    const disposition = classifyGoRootIdentifier(site.root, env);
+    const classified = classifyGoRootIdentifier(site.root, env);
+    // The package discriminant (not the method name) decides the disposition: an
+    // unrecognized root is `unproven` (cannot-fire), never downgraded by method
+    // shape — `join` is `Array.prototype.join` and also `SQL JOIN`.
+    const disposition = classified;
     return {
       root: site.root,
       disposition,
       reason:
         disposition === 'unproven'
-          ? describeUnprovenCause(site.root, env.provenance, env.bindings.get(site.root), GO_FIELD_WORDING)
+          ? describeGoUnprovenCause(site.root, env)
           : disposition,
     };
   },
@@ -460,7 +469,7 @@ const goResolution: ResolutionImplementation = {
       throw new Error(`Go resolution classified a ${extract.kind} within-file extract`);
     }
     // `classifyGoBindings` seeds DB packages + classifies every binding; the
-    // cross-file `extraSeeds` merge is the one step the legacy `withinFileProvenance`
+    // cross-file `extraSeeds` merge is the one step `computeTsWithinFileProvenance`
     // applied *outside* `buildGoWithinFileProvenance`, so it is reproduced here.
     const prov = classifyGoBindings(extract.projection.imports, extract.projection.bindings, goPackageBindings);
     for (const [name, evidence] of extraSeeds) {
@@ -566,7 +575,7 @@ export function identifyHandle(site: CallSite, facts: ResolutionFacts): HandleVe
 // ─── External classifier (post-audit; never part of the walk) ────────────────
 //
 // The external classifier is a third way to attribute handle-ness, but it is not
-// consulted during an audit: `identifyHandle`, `collectUnprovenQueryReceivers`,
+// consulted during an audit: `identifyHandle`, `classifyUnprovenQueryReceivers`,
 // and everything downstream stay synchronous. A separate `code-audit classify`
 // command reads the persisted `unproven` dispositions, calls a provider, and
 // folds the result through {@link combineVerdicts} with the same invariant. Only

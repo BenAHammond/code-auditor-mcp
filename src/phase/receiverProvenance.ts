@@ -9,15 +9,17 @@
  * receiver consumers read, plus the unresolved DB-looking imports the
  * `cannot-fire` diagnostic names.
  *
- * The fixed point mirrors `resolveReceiverProvenance` (receiverResolution.ts)
- * Phase 1/2/3 + the unresolved-import pass, but rehydrates the extract
- * projections through the same seam the file producer extracted them with
+ * The fixed point mirrors the legacy resolver's Phase 1/2/3 + the
+ * unresolved-import pass, but rehydrates the extract projections through the
+ * same seam the file producer extracted them with
  * (`RESOLUTION_IMPLEMENTATIONS[format].classify(extract, …)`), so the result is
- * byte-identical to the legacy `withinFileProvenance`/`exportedProvenancedNames`
- * by construction. The parity assertion (`spec70-…-parity.spec.ts`) pins
- * `computeReceiverProvenance(…) ≡ resolveCorpusReceivers(…)` over the six
- * corpora while both exist; after the second parse is deleted, only the
- * phase-side path remains.
+ * byte-identical to `computeTsWithinFileProvenance` (the within-file fixed point
+ * kept in receiverResolution.ts as the parity reference) by construction. The
+ * legacy `resolveCorpusReceivers` path and its
+ * `spec70-receiver-provenance-parity.spec.ts` are deleted; the remaining pins
+ * are `spec70-ts-within-file-parity.spec.ts`,
+ * `spec70-classify-build-provenance-parity.spec.ts`, and
+ * `spec70-unresolved-query-parity.spec.ts`.
  */
 
 import path from 'node:path';
@@ -30,6 +32,7 @@ import type {
   GoPackageBindingFact,
   GoPackageBinding,
   ProvenanceEvidenceFact,
+  TsBindingFact,
 } from './types.js';
 import type { ProvenanceEvidence, R3Site } from '../analyzers/provenance.js';
 import {
@@ -65,6 +68,21 @@ export function evidenceFromFact(f: ProvenanceEvidenceFact): ProvenanceEvidence 
   return f.packageName === undefined ? base : { ...base, packageName: f.packageName };
 }
 
+/** Rehydrate a `TsBindingFact` back to the `Binding` interface. Exported so the
+ *  `receiver-activity` rehydrator (receiverConsumers.ts) reads bindings through the
+ *  *same* mapping — one rehydration, not two that could drift. The two are
+ *  structurally identical (`TsBindingFact` is the §4 projection of `Binding`, whose
+ *  `value` is already the serializable `ValueDescriptor`), so the reconstruction is
+ *  lossless. */
+export function bindingFromFact(b: TsBindingFact): Binding {
+  return {
+    kind: b.kind,
+    ...(b.source !== undefined ? { source: b.source } : {}),
+    ...(b.typeText !== undefined ? { typeText: b.typeText } : {}),
+    ...(b.value !== undefined ? { value: b.value } : {}),
+  };
+}
+
 /** Rehydrate a `GoPackageBindingDetail` back to the `GoBinding` interface the Go
  *  classifier reads. The two are structurally identical (the detail is the §4
  *  serializable projection of the interface; `GoPackageValueDescriptor` mirrors
@@ -80,6 +98,7 @@ function goBindingFromFact(b: GoPackageBinding['binding']): GoBinding {
 function tsExtractFromFact(p: TsWithinFileProvenanceProjection): TsWithinFileProvenanceExtract {
   return {
     seeds: new Map(p.seeds.map((e) => [e.identifier, evidenceFromFact(e)])),
+    bindings: new Map(p.bindings.map((b) => [b.name, bindingFromFact(b)])),
     localFunctions: new Set(p.localFunctions),
     propagationRules: p.propagationRules,
     wrapperFunctions: p.wrapperFunctions,

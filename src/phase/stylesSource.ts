@@ -45,5 +45,8 @@ export function extractStylesSource(file: AstFile): StyleDeclarationsFile[] {
     declarations: extractDeclarations(file.file, file.adapter, file.source, file.ast, tailwindTokens),
     tokens: [],
     classUsage: extractClassUsage(file.file, file.source),
+    // No content-level `<style lang>` reason exists in TS/JS CSS-in-JS source —
+    // that reason is markup-only, produced by `extractStylesMarkup`.
+    unreadSources: [],
   }];
 }

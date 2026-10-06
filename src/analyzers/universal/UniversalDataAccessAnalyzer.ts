@@ -18,16 +18,19 @@ import {
   type ProvenanceEvidence,
   type DetectionMode,
 } from '../provenance.js';
-import { DB_CALL_METHODS, isOrmMethod } from '../tsEcosystem.js';
+import { stripSqlQuotes } from '../sqlLiteral.js';
+import { isOrmMethod } from '../tsEcosystem.js';
 import { identifyHandle, type HandleVerdict } from '../handleIdentification.js';
 import {
   buildBindingEnv,
   resolveReceiverRoot,
+  isDbShapedRoot,
   type RootResolutionEnv,
 } from '../receiverRoot.js';
 import {
   buildGoBindingEnv,
   buildGoImportMap,
+  classifyGoRootIdentifier,
   type GoResolutionEnv,
 } from '../../languages/go/goResolution.js';
 import {
@@ -497,7 +500,7 @@ function isPrismaObjectForm(
  * extraction-completeness gate (scripts/verify-extraction-completeness.ts) for
  * the pinned residual.
  */
-function isQueryBuilderShape(
+export function isQueryBuilderShape(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
@@ -603,16 +606,19 @@ function handleVerdictForCall(
 
   const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
   if (!method) return null;
-  const m = method.toLowerCase();
-  // `DB_CALL_METHODS` is all-lowercase (match `m`); `isOrmMethod` matches
-  // camelCase ORM verbs (`findUnique`, `selectFrom`, …), so it must read the RAW
-  // name — lowercasing first turned `findUnique` into `findunique` and dropped
-  // every camelCase ORM finder (the same false negative `dbMethodInMemberChain`
-  // guarded against by testing `ORM_METHODS.has(propName)`).
-  if (!DB_CALL_METHODS.has(m) && !isOrmMethod(method)) return null;
-
   const root = resolveReceiverRoot(callee, adapter, sourceCode);
   if (root === null) return null;
+  const sqlArg = extractStaticSql(callNode, adapter, sourceCode);
+  const thisRooted = receiverIsThisRooted(callee, adapter);
+  // Candidacy is the package discriminant — the receiver root's disposition, not
+  // the method name (`join` is `Array.prototype.join` and also `SQL JOIN`). A
+  // call is query-shaped when its receiver resolves handle/unproven, OR its
+  // argument is a static SQL literal (which `identifyHandle`'s sql-argument arm
+  // can prove). A provably non-DB receiver (JS global, primitive, Node builtin)
+  // with no static SQL is rejected here. A `this.<field>` root is a field
+  // reference, not an ambient global, so it stays `unproven` (admitted) rather
+  // than dropped as a phantom global.
+  if (sqlArg === null && !isDbShapedRoot(root, handleEnv, { thisField: thisRooted })) return null;
   const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
 
   return identifyHandle(
@@ -621,8 +627,8 @@ function handleVerdictForCall(
       root,
       receiver,
       method,
-      sqlArgument: extractStaticSql(callNode, adapter, sourceCode),
-      thisField: receiverIsThisRooted(callee, adapter),
+      sqlArgument: sqlArg,
+      thisField: thisRooted,
     },
     facts(),
   );
@@ -631,11 +637,11 @@ function handleVerdictForCall(
 /**
  * The Go arm of the admission seam: resolve a Go `selector_expression` call
  * (`db.Query(…)`) through `identifyHandle` with Go's own resolution environment,
- * instead of abstaining. The candidate *filter* (`DB_CALL_METHODS`) is the same
- * query-shape vocabulary `collectGoUnprovenQueryReceivers` applies; handle-ness
- * is then decided once by the seam (`handle` via provenance seed, `unproven` via
- * an unrecognized package, `not-handle` via a non-DB binding), never by a name
- * list here.
+ * instead of abstaining. Candidacy is a string-resolvable argument with a
+ * query-shaped-method backstop for the no-argument case; handle-ness is then
+ * decided once by the seam (`handle` via provenance seed, `unproven` via an
+ * unrecognized package, `not-handle` via a non-DB binding), never by a name list
+ * here.
  */
 function goHandleVerdictForCall(
   node: ASTNode,
@@ -650,11 +656,15 @@ function goHandleVerdictForCall(
 
   const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
   if (!method) return null;
-  const m = method.toLowerCase();
-  if (!DB_CALL_METHODS.has(m)) return null;
-
   const root = resolveReceiverRoot(callee, adapter, sourceCode);
   if (root === null) return null;
+  const sqlArg = extractGoStaticSql(node, adapter, sourceCode, goEnv);
+  // Candidacy is the package discriminant — the receiver root's disposition, not
+  // the method name. A call is query-shaped when its receiver resolves
+  // handle/unproven, OR its argument is a static SQL literal (which
+  // `identifyHandle`'s sql-argument arm can prove). A provably non-DB receiver
+  // (stdlib package, primitive, non-DB binding) with no static SQL is rejected.
+  if (sqlArg === null && classifyGoRootIdentifier(root, goEnv) === 'not-handle') return null;
   const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
 
   return identifyHandle(
@@ -663,7 +673,7 @@ function goHandleVerdictForCall(
       root,
       receiver,
       method,
-      sqlArgument: extractStaticSql(node, adapter, sourceCode),
+      sqlArgument: sqlArg,
       thisField: false,
     },
     {
@@ -825,9 +835,49 @@ function extractStaticSql(
       if (t === 'call_expression' && isTaggedTemplateSqlCall(arg, adapter, sourceCode, SQL_TAG_NAMES)) {
         return extractStaticSql(arg, adapter, sourceCode);
       }
-      return null; // first arg is not a literal → cannot-fire
+      // ctx-first methods (Go `Query(ctx, sql)`, pgx `Query(ctx, "SELECT…")`)
+      // carry a leading `context.Context`/options argument. Skip past it to the
+      // first static string: a non-literal argument is not itself `cannot-fire`,
+      // it may sit *ahead* of the SQL argument (Spec 70 R2, pgx/sqlc precision).
+      continue;
     }
     return null;
+  }
+  return null;
+}
+
+/** The static SQL argument of a Go call, resolving a sqlc-generated package-level
+ *  const identifier (`q.db.QueryContext(ctx, getAllUsers)` where `getAllUsers` is
+ *  `const getAllUsers = `-- name: GetAllUsers :many\nSELECT …``) to its literal.
+ *  The literal path is {@link extractStaticSql} (already ctx-first); this adds the
+ *  one Go-only step — an identifier argument resolved through the file's `const`
+ *  bindings — so sqlc's SQL reaches the parser instead of surfacing `cannot-fire`.
+ *  Returns null when the call carries no static SQL (a ctx/options-only argument
+ *  list, or an identifier that is not a const literal). */
+function extractGoStaticSql(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  goEnv: GoResolutionEnv | undefined,
+): string | null {
+  const literal = extractStaticSql(node, adapter, sourceCode);
+  if (literal !== null) return literal;
+  if (!goEnv || adapter.name !== 'go') return null;
+  const children = adapter.getChildren(node);
+  const args = children.find((c) => adapter.getNodeType(c) === 'argument_list');
+  if (!args) return null;
+  for (const arg of adapter.getChildren(args)) {
+    const t = adapter.getNodeType(arg);
+    if (t === '(' || t === ')' || t === ',') continue;
+    if (t !== 'identifier') continue; // ctx/options/other — skip
+    const name = adapter.getNodeText(arg, sourceCode);
+    if (!name) continue;
+    const binding = goEnv.bindings.get(name);
+    if (binding?.kind !== 'const' || !binding.value) continue;
+    const v = binding.value;
+    if (v.type === 'interpreted_string_literal' || v.type === 'raw_string_literal') {
+      return stripSqlQuotes(v.text, { raw: v.type === 'raw_string_literal' });
+    }
   }
   return null;
 }
@@ -842,26 +892,20 @@ function isSqlStringLiteralType(type: string): boolean {
 }
 
 /** Unquote a string/template literal node's text; null when the template is
- *  dynamic (carries a `${…}` substitution). */
+ *  dynamic (carries a `${…}` substitution). Go `raw_string_literal`s are literal
+ *  (no escapes) and pass `raw: true` so their backticks are not un-escaped. */
 function staticLiteralText(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
 ): string | null {
-  if (adapter.getNodeType(node) === 'template_string') {
+  const nodeType = adapter.getNodeType(node);
+  if (nodeType === 'template_string') {
     const children = adapter.getChildren(node) ?? [];
     if (children.some((c) => adapter.getNodeType(c) === 'template_substitution')) return null;
   }
   const raw = adapter.getNodeText(node, sourceCode) ?? '';
-  return stripSqlQuotes(raw);
-}
-
-/** Strip the surrounding quote delimiters of a string/template literal. */
-function stripSqlQuotes(text: string): string {
-  if (text.length >= 2 && (text[0] === '"' || text[0] === "'" || text[0] === '`')) {
-    return text.slice(1, -1);
-  }
-  return text;
+  return stripSqlQuotes(raw, { raw: nodeType === 'raw_string_literal' });
 }
 
 /** The explicit lowercased column list of a raw-SQL INSERT/REPLACE, or null for
@@ -3629,28 +3673,46 @@ function isBoundIdentifierCall(node: ASTNode, scan: DataAccessScanContext): bool
   return !!name && handleEnv.bindings.has(name);
 }
 
-/** True when `node` is a member/selector call with a DB/ORM method and a resolvable
- *  receiver root — the structural superset of `handleVerdictForCall`'s member arm
- *  (and Go's selector arm, which is the same shape minus the ORM method set). */
+/** True when `node` is a member/selector call whose receiver root is DB-shaped
+ *  (handle or unproven) or that carries a static SQL argument — the structural
+ *  superset of `handleVerdictForCall`'s member arm (and Go's selector arm, which
+ *  is the same shape). The package discriminant — not the method name — admits a
+ *  receiver (`join` is `Array.prototype.join` and also `SQL JOIN`); the empty
+ *  provenance of the candidate scan makes more roots `unproven`, so this stays a
+ *  strict superset of the corpus-side re-fold. */
 function isMemberShapeCall(node: ASTNode, scan: DataAccessScanContext): boolean {
-  const { adapter, sourceCode } = scan;
+  const { adapter, sourceCode, handleEnv, goEnv } = scan;
   if (adapter.getNodeType(node) !== 'call_expression') return false;
   const callee = getCallExpressionCallee(node, adapter);
   if (!callee || (callee.type !== 'member_expression' && callee.type !== 'selector_expression')) return false;
-  const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
-  if (!method) return false;
-  if (!DB_CALL_METHODS.has(method.toLowerCase()) && !isOrmMethod(method)) return false;
-  return resolveReceiverRoot(callee, adapter, sourceCode) !== null;
+  const root = resolveReceiverRoot(callee, adapter, sourceCode);
+  if (root === null) return false;
+  const sqlArg = adapter.name === 'go'
+    ? extractGoStaticSql(node, adapter, sourceCode, goEnv)
+    : extractStaticSql(node, adapter, sourceCode);
+  if (sqlArg === null) {
+    return adapter.name === 'go'
+      ? !!goEnv && classifyGoRootIdentifier(root, goEnv) !== 'not-handle'
+      : !!handleEnv && isDbShapedRoot(root, handleEnv, { thisField: receiverIsThisRooted(callee, adapter) });
+  }
+  return true;
 }
 
 /** True when `node` is a template literal whose enclosing call is a bound-identifier
  *  or member-shape call — the raw-side superset of `handleVerdictForCall`'s template
  *  branch (`callNode = enclosingCallOf(template)`). */
 function isTemplateOfDbCall(node: ASTNode, scan: DataAccessScanContext): boolean {
-  const { adapter } = scan;
+  const { adapter, sourceCode, config } = scan;
   if (!isTemplateLiteral(node, adapter)) return false;
   const callNode = enclosingCallOf(node, adapter);
   if (!callNode) return false;
+  // A tagged template (`this.sql`…``, `sql`…``) carries its template as its own
+  // body, not as a template *argument* to a DB call. The tag is already a
+  // candidate via `isTaggedTemplateSqlCall`; re-admitting the body here would
+  // double-discover the site and let the body (method `unknown`) shadow the tag
+  // (method `sql`) in line dedup.
+  const tagNames = config.sqlTagNames ?? SQL_TAG_NAMES;
+  if (isTaggedTemplateSqlCall(callNode, adapter, sourceCode, tagNames)) return false;
   return isBoundIdentifierCall(callNode, scan) || isMemberShapeCall(callNode, scan);
 }
 
@@ -3720,13 +3782,16 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
     if (!callee || callee.type !== 'selector_expression') return NULL_HANDLE_IDENTITY;
     const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
     if (!method) return NULL_HANDLE_IDENTITY;
-    if (!DB_CALL_METHODS.has(method.toLowerCase())) return NULL_HANDLE_IDENTITY;
     const root = resolveReceiverRoot(callee, adapter, sourceCode);
     if (root === null) return NULL_HANDLE_IDENTITY;
+    const sqlArg = extractGoStaticSql(node, adapter, sourceCode, scan.goEnv);
+    if (sqlArg === null && (!scan.goEnv || classifyGoRootIdentifier(root, scan.goEnv) === 'not-handle')) {
+      return NULL_HANDLE_IDENTITY;
+    }
     const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
     return {
       calleeType: 'member', name: null, root, receiver, method, thisField: false,
-      sqlArg: extractStaticSql(node, adapter, sourceCode),
+      sqlArg,
       siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
     };
   }
@@ -3753,14 +3818,18 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
   }
   const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
   if (!method) return NULL_HANDLE_IDENTITY;
-  if (!DB_CALL_METHODS.has(method.toLowerCase()) && !isOrmMethod(method)) return NULL_HANDLE_IDENTITY;
   const root = resolveReceiverRoot(callee, adapter, sourceCode);
   if (root === null) return NULL_HANDLE_IDENTITY;
+  const sqlArg = extractStaticSql(callNode, adapter, sourceCode);
+  const thisRooted = receiverIsThisRooted(callee, adapter);
+  if (sqlArg === null && (!scan.handleEnv || !isDbShapedRoot(root, scan.handleEnv, { thisField: thisRooted }))) {
+    return NULL_HANDLE_IDENTITY;
+  }
   const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
   return {
     calleeType: 'member', name: null, root, receiver, method,
-    thisField: receiverIsThisRooted(callee, adapter),
-    sqlArg: extractStaticSql(callNode, adapter, sourceCode),
+    thisField: thisRooted,
+    sqlArg,
     siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
   };
 }
@@ -3819,7 +3888,9 @@ function buildDataAccessCallCandidate(
   const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
   if (!nodeText || nodeText.trim().length < 10) return null;
 
-  const sqlArg = extractStaticSql(node, adapter, sourceCode);
+  const sqlArg = adapter.name === 'go'
+    ? extractGoStaticSql(node, adapter, sourceCode, scan.goEnv)
+    : extractStaticSql(node, adapter, sourceCode);
   const isOrmCall = isOrmPattern(nodeText);
   const tagNames = config.sqlTagNames ?? SQL_TAG_NAMES;
   const isTaggedSqlCall = isTaggedTemplateSqlCall(node, adapter, sourceCode, tagNames);

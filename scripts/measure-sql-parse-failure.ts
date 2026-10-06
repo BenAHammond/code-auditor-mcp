@@ -28,6 +28,7 @@ import { LanguageRegistry } from '../src/languages/LanguageRegistry.js';
 import type { ASTNode, LanguageAdapter, AST } from '../src/languages/types.js';
 import type { Dialect } from '../src/mcp-tools/discoveryQueries.js';
 import { parseSql, parseSqlProgram } from '../src/languages/sql/sqlAst.js';
+import { stripSqlQuotes } from '../src/analyzers/sqlLiteral.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -46,14 +47,6 @@ const SQL_HEURISTIC =
 
 function looksLikeSql(text: string): boolean {
   return SQL_HEURISTIC.test(text.trim().replace(/^[\s;()]+/, ''));
-}
-
-/** Strip a single pair of surrounding quotes/backticks. */
-function unquote(text: string): string {
-  if (text.length >= 2 && (text[0] === '"' || text[0] === "'" || text[0] === '`')) {
-    return text.slice(1, -1);
-  }
-  return text;
 }
 
 /** The argument-list node type for a call, per format. */
@@ -82,7 +75,7 @@ function firstSqlArgument(node: ASTNode, adapter: LanguageAdapter, sourceCode: s
   for (const arg of adapter.getChildren(argsNode)) {
     if (arg.type === '(' || arg.type === ')' || arg.type === ',') continue;
     if (!types.has(arg.type)) return null;
-    return unquote(adapter.getNodeText(arg, sourceCode));
+    return stripSqlQuotes(adapter.getNodeText(arg, sourceCode), { raw: arg.type === 'raw_string_literal' });
   }
   return null;
 }

@@ -57,6 +57,7 @@ import { syncStyleIndex } from './styles/styleIndexer.js';
 
 
 import { CodeIndexDB } from './codeIndexDB.js';
+import { notifyLegacyIndexLocation } from './legacyIndexNotice.js';
 import { writeAuditToLedger, detectRunInput } from './ledger.js';
 
 // Pipeline imports (Spec 25 — pipeline replaces hand-rolled analyzer loop)
@@ -1330,8 +1331,12 @@ async function runPipelineStage(inputs: {
       if (error instanceof AuditAbortedError) {
         throw error;
       }
-      // Pipeline failure — populate error results for all pipeline analyzers.
-      // Exclude infrastructure visitors (function-index) that don't produce violations.
+      // Pipeline failure — one error, reported once below. Populate a `notRun`
+      // placeholder (NOT `visitor-ran` with zero files) for each pipeline analyzer
+      // so the zero-files diagnostic does not fan this single failure out into N
+      // "matched zero source files" warnings. Exclude infrastructure visitors
+      // (function-index) that don't produce violations. The single `pipeline-error`
+      // diagnostic below is the one signal the CLI gates on for a non-zero exit.
       const pipelineAnalyzerNames = new Set([
         ...pipelineVisitors.map(v => v.name),
         ...pipelineReducers.map(r => r.name),
@@ -1341,11 +1346,18 @@ async function runPipelineStage(inputs: {
       for (const name of pipelineAnalyzerNames) {
         if (!analyzerResults[name]) {
           analyzerResults[name] = {
-            ...makeEmptyAnalyzerResult(name, 0),
-            errors: [{ file: 'pipeline', error: (error as Error).message }],
+            violations: [],
+            executionTime: 0,
+            analyzerName: name,
+            status: { status: 'notRun', reason: `pipeline error: ${(error as Error).message}` },
           };
         }
       }
+      pipelineDiagnostics = [{
+        analyzerName: 'pipeline',
+        kind: 'pipeline-error',
+        message: (error as Error).message,
+      }];
       reportError(mergedOptions, error as Error, 'pipeline');
     }
   }
@@ -1806,6 +1818,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     const startCpu = process.cpuUsage();
 
     const root = path.resolve(mergedOptions.projectRoot || process.cwd());
+    // One-time notice for a legacy in-repo index location (`.code-index` /
+    // `node_modules/.cache/code-auditor`) left by a pre-move build — reported once,
+    // never deleted (see legacyIndexNotice.ts).
+    notifyLegacyIndexLocation(root);
     // Spec 44 — file accounting accumulator, owned by the run. Threaded through
     // discovery (full `all` scope) and the pipeline (stage 1/2) so every touched
     // file lands in exactly one terminal state and the balance can be asserted.
@@ -2325,25 +2341,29 @@ export function runZeroFilesDiagnostics(
     }
   }
 
-  // Pass 2: filesProcessed = 0 — a dark-analyzer failure regardless of errors.
-  // Visitors with declared extensions that matched zero files in the corpus are
-  // benign (converted to notRun by the pipeline), but a visitor that was dispatched
-  // files and still shows visitor-ran + 0 files is broken — whether it errored or
-  // silently returned.
+  // Pass 2: filesProcessed = 0 — a dark-analyzer failure. Visitors with declared
+  // extensions that matched zero files in the corpus are benign (converted to
+  // notRun by the pipeline), but a visitor that was dispatched files and still
+  // shows visitor-ran + 0 files is broken. When it errored, name the file(s) and
+  // error(s) — "check file extensions" is the wrong cause for a parse/visit error
+  // and would send the reader to look at configuration when a file failed.
   for (const [analyzerName, result] of Object.entries(analyzerResults)) {
     if (analyzerName === 'go' && hasGoFiles === false) continue;
     if (
       isVisitorStatus(result.status) && getFilesProcessed(result.status) === 0
     ) {
-      const errCount = (result as any).errors?.length ?? 0;
-      const errDetail = errCount > 0 ? ` (${errCount} file error(s))` : '';
+      const errs = (result as any).errors as Array<{ file: string; error: string }> | undefined;
+      const errDetail = errs && errs.length > 0
+        ? ` — ${errs.length} file error(s): ${errs.slice(0, 3).map((e) => `${e.file}: ${e.error}`).join('; ')}${errs.length > 3 ? ' …' : ''}`
+        : '';
       warnings.push({
         analyzerName,
         kind: 'zero-files',
-        message:
-          `⚠️  ${analyzerName} analyzer: filesProcessed = 0${errDetail}. ` +
-          `The analyzer ran but matched zero source files. Check file extensions, ` +
-          `scanner configuration, and project structure.`,
+        message: errDetail
+          ? `⚠️  ${analyzerName} analyzer: filesProcessed = 0${errDetail}.`
+          : `⚠️  ${analyzerName} analyzer: filesProcessed = 0. ` +
+            `The analyzer ran but matched zero source files. Check file extensions, ` +
+            `scanner configuration, and project structure.`,
       });
     }
   }

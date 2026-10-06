@@ -36,6 +36,7 @@ import type { AST, LanguageAdapter, ASTNode } from '../types.js';
 import { getRawNode } from '../tree-sitter/rawNode.js';
 import type { ProvenanceEvidence } from '../../analyzers/provenance.js';
 import databasePackages from './database-packages.json' with { type: 'json' };
+import stdlibPackages from './stdlib-packages.json' with { type: 'json' };
 
 /** The live tree-sitter node behind an `ASTNode` (adapter-internal only). */
 type RawNode = ReturnType<typeof getRawNode>;
@@ -50,6 +51,17 @@ type RawNode = ReturnType<typeof getRawNode>;
  * `classifyGoTypeText`), never a guessed `not-handle`.
  */
 export const GO_DB_PACKAGES: ReadonlySet<string> = new Set(databasePackages);
+
+/**
+ * Go standard-library import paths — the authoritative `go list std` snapshot
+ * (committed from `scripts/generate-go-stdlib.mjs`, not hand-edited). A receiver
+ * whose import path resolves to a stdlib package (`fmt`, `strings`, `net/http`,
+ * `reflect`, …) is `not-handle` — it cannot be a database client. This is the
+ * package discriminant's `not-handle` half for Go, replacing the deleted method-
+ * name surface: the *package* a receiver resolves to proves it is not a DB handle,
+ * never the method name (criterion: the method name cannot discriminate).
+ */
+export const GO_STDLIB_PACKAGES: ReadonlySet<string> = new Set(stdlibPackages);
 
 /** Unqualified builtin types that are definitively not a DB handle. */
 const GO_NON_HANDLE_TYPES: ReadonlySet<string> = new Set([
@@ -88,7 +100,8 @@ export type GoBindingKind =
   | 'field'
   | 'function'
   | 'method'
-  | 'type';
+  | 'type'
+  | 'const';
 
 /**
  * A serializable projection of a Go value/initializer expression — the structure
@@ -131,6 +144,14 @@ export interface GoBinding {
  * guarding against pathological nesting.
  */
 function describeGoValue(raw: RawNode, depth = 4): GoValueDescriptor {
+  // tree-sitter-go wraps even a single `const`/`var` value in an
+  // `expression_list` (`const x = `…`` → the `value` field is `expression_list`
+  // whose only named child is the `raw_string_literal`). Unwrap a one-element
+  // list so the descriptor carries the literal/expression itself, not the wrapper.
+  if (raw.type === 'expression_list') {
+    const children = raw.namedChildren ?? [];
+    if (children.length === 1) return describeGoValue(children[0], depth - 1);
+  }
   const child = (field: 'function' | 'operand' | 'type'): GoValueDescriptor | null => {
     if (depth <= 0) return null;
     const c = raw.childForFieldName(field);
@@ -300,6 +321,23 @@ export function buildGoBindingEnv(
         const nameNode = raw.childForFieldName('name');
         if (nameNode && !bindings.has(nameNode.text)) {
           bindings.set(nameNode.text, { kind: 'type' });
+        }
+        break;
+      }
+      case 'const_spec': {
+        // A package-level `const` — the sqlc-generated SQL surface: sqlc emits
+        // `const getAllUsers = `-- name: GetAllUsers :many\nSELECT …`` and the
+        // query method references it by identifier
+        // (`q.db.QueryContext(ctx, getAllUsers)`). The value is a literal; store
+        // it as a serializable descriptor so the analyzer can unquote it with
+        // `stripSqlQuotes` (raw strings are literal, interpreted strings un-escape).
+        const nameNode = raw.childForFieldName('name');
+        const valueNode = raw.childForFieldName('value');
+        if (nameNode && !bindings.has(nameNode.text)) {
+          bindings.set(nameNode.text, {
+            kind: 'const',
+            value: valueNode ? describeGoValue(valueNode) : undefined,
+          });
         }
         break;
       }
@@ -480,10 +518,15 @@ export function classifyGoRootIdentifier(
   switch (binding.kind) {
     case 'import': {
       const source = binding.source ?? '';
-      // A DB package proves handle; any other package is unrecognized, not a
-      // DB client, or a DB client we do not list — all `unproven` (cannot-fire),
-      // never a guessed `not-handle` (Spec 70 R4).
-      return GO_DB_PACKAGES.has(source) ? 'handle' : 'unproven';
+      // A DB package proves handle; a stdlib package proves not-handle (it cannot
+      // be a DB client); any other package is unrecognized, not a DB client, or a
+      // DB client we do not list — all `unproven` (cannot-fire), never a guessed
+      // `not-handle` (Spec 70 R4).
+      return GO_DB_PACKAGES.has(source)
+        ? 'handle'
+        : GO_STDLIB_PACKAGES.has(source)
+          ? 'not-handle'
+          : 'unproven';
     }
     case 'variable':
     case 'field':
@@ -502,6 +545,12 @@ export function classifyGoRootIdentifier(
     case 'type':
       // A local type name is definitively not a DB handle (unless provenanced,
       // checked above).
+      return 'not-handle';
+    case 'const':
+      // A `const` can only hold a compile-time literal (string/number/bool),
+      // never a DB handle, so it is definitively not a handle (unless provenanced,
+      // checked above). The sqlc SQL const reaches the parser via the SQL-argument
+      // source's `extractStaticSql` const resolution, not via this classifier.
       return 'not-handle';
   }
 }
@@ -547,6 +596,7 @@ export function classifyGoTypeText(
     const source = resolvePackage(pkgName, env);
     if (source === null) return 'unproven'; // package not imported → unknown
     if (GO_DB_PACKAGES.has(source)) return 'handle';
+    if (GO_STDLIB_PACKAGES.has(source)) return 'not-handle'; // stdlib → not a DB client
     return 'unproven'; // unrecognized package → cannot-fire (Spec 70 R4)
   }
 
@@ -586,7 +636,10 @@ function classifyGoValue(
       if (root && env.provenance.has(root)) return 'handle';
       const b = env.bindings.get(root);
       if (b && b.kind === 'import') {
-        return GO_DB_PACKAGES.has(b.source ?? '') ? 'handle' : 'unproven';
+        const source = b.source ?? '';
+        if (GO_DB_PACKAGES.has(source)) return 'handle';
+        if (GO_STDLIB_PACKAGES.has(source)) return 'not-handle';
+        return 'unproven';
       }
       return 'unproven';
     }
@@ -628,6 +681,140 @@ function classifyGoValue(
   }
 
   return 'unproven';
+}
+
+// ── Unproven reason (Go) ─────────────────────────────────────────────────────
+
+/** The package path a qualified type text (`*ent.Client`, `sqlx.DB`) resolves to,
+ *  when that package is imported but absent from the database-packages manifest.
+ *  Mirrors `classifyGoTypeText`'s pointer/slice stripping + qualified-type
+ *  package resolution, but returns the *source* instead of the disposition. */
+function unrecognizedPackageInType(typeText: string, env: GoResolutionEnv): string | null {
+  let t = typeText.trim();
+  for (;;) {
+    if (t.startsWith('*')) {
+      t = t.slice(1).trim();
+      continue;
+    }
+    const slice = t.match(/^\[(\d*)\](.*)$/s);
+    if (slice) {
+      t = slice[2].trim();
+      continue;
+    }
+    break;
+  }
+  const dot = t.indexOf('.');
+  if (dot > 0 && !/[\s()\[\]{},*]/.test(t)) {
+    const pkgName = t.slice(0, dot);
+    const source = resolvePackage(pkgName, env);
+    if (source !== null && !GO_DB_PACKAGES.has(source)) return source;
+  }
+  return null;
+}
+
+/** The package path a value/initializer descriptor resolves to when that package
+ *  is imported but absent from the manifest (`client, _ := ent.Open(…)` → `ent` →
+ *  `entgo.io/ent`). Mirrors `classifyGoValue`'s selector/identifier/type arms. */
+function unrecognizedPackageInValue(
+  raw: GoValueDescriptor,
+  env: GoResolutionEnv,
+  depth: number,
+): string | null {
+  if (depth > 8) return null;
+  if (raw.type === 'selector_expression') {
+    if (raw.operand?.type === 'identifier') {
+      const b = env.bindings.get(raw.operand.text) ?? env.packageBindings?.get(raw.operand.text);
+      if (b?.kind === 'import') return b.source && !GO_DB_PACKAGES.has(b.source) ? b.source : null;
+    }
+    return null;
+  }
+  if (raw.type === 'call_expression') {
+    const fn = raw.function;
+    if (!fn) return null;
+    if (fn.type === 'identifier') {
+      const b = env.bindings.get(fn.text) ?? env.packageBindings?.get(fn.text);
+      if (b && (b.kind === 'function' || b.kind === 'method') && b.returnTypeText) {
+        return unrecognizedPackageInType(firstReturnType(b.returnTypeText), env);
+      }
+      return null;
+    }
+    return unrecognizedPackageInValue(fn, env, depth + 1);
+  }
+  if (raw.type === 'unary_expression' || raw.type === 'composite_literal') {
+    if (raw.typeNode?.text) return unrecognizedPackageInType(raw.typeNode.text, env);
+    return null;
+  }
+  return null;
+}
+
+/** The package path a binding resolves to when it is imported but absent from the
+ *  manifest — the source `describeGoUnprovenCause` names instead of a generic
+ *  "indeterminate". Returns null when the binding does not resolve to an
+ *  unrecognized package (no type, an unlisted-but-unimported name, etc.). */
+function unrecognizedPackageOf(binding: GoBinding, env: GoResolutionEnv, depth = 0): string | null {
+  if (depth > 8) return null;
+  switch (binding.kind) {
+    case 'import':
+      return binding.source && !GO_DB_PACKAGES.has(binding.source) ? binding.source : null;
+    case 'parameter':
+    case 'variable':
+    case 'field':
+      if (binding.typeText) return unrecognizedPackageInType(binding.typeText, env);
+      if (binding.value) return unrecognizedPackageInValue(binding.value, env, depth + 1);
+      return null;
+    case 'function':
+    case 'method':
+      if (binding.returnTypeText) {
+        return unrecognizedPackageInType(firstReturnType(binding.returnTypeText), env);
+      }
+      return null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Why a Go root classified `unproven` stayed unresolved — the Go-specific reason
+ * behind `goResolution.resolveRoot`. Where the generic `describeUnprovenCause`
+ * reports a qualified type as "indeterminate", this names the package the type
+ * *does* resolve to when that package is absent from the database-packages
+ * manifest: `*ent.Client` is not indeterminate — it resolves to `entgo.io/ent`,
+ * which the manifest simply does not list (Spec 70 R4 — an unrecognized package
+ * reached by resolution is an honest unknown, not a guessed clean).
+ *
+ * @param root the receiver's base identifier being described.
+ * @param env the file's Go resolution environment (provenance, bindings, imports).
+ * @returns a human-readable reason the root stayed `unproven`.
+ */
+export function describeGoUnprovenCause(root: string, env: GoResolutionEnv): string {
+  if (env.provenance.has(root)) return 'resolved to a DB handle (misclassified)';
+  const binding = env.bindings.get(root) ?? env.packageBindings?.get(root);
+  if (!binding) return 'has no binding in the file scope chain';
+
+  const pkg = unrecognizedPackageOf(binding, env);
+  if (pkg) {
+    return `resolves to \`${pkg}\` — an unrecognized package (not in the database-packages manifest)`;
+  }
+
+  switch (binding.kind) {
+    case 'import':
+      return `imports from '${binding.source ?? '?'}' — an unrecognized package (not in the database-packages manifest)`;
+    case 'parameter':
+      return binding.typeText ? `parameter type \`${binding.typeText}\` is indeterminate` : 'is an un-annotated parameter';
+    case 'variable':
+      if (binding.typeText) return `declared type \`${binding.typeText}\` is indeterminate`;
+      return binding.value ? 'is an un-annotated factory return' : 'is an un-annotated declaration';
+    case 'field':
+      if (binding.typeText) return `field type \`${binding.typeText}\` is indeterminate`;
+      return binding.value ? 'is an un-annotated field initializer' : 'is an un-annotated struct field';
+    case 'function':
+    case 'method':
+      return 'is a function reference without a DB return type';
+    case 'type':
+      return 'is a local type name';
+    default:
+      return 'is indeterminate';
+  }
 }
 
 // ── Within-file provenance ───────────────────────────────────────────────────

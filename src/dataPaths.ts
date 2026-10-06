@@ -13,14 +13,16 @@ import { createHash } from 'node:crypto';
  * When CODE_AUDITOR_DATA_DIR is set but no projectRoot: legacy flat path
  *   <data_dir>/index.db
  *
- * Otherwise the index is stored somewhere already gitignored by universal
- * convention so consumers never have to edit their own .gitignore:
- *   - If the project (or an ancestor) has a `node_modules` directory, use
- *     `<node_modules>/.cache/code-auditor/index.db`. When that node_modules is
- *     hoisted (an ancestor rather than `<root>/node_modules`, e.g. a monorepo),
- *     the path is scoped by project hash so sibling packages don't collide.
- *   - Otherwise (non-Node project), fall back to the OS cache directory keyed
- *     by project hash.
+ * Otherwise the index is a **user-level cache**, keyed by project hash — never
+ * a path inside the audited project. The index is tool state, not a file the
+ * consuming repository owns; a consuming repo may only receive a file when the
+ * developer named a path on the command line (via CODE_AUDITOR_DATA_DIR /
+ * `--data-dir`). The earlier defaults — project-local `.code-index/`, then
+ * `<root>/node_modules/.cache/code-auditor` — wrote into the audited tree on
+ * every run, dirtying read-only corpora with tool scratch and making the
+ * measured tree itself non-reproducible. Both are gone.
+ *
+ *   <os_cache>/code-auditor/projects/<sha256(root)[:16]>/index.db
  *
  * @param projectRoot - Optional project root used to scope the path (and hash) per project.
  * @returns The on-disk path to the index database.
@@ -35,18 +37,6 @@ export function resolvePersistedIndexPath(projectRoot?: string): string {
   }
 
   const root = path.resolve(projectRoot || process.cwd());
-  const nodeModules = findNodeModulesDir(root);
-  if (nodeModules) {
-    const base = path.join(nodeModules, '.cache', 'code-auditor');
-    // A hoisted (ancestor) node_modules is shared across packages — scope by
-    // project hash so sibling packages in a monorepo each get their own DB.
-    if (nodeModules !== path.join(root, 'node_modules')) {
-      return path.join(base, 'projects', projectHash(root), 'index.db');
-    }
-    return path.join(base, 'index.db');
-  }
-
-  // No node_modules anywhere up the tree: non-Node project. Use the OS cache.
   return path.join(getFallbackCacheRoot(), 'projects', projectHash(root), 'index.db');
 }
 
@@ -111,30 +101,6 @@ export function resolveGoAnalyzerCacheDir(): string {
   return path.join(getFallbackCacheRoot(), 'go-analyzer');
 }
 
-/** Walk up from `start` and return the nearest existing `node_modules` directory, or null. */
-function findNodeModulesDir(start: string): string | null {
-  let dir = path.resolve(start);
-  for (;;) {
-    const candidate = path.join(dir, 'node_modules');
-    // lstat, not stat/existsSync: a symlinked `node_modules` is skipped rather
-    // than followed, so a link pointing elsewhere on disk cannot redirect the
-    // cache root out of the project tree. Symlinks are skipped by continuing up.
-    try {
-      const st = fs.lstatSync(candidate);
-      if (st.isDirectory()) {
-        return candidate;
-      }
-    } catch {
-      // no candidate here — continue up
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) {
-      return null;
-    }
-    dir = parent;
-  }
-}
-
 /** OS-specific cache root (gitignored by convention, wiped by clean installs). */
 function getFallbackCacheRoot(): string {
   const xdg = process.env.XDG_CACHE_HOME?.trim();
@@ -193,6 +159,6 @@ function resolveRealPath(p: string): string {
 }
 
 /** Stable per-project identifier used to scope cache/data paths. */
-function projectHash(root: string): string {
+export function projectHash(root: string): string {
   return createHash('sha256').update(resolveRealPath(root)).digest('hex').substring(0, 16);
 }

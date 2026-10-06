@@ -825,6 +825,13 @@ export type StyleDeclarationsFile = {
   declarations: ReadonlyArray<StylesDeclaration>;
   tokens: ReadonlyArray<StylesToken>;
   classUsage: ReadonlyArray<StylesClassUsage>;
+  /** Content-level `<style lang="…">` unread reasons, collected by the markup
+   *  producer (`extractStylesMarkup`) during its own `extractDeclarations` pass.
+   *  The `unread-style-sources` corpus producer flattens these instead of
+   *  re-reading the `style_unread_sources` index table (the old path that
+   *  re-parsed markup files the corpus already parsed). CSS and TS/JS source
+   *  producers have no content-level reason, so they contribute `[]`. */
+  unreadSources: ReadonlyArray<UnreadStyleSourceFact>;
 };
 
 /** A normalized style declaration, as the CSS/SCSS extractor emits it. */
@@ -896,9 +903,10 @@ export type DefinedClassesFact = {
  *  *read* stylesheet" rather than a definitive assertion. The walk-level reasons
  *  (unsupported dialect, read failure, unknown extension) are produced by the
  *  traverse phase's own read/dialect walk (`runPhaseModel`); the content-level
- *  `<style lang="…">` reason is read from the `style_unread_sources` index table
- *  by the `unread-style-sources` corpus producer — the two are merged in
- *  `buildFacts`. */
+ *  `<style lang="…">` reason is collected by the markup `style-declarations`
+ *  producer (`extractStylesMarkup`) during its `extractDeclarations` pass and
+ *  flattened by the `unread-style-sources` corpus producer — the two are merged
+ *  in `buildFacts`. */
 export type UnreadStyleSourceFact = {
   filePath: string;
   reason: string;
@@ -1630,7 +1638,8 @@ export type GoPackageBindingKind =
   | 'field'
   | 'function'
   | 'method'
-  | 'type';
+  | 'type'
+  | 'const';
 
 /**
  * The serializable projection of `GoValueDescriptor` (`goResolution.ts`) — the
@@ -1670,6 +1679,7 @@ export type WithinFileProvenanceFact =
 /** The serializable TS-family extract projection. */
 export type TsWithinFileProvenanceProjection = {
   readonly seeds: readonly ProvenanceEvidenceFact[];
+  readonly bindings: readonly TsBindingFact[];
   readonly localFunctions: readonly string[];
   readonly propagationRules: readonly PropagationRule[];
   readonly wrapperFunctions: readonly { readonly name: string; readonly ownCalls: readonly WithinFileOwnCall[] }[];
@@ -1787,18 +1797,23 @@ export type UnresolvedImportFact = {
 /**
  * The index-backed call-graph fact (§2.2) — the function catalog and the
  * function→function call edges the legacy `graph_cache` carried, read by the
- * corpus `call-graph` producer from the code index. Plain-data projection: no
- * handle survives the corpus boundary. `functions` is the identity projection of
- * the `function-index` file fact (id → {name, filePath, lineNumber, usedImports,
- * isExported}) the depth-1 callee expansion maps a `filePath::name` key through
- * and the validation-bypass provenance (`buildValidatorIds`) reads its
- * `usedImports`/`isExported` through; `callEdges` is the call-graph edges
- * (fromId → toId) rebuilt from `function-index`'s `functionCalls` name join.
+ * corpus `call-graph` producer. Plain-data projection: the corpus `IndexHandle`
+ * is read here and its rows collapse to data (`id`, `name`, `filePath`,
+ * `lineNumber`, `isExported`), so no live handle survives past the corpus
+ * boundary. `functions` is read from the index `functions` table, not projected
+ * from the `function-index` fact — the one field that table cannot supply without
+ * the sync path's second parse is `usedImports`, which the producer joins from the
+ * `function-index` fact by the `(file, name, line)` identity the index
+ * `conflictKey` uses (Item 4 2b). `callEdges` are the call-graph edges (`fromId`
+ * → `toId`) read from the `graph_cache` index table, not rebuilt from
+ * `function-index`'s `functionCalls` name join (that re-derivation would turn on
+ * depth-1 expansion during a plain audit, where the sync-only `graph_cache` is
+ * empty).
  *
- * `lineNumber` is the `function-index` `line` (the uncovered-risk ranking reads
- * it as the finding anchor). `usedImports` is the `function-index` `usedImports`
- * array (Item 4 2b — carried verbatim, not re-derived from the index column).
- * `isExported` is the boolean projection of `function-index` `isExported`.
+ * `lineNumber` is the `functions` table's `line_number` (the uncovered-risk
+ * ranking reads it as the finding anchor). `usedImports` is the `function-index`
+ * `usedImports` array carried verbatim from the fact. `isExported` is the boolean
+ * projection of the `functions` table's `is_exported` flag.
  */
 export type CallGraphFact = {
   functions: ReadonlyArray<{

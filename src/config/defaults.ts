@@ -413,7 +413,10 @@ export function mergePathProfiles(
  * Default code index configuration
  */
 export const DEFAULT_CODE_INDEX_CONFIG = {
-  databasePath: './node_modules/.cache/code-auditor/index.db',
+  // Not a literal path: the persisted index lives in a user-level OS cache
+  // (project-scoped) — see resolvePersistedIndexPath. Kept as a config surface
+  // only so an explicit `CODE_INDEX_DB_PATH` override can be reported as user-set.
+  databasePath: '(user-level OS cache, project-scoped)',
   maxBatchSize: 1000,
   searchResultLimit: 100,
   enableAutoIndex: false

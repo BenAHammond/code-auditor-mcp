@@ -1030,15 +1030,17 @@ synthetic fixtures per ORM, full pipeline):
 |---|---|---|
 | `sqlx` | 5 | widened above |
 | GORM | 3 | `Exec` (already covered) + `Raw` (added) |
-| `pgx` | 0 | `Query`/`QueryRow`/`Exec` are ctx-first (SQL at arg[1]); the selector name collides with `database/sql`'s SQL-at-arg[0], indistinguishable without receiver-type verification |
-| `ent` | 0 | no SQL literal in user code — builder chain + generated code |
-| `sqlc` | 0 | SQL lives in generated package-level `const` declarations, called as `QueryRowContext(ctx, constIdent, …)`; the const identifier is not a literal the analyzer resolves |
+| `pgx` | 3 | `Query`/`QueryRow`/`Exec` are ctx-first (SQL at arg[1]); the ctx-skipping literal path reads the SQL at arg[1] and proves handle — no receiver-type verification needed |
+| `ent` | 0 | no SQL literal in user code — builder chain + generated code; reports `cannot-fire` (unproven) with the unrecognized-package reason, since `entgo.io/ent` is not in the database-packages manifest |
+| `sqlc` | 1 | SQL lives in generated package-level `const` declarations, called as `QueryRowContext(ctx, constIdent, …)`; `extractGoStaticSql` resolves the const identifier to its literal and proves handle |
 
-"Non-zero turns a hypothesis into a rule": `sqlx` (5) and GORM (3) are now rules,
-observed firing. `pgx`/`ent`/`sqlc` remain hypotheses for the structural reasons in
-the table — not for want of a method-name entry. `ent` in particular is a **correct
-0**: there is no SQL string in user code to inspect, so no data-access rule *can* fire
-on it.
+"Non-zero turns a hypothesis into a rule": `sqlx` (5), GORM (3), `pgx` (3) and `sqlc`
+(1) are now rules, observed firing — the SQL argument (a literal at arg[1] for pgx, a
+const-resolvable identifier for sqlc) reaches the parser. `ent` is the one remaining
+non-firing surface, and it is no longer a "correct 0": its `.Query()` chain reports
+`cannot-fire` (unproven) with the unrecognized-package reason, because the builder's
+SQL lives in generated code and `entgo.io/ent` is not in the database-packages
+manifest — an honest unknown, not a silent clean.
 
 **The remaining real gap is tenancy, not method surface.** openstatus is the proof:
 the sqlx widening is necessary but not sufficient, because `private_location` and

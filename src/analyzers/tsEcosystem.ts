@@ -1,18 +1,19 @@
+import { builtinModules } from 'node:module';
 import databasePackages from '../languages/typescript/database-packages.json' with { type: 'json' };
 
 /**
  * The TypeScript resolution implementation's ecosystem data.
  *
  * Standing correction `specs/correction-seams-not-placement.md` §4: the ecosystem
- * data moves behind the interface, not into a renamed home. `DB_PACKAGES`,
- * the DB-call method set and the ORM method set are the *TypeScript* resolution
- * implementation's own data — the npm/TypeScript package vocabulary — and live
- * here, the TS counterpart of `GO_DB_PACKAGES` in `languages/go/goResolution.ts`.
- * No module above the resolution interface reads these sets: the TS
- * implementation modules (`provenance.ts`, `receiverRoot.ts`,
- * `receiverResolution.ts`) read them directly because they *are* the
- * implementation; every caller above them asks a predicate (`isOrmMethod`)
- * rather than importing a set.
+ * data moves behind the interface, not into a renamed home. `DB_PACKAGES`, the
+ * Node builtin set, the JS global set and the ORM method set are the *TypeScript*
+ * resolution implementation's own data — the npm/TypeScript/JS-runtime vocabulary
+ * — and live here, the TS counterpart of `GO_DB_PACKAGES` / `GO_STDLIB_PACKAGES`
+ * in `languages/go/goResolution.ts`. No module above the resolution interface
+ * reads these sets: the TS implementation modules (`provenance.ts`,
+ * `receiverRoot.ts`, `receiverResolution.ts`) read them directly because they
+ * *are* the implementation; every caller above them asks a predicate
+ * (`isNodeBuiltin`, `isOrmMethod`) rather than importing a set.
  *
  * This replaces the old claim in `provenance.ts` that these were a "universal,
  * language-invariant vocabulary": `database/sql` and `*sql.DB` are not npm
@@ -32,36 +33,56 @@ import databasePackages from '../languages/typescript/database-packages.json' wi
  */
 export const DB_PACKAGES: ReadonlySet<string> = new Set(databasePackages);
 
+// ─── The package discriminant: Node builtins + JS globals ─────────────────────
+//
+// The handle/not-handle decision cannot rest on a method *name* — `join` is
+// `Array.prototype.join` and it is also `SQL JOIN`. The discriminant is the
+// *package* (or global type) a receiver's declaration resolves to. Both halves
+// are probed from the vendor, never maintained as a hand-written replica:
+
+/** Node's builtin module names — the authoritative runtime list from
+ *  `require('module').builtinModules`, extended with the `node:` prefix and
+ *  subpath forms (`fs`, `node:fs`, `fs/promises`). A root resolving to one of
+ *  these is `not-handle`, proven. */
+const NODE_BUILTIN_MODULES: ReadonlySet<string> = new Set(builtinModules);
+
 /**
- * DB call methods — the fixed API surface.
- *
- * Spec 33 Item 11 FP category 5: the bare-identifier hybrid fallback in
- * `isDBProvenanced` treated any `get(...)` / `each(...)` / `values(...)` call
- * as a DB query, flagging lodash-style object accessors (e.g.
- * `@directus/utils`'s `get(item, ...)`) as sql-injection. Those three names
- * are also common non-DB methods (lodash `get`, jQuery/iterator
- * `each`, Map/WebSocket `.values()`), so they are removed from the fallback —
- * mirroring the `get`/`each` trim in CHANGELOG 3.4.9 (DB_CALL_METHOD_NAMES).
- *
- * `query` is deliberately RETAINED: it is a genuine query-execution method on
- * mysql2, pg, node-postgres, D1 and Planetscale (`.query(...)`), and the
- * spec-19 data-access fixtures exercise it as a canonical DB entry point.
- * Removing it would turn real SQL-injection positives into false negatives.
- *
- * `raw` is deliberately retained: it is a genuine raw-execution method on
- * D1 prepared statements, Knex, and Kysely, and the Item-6 taint-tracking
- * fixtures exercise it as the canonical raw-SQL entry point.
+ * True when a module specifier names a Node builtin (`fs`, `node:fs`,
+ * `fs/promises`). A bare import reaching here was not a database package, so a
+ * builtin is provably `not-handle` (criterion: no Node builtin is a DB client).
  */
-export const DB_CALL_METHODS: ReadonlySet<string> = new Set([
-  'exec',
-  'prepare',
-  'batch',
-  'run',
-  'all',
-  'first',
-  'query',
-  'raw',
-]);
+export function isNodeBuiltin(specifier: string): boolean {
+  if (!specifier) return false;
+  const s = specifier.startsWith('node:') ? specifier.slice('node:'.length) : specifier;
+  if (NODE_BUILTIN_MODULES.has(s)) return true;
+  // Subpath imports (`fs/promises`, `node:test/reporters`) resolve to the parent.
+  const slash = s.indexOf('/');
+  return slash > 0 && NODE_BUILTIN_MODULES.has(s.slice(0, slash));
+}
+
+/**
+ * JS builtin global names — enumerated from the global object at load, never a
+ * hand-written list. A receiver whose declaration resolves to one of these types
+ * (`Array`, `Map`, `Set`, `String`, `JSON`, `Object`, `Number`, `RegExp`,
+ * `Promise`, `Date`, `Buffer`, …) is `not-handle`, proven: no global is a
+ * database client. Constructors (function with a `prototype`) and namespace
+ * objects (`JSON`, `Math`, `crypto`) are both included.
+ */
+export const JS_GLOBALS: ReadonlySet<string> = (() => {
+  const names = new Set<string>();
+  for (const name of Object.getOwnPropertyNames(globalThis)) {
+    let value: unknown;
+    try {
+      value = (globalThis as Record<string, unknown>)[name];
+    } catch {
+      continue;
+    }
+    if (typeof value === 'function' || (value !== null && typeof value === 'object')) {
+      names.add(name);
+    }
+  }
+  return names;
+})();
 
 /** ORM method patterns — fixed API surface for ORM recognition (Spec 21 R1) */
 export const ORM_METHODS: ReadonlySet<string> = new Set([

@@ -12,9 +12,11 @@
  *   - unproven             → `cannot-fire` with a reason, whatever the cause.
  *
  * `clean` is reachable *only* from proven-not-a-handle. This spec pins that
- * three-way split at the classifier boundary (`collectUnprovenQueryReceivers`) and
- * at the emission boundary (`checkUnprovenQueryReceivers`), so a change that
- * silently re-cleans an unproven receiver fails a test instead of a corpus.
+ * three-way split at the emission boundary (`checkUnprovenQueryReceivers`) and the
+ * proven-not-a-handle gate (`isProvablyNonDbDeclaration`), so a change that
+ * silently re-cleans an unproven receiver fails a test instead of a corpus. The
+ * classifier boundary now lives in the phase model (`classifyBuildProvenance`),
+ * pinned by spec70-classify-build-provenance-parity.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -22,11 +24,7 @@ import { initializeLanguages, initParsers } from '../languages/index.js';
 import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { parseFile } from '../languages/adapterBridge.js';
 import type { AST, LanguageAdapter } from '../languages/types.js';
-import type { ProvenanceEvidence } from '../analyzers/provenance.js';
-import {
-  collectUnprovenQueryReceivers,
-  isProvablyNonDbDeclaration,
-} from '../analyzers/receiverResolution.js';
+import { isProvablyNonDbDeclaration } from '../analyzers/receiverResolution.js';
 import {
   checkUnprovenQueryReceivers,
   checkUnresolvedReceiverImports,
@@ -45,63 +43,7 @@ function parse(source: string): { ast: AST; adapter: LanguageAdapter; source: st
   return { ast, adapter, source };
 }
 
-/** Run the classifier over one file's source with an empty (within-file-only) seed. */
-function unproven(
-  source: string,
-  provenance: ReadonlyMap<string, ProvenanceEvidence> = new Map(),
-) {
-  const { ast, adapter } = parse(source);
-  try {
-    return collectUnprovenQueryReceivers(
-      { filePath: '/fixture/s5a.ts', sourceCode: source, ast, adapter },
-      provenance,
-    );
-  } finally {
-    ast.dispose?.();
-  }
-}
-
 describe('Spec 69 §10 S5a — disposition replaces step-failure', () => {
-  it('proven-not-a-handle (literal declaration) is clean — not a cannot-fire', () => {
-    const src = [
-      'const dataSource = "not a database";',
-      'dataSource.query("SELECT 1");',
-    ].join('\n');
-    expect(unproven(src)).toEqual([]);
-  });
-
-  it('proven-handle (seeded) is clean here — the finding path fires, not a cannot-fire', () => {
-    const seed: ReadonlyMap<string, ProvenanceEvidence> = new Map([
-      ['db', { identifier: 'db', reason: 'binding', source: 'test seed', chain: [] }],
-    ]);
-    const src = 'db.query("SELECT 1");';
-    expect(unproven(src, seed)).toEqual([]);
-  });
-
-  it('unproven receiver (call-initialized, no in-repo declaration) is cannot-fire, not clean', () => {
-    const src = [
-      'const dataSource = getConnection();',
-      'dataSource.query(sql);',
-    ].join('\n');
-    const out = unproven(src);
-    expect(out).toHaveLength(1);
-    expect(out[0].receiver).toBe('dataSource');
-    expect(out[0].method).toBe('query');
-    expect(out[0].reason).toContain('no in-repo declaration');
-  });
-
-  it('a compound/this receiver with no annotation is cannot-fire', () => {
-    const src = [
-      'class Repo {',
-      '  run() { this.pool.query(sql); }',
-      '}',
-    ].join('\n');
-    const out = unproven(src);
-    expect(out).toHaveLength(1);
-    expect(out[0].receiver).toBe('this.pool');
-    expect(out[0].reason).toContain('class field');
-  });
-
   it('emits a cannot-fire diagnostic (never a clean omission) via checkUnprovenQueryReceivers', () => {
     const diags = checkUnprovenQueryReceivers(
       [{ receiver: 'dataSource', method: 'query', line: 2, reason: 'no in-repo declaration' }],

@@ -36,7 +36,7 @@ import type {
 import type { ProvenanceEvidence, R3Site } from '../analyzers/provenance.js';
 import type { Binding, RootResolutionEnv } from '../analyzers/receiverRoot.js';
 import type { TsWithinFileProvenanceExtract } from '../analyzers/tsExpressionDescriptor.js';
-import { classifyBuildProvenance, evidenceFromFact, rehydrateWithinFileProvenance } from './receiverProvenance.js';
+import { classifyBuildProvenance, evidenceFromFact, rehydrateWithinFileProvenance, bindingFromFact } from './receiverProvenance.js';
 import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { identifyHandle, type HandleVerdict, type GoWithinFileProvenanceExtract } from '../analyzers/handleIdentification.js';
@@ -54,9 +54,9 @@ import {
   whereColumnRefs,
 } from '../languages/sql/sqlAst.js';
 import { rawInsertColumnsFromAst } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
-import { DB_CALL_METHODS, isOrmMethod } from '../analyzers/tsEcosystem.js';
 import type { GoResolutionEnv, GoBinding } from '../languages/go/goResolution.js';
 import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
+import { describeUnprovenReceiver } from '../analyzers/receiverResolution.js';
 
 // ── Rehydrators — fact → the corpus-side classify input, no translation ──────
 
@@ -73,17 +73,7 @@ export function rehydrateReceiverActivity(fact: ReceiverActivityFact | undefined
 } {
   if (!fact) return { bindings: new Map(), r3Sites: [], dbActivity: new Set() };
   return {
-    bindings: new Map(
-      fact.bindings.map((b): [string, Binding] => [
-        b.name,
-        {
-          kind: b.kind,
-          ...(b.source !== undefined ? { source: b.source } : {}),
-          ...(b.typeText !== undefined ? { typeText: b.typeText } : {}),
-          ...(b.value !== undefined ? { value: b.value } : {}),
-        },
-      ]),
-    ),
+    bindings: new Map(fact.bindings.map((b) => [b.name, bindingFromFact(b)])),
     r3Sites: fact.r3Sites.map((s) => ({
       root: s.root,
       receiver: s.receiver,
@@ -965,35 +955,17 @@ export function classifyLoopQueries(
 
 // ── `unproven-query-receivers` reduction (Spec 70 2c) ────────────────────────
 
-/** Local copy of `describeUnprovenReceiver` (private in `receiverResolution.ts`) —
- *  the cannot-fire reason string the pre-pass emitted for a TS unproven receiver,
- *  re-derived here so the phase-side disposition matches the legacy byte-for-byte. */
-function describeUnprovenReceiver(receiver: string, method: string, root: string, cause: string): string {
-  if (receiver.startsWith('this.') || receiver.startsWith('super.')) {
-    return `receiver \`${receiver}\` is a class field whose root \`${root}\` ${cause}; \`.${method}()\` is query-shaped, so its DB access is unseen.`;
-  }
-  if (receiver.includes('.')) {
-    return `receiver \`${receiver}\` is a runtime binding / compound reference whose root \`${root}\` ${cause}; \`.${method}()\` is query-shaped, so its DB access is unseen.`;
-  }
-  return `receiver \`${receiver}\` has no in-repo declaration traceable to a DB handle (root \`${root}\` ${cause}); \`.${method}()\` is query-shaped, so its DB access is unseen.`;
-}
-
-/** Local copy of `describeGoUnprovenReceiver` (private in `receiverResolution.ts`). */
-function describeGoUnprovenReceiver(receiver: string, method: string, root: string, cause: string): string {
-  return `receiver \`${receiver}\` has root \`${root}\` that ${cause}; \`.${method}()\` is query-shaped, so its DB access is unseen.`;
-}
-
 /**
  * The corpus `unproven-query-receivers` reduction (Spec 70 2c) — the fifth
  * receiver consumer, re-derived from the raw `data-access-calls-candidates` fact
  * + the provenance fixed point with no AST. It re-folds `identifyHandle` per
  * member candidate and emits an `UnprovenQueryReceiver` when the verdict is
- * `unproven` and the method is a DB verb — mirroring the pre-pass's candidacy
- * filter (`DB_CALL_METHODS.has(m)`, so an ORM-only method is excluded) and its
- * `root === null` skip (re-folded via `reFoldHandleVerdict`'s null on a missing
- * root). This is the source for the `cannot-fire` coverage diagnostic, re-homed
- * from `collectCannotFireDiagnostics` (which read the pre-pass's
- * `unprovenQueryReceivers`).
+ * `unproven` and the call is query-shaped — mirroring the pre-pass's candidacy
+ * filter (language-independent string-arg, the SQL literal as admission proof)
+ * and its `root === null` skip (re-folded
+ * via `reFoldHandleVerdict`'s null on a missing root). This is the source for the
+ * `cannot-fire` coverage diagnostic, re-homed from `collectCannotFireDiagnostics`
+ * (which read the pre-pass's `unprovenQueryReceivers`).
  *
  * @param candidates the raw `data-access-calls-candidates` facts (one per file)
  * @param withinFacts the `within-file-provenance` facts (TS + Go)
@@ -1033,20 +1005,31 @@ export function classifyUnprovenQueryReceivers(
 
     for (const cand of fileCands) {
       const id = dataAccessIdentity(cand);
-      // Candidacy filter only — mirror the pre-pass's member-callee + DB-verb gate
-      // (an identifier callee is not a query-shaped *call site*; an ORM-only verb
-      // was admitted by the raw candidate producer but not by the pre-pass).
+      // Candidacy filter only — mirror the pre-pass's member-callee gate (an
+      // identifier callee is not a query-shaped *call site*). A member call is
+      // admitted as unproven only when it carries a static SQL argument (the
+      // sql-argument evidence source, `handleSqlArg`) or is genuinely query-shaped
+      // (the real `isQueryBuilderShape` test, carried on the candidate) — a site
+      // with neither evidence source is not a data-access site and nothing is
+      // reported about it. `reFoldHandleVerdict` → `identifyHandle` re-folds the
+      // same discriminant over the re-derived provenance, so a null-arg
+      // `not-handle` root resolves to `not-handle` below.
       if (id.calleeType !== 'member') continue;
-      if (!DB_CALL_METHODS.has((id.method ?? '').toLowerCase())) continue;
+      if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
       const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect);
       if (!verdict || verdict.kind !== 'unproven') continue;
 
       const receiver = id.receiver ?? id.root ?? '(unknown)';
       const root = id.root ?? receiver;
       const method = id.method ?? '';
-      const reason = isGo
-        ? describeGoUnprovenReceiver(receiver, method, root, verdict.reason)
-        : describeUnprovenReceiver(receiver, method, root, verdict.reason);
+      const reason = describeUnprovenReceiver(
+        receiver,
+        method,
+        root,
+        verdict.reason,
+        cand.isQueryBuilderShape,
+        isGo ? 'go' : 'typescript',
+      );
       out.push({ file, line: cand.line, receiver, root, method, reason });
     }
   }

@@ -874,32 +874,34 @@ export const CORPUS_PRODUCERS = {
     },
   } satisfies CorpusProcessor<'defined-classes', readonly ['style-declarations']>,
   // `unread-style-sources` (styles/undefined-class) — the content-level
-  // `<style lang="…">` catalog from `style_unread_sources`, one row per markup
-  // file whose embedded style block uses a dialect the regex path cannot read
-  // (Spec 45 R5). The rule carries the list as `details.incompleteDefinitions`
-  // so "undefined" reads as "not defined in any *read* stylesheet". The
-  // walk-level reasons (`.less`/`.styl`/`.sass` dialects, read failures, unknown
-  // extensions) are produced by the traverse phase and merged ahead of this in
-  // `buildFacts`; this producer contributes only the index-table half. Degrades
-  // to an empty fact with no handle or an absent table.
+  // `<style lang="…">` reasons, flattened from the markup producer's
+  // `style-declarations` fact (`extractStylesMarkup` collects them into each
+  // file's `unreadSources` during its `extractDeclarations` pass). One entry per
+  // markup file whose embedded style block uses a dialect the regex path cannot
+  // read (Spec 45 R5). The rule carries the list as
+  // `details.incompleteDefinitions` so "undefined" reads as "not defined in any
+  // *read* stylesheet". The walk-level reasons (`.less`/`.styl`/`.sass`
+  // dialects, read failures, unknown extensions) are produced by the traverse
+  // phase and merged ahead of this in `buildFacts`; this producer contributes
+  // only the content-level half. Degrades to an empty fact when no markup file
+  // carries an unread embedded block.
   'unread-style-sources': {
     id: 'unread-style-sources',
     produces: 'unread-style-sources',
-    needs: [],
-    process(_facts, ctx): UnreadStyleSourceFact[] {
-      const ih: IndexHandle | undefined = ctx?.indexHandle;
-      if (!ih) return [];
-      let rows: Array<{ file_path: string; reason: string }> = [];
-      try {
-        rows = ih.query(
-          'SELECT file_path, reason FROM style_unread_sources',
-        ) as Array<{ file_path: string; reason: string }>;
-      } catch {
-        // `style_unread_sources` may not exist — degrade to an empty fact.
+    needs: ['style-declarations'],
+    process(facts): UnreadStyleSourceFact[] {
+      const seen = new Set<string>();
+      const out: UnreadStyleSourceFact[] = [];
+      for (const f of facts['style-declarations']) {
+        for (const s of f.unreadSources) {
+          if (seen.has(s.filePath)) continue;
+          seen.add(s.filePath);
+          out.push(s);
+        }
       }
-      return rows.map((r) => ({ filePath: r.file_path, reason: r.reason }));
+      return out;
     },
-  } satisfies CorpusProcessor<'unread-style-sources', readonly []>,
+  } satisfies CorpusProcessor<'unread-style-sources', readonly ['style-declarations']>,
   // `receiver-provenance` (Spec 70 Item 4, 2a) — the cross-file DB-receiver
   // provenance fixed point, re-derived from the four additive file facts with no
   // AST. This is the phase-side replacement for `resolveCorpusReceivers`'

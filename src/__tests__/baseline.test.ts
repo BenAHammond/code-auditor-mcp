@@ -154,13 +154,16 @@ beforeAll(async () => {
 
 describe('Spec-18 — Baseline module', () => {
   let testDir: string;
+  let configDir: string;
 
   beforeEach(async () => {
     testDir = await mkdtemp(join(tmpdir(), 'ca-baseline-'));
+    configDir = await mkdtemp(join(tmpdir(), 'ca-baseline-config-'));
   });
 
   afterEach(() => {
     try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
+    try { rmSync(configDir, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   // ── Load / save round-trip ──────────────────────────────────────────────
@@ -178,7 +181,7 @@ describe('Spec-18 — Baseline module', () => {
     // SchemaVersion 1 uses the old fingerprint scheme and should be rejected
     // with a message telling the user to re-snapshot.
     await writeFile(join(testDir, '.codeauditor.baseline.json'), JSON.stringify({ schemaVersion: 1, entries: [] }));
-    expect(loadBaseline(testDir)).toBeNull();
+    expect(loadBaseline(testDir, { configDir })).toBeNull();
   });
 
   it('loadBaseline returns null for unknown schemaVersion', async () => {
@@ -192,7 +195,7 @@ describe('Spec-18 — Baseline module', () => {
     // didn't exist). v3 is the shared canonical chain — reject stale v2 baselines so
     // users re-snapshot.
     await writeFile(join(testDir, '.codeauditor.baseline.json'), JSON.stringify({ schemaVersion: 2, entries: [] }));
-    expect(loadBaseline(testDir)).toBeNull();
+    expect(loadBaseline(testDir, { configDir })).toBeNull();
   });
 
   it('loadBaseline rejects schemaVersion 3 (a 4.x baseline — Spec 68 §14)', async () => {
@@ -206,12 +209,29 @@ describe('Spec-18 — Baseline module', () => {
     );
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
-      expect(loadBaseline(testDir)).toBeNull();
+      expect(loadBaseline(testDir, { configDir })).toBeNull();
       expect(spy).toHaveBeenCalledWith(expect.stringContaining('schemaVersion 3'));
       expect(spy).toHaveBeenCalledWith(expect.stringContaining('code-audit baseline'));
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it('loadBaseline does not mutate the tree when rejecting a stale baseline', async () => {
+    // A read must not move/rename the stale file — the "once" is recorded in
+    // the config dir, not in the repo. Regressing this would dirty a read-only
+    // measurement clone (the exact failure the corpus-pins gate is built to
+    // prove absent).
+    const baselinePath = join(testDir, '.codeauditor.baseline.json');
+    await writeFile(baselinePath, JSON.stringify({ schemaVersion: 3, entries: [{ fingerprint: 'old', file: 'a.ts' }] }));
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(loadBaseline(testDir, { configDir })).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(existsSync(baselinePath)).toBe(true);
+    expect(existsSync(`${baselinePath}.pre-5.0.0`)).toBe(false);
   });
 
   it('saveBaseline / loadBaseline round-trip', async () => {

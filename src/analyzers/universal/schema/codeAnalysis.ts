@@ -20,7 +20,6 @@ import {
 } from '../../provenance.js';
 import { identifyHandle, type HandleVerdict } from '../../handleIdentification.js';
 import { resolveReceiverRoot, buildBindingEnv, type RootResolutionEnv } from '../../receiverRoot.js';
-import { DB_CALL_METHODS, isOrmMethod } from '../../tsEcosystem.js';
 import { OrmAdapterRegistry } from '../../orm/index.js';
 import { SQL_TAG_NAMES, DEFAULT_SCHEMA_CONFIG } from './config.js';
 import type { SchemaAnalyzerConfig, TableReference } from './types.js';
@@ -275,8 +274,8 @@ function dbCallVerdict(
 
   const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
   if (!method) return null;
-  const m = method.toLowerCase();
-  if (!DB_CALL_METHODS.has(m) && !isOrmMethod(method)) return null;
+  // The package discriminant — not the method name — decides handle-ness
+  // (`identifyHandle` below). No method-name set gates admission here.
 
   const root = resolveReceiverRoot(callee, adapter, sourceCode);
   if (root === null) return null;

@@ -21,7 +21,7 @@
  * memoized `loadTailwindConfig`.
  */
 
-import type { ParsedFile, StyleDeclarationsFile } from './types.js';
+import type { ParsedFile, StyleDeclarationsFile, UnreadStyleSourceFact } from './types.js';
 import { extractDeclarations } from '../styles/styleExtractor.js';
 import { extractClassUsage } from '../styles/styleIndexer.js';
 import { loadTailwindConfig } from '../styles/tailwindConfigLoader.js';
@@ -36,9 +36,15 @@ export function extractStylesMarkup(file: ParsedFile): StyleDeclarationsFile[] {
   const tailwindTokens = file.projectRoot
     ? loadTailwindConfig(file.projectRoot).tokens
     : undefined;
+  // The content-level `<style lang="…">` unread reasons are collected here, from
+  // the same `extractDeclarations` pass that already reads the file's content —
+  // the `unread-style-sources` producer flattens them, so it no longer re-parses
+  // markup files through the `style_unread_sources` index table.
+  const unreadSources: UnreadStyleSourceFact[] = [];
   return [{
-    declarations: extractDeclarations(file.file, null as never, file.source, undefined, tailwindTokens),
+    declarations: extractDeclarations(file.file, null as never, file.source, undefined, tailwindTokens, unreadSources),
     tokens: [],
     classUsage: extractClassUsage(file.file, file.source),
+    unreadSources,
   }];
 }

@@ -29,6 +29,7 @@
 
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
 import type { ProvenanceEvidence } from './provenance.js';
+import { isNodeBuiltin, JS_GLOBALS } from './tsEcosystem.js';
 
 /** A receiver root's disposition (Spec 69 §10 S5e). */
 export type RootDisposition = 'handle' | 'not-handle' | 'unproven';
@@ -432,15 +433,36 @@ export function classifyRootIdentifier(
   }
 }
 
+/**
+ * True when a receiver root is DB-shaped — its disposition is `handle` or
+ * `unproven` — never a name list. This is the package-discriminant replacement
+ * for the deleted `DB_CALL_METHODS` / `isDbShapedMethod` candidacy filters: a
+ * call is a DB/ORM candidate when its receiver resolves to a DB package/handle
+ * or to something unresolved, and NOT when it resolves to a provably non-DB
+ * receiver (a JS global, primitive, or Node builtin). `join` is
+ * `Array.prototype.join` (root `Array` → not-handle) and also `SQL JOIN`
+ * (root `db` → handle) — the receiver's resolution, not the method name,
+ * distinguishes them.
+ *
+ * @param root the bare receiver-root identifier to classify
+ * @param env the file's resolution environment (provenance, bindings, adapter)
+ * @returns true unless the root provably resolves to a non-DB receiver
+ */
+export function isDbShapedRoot(root: string, env: RootResolutionEnv, opts?: { thisField?: boolean }): boolean {
+  return classifyRootIdentifier(root, env, 0, opts) !== 'not-handle';
+}
+
 function classifyImportSource(source: string, env: RootResolutionEnv): RootDisposition {
   const isRelative = source.startsWith('./') || source.startsWith('../');
   const isAlias = source.startsWith('@/') || source.startsWith('~/');
   if (!isRelative && !isAlias) {
-    // Bare specifier → node_modules. A DB package would already be provenanced
-    // (extractDBProvenancedImports), so reaching here means the package is NOT in
-    // the database-packages manifest. Spec 70 R4: an unrecognized package reached
-    // by resolution reports cannot-fire — it might be an unlisted ORM. Honest
-    // unknown, never silently clean.
+    // Bare specifier → node_modules or a Node builtin. A DB package would already
+    // be provenanced (extractDBProvenancedImports); a Node builtin (`fs`,
+    // `node:path`, …) is provably not a DB client → `not-handle`. Anything else
+    // reaching here is NOT in the database-packages manifest — Spec 70 R4: an
+    // unrecognized package reached by resolution reports cannot-fire, never a
+    // guessed clean.
+    if (isNodeBuiltin(source)) return 'not-handle';
     return 'unproven';
   }
   if (!env.resolveImport) return 'unproven';
@@ -465,6 +487,10 @@ function classifyTypeText(typeText: string, env: RootResolutionEnv, depth: numbe
   if (base === 'any' || base === 'unknown') return 'unproven';
   if (NON_HANDLE_PRIMITIVES.has(base)) return 'not-handle';
   if (/\[\]$/.test(t) || /^ReadonlyArray</.test(t) || /^Array</.test(t)) return 'not-handle';
+  // A JS builtin global type (`Map`, `Set`, `Buffer`, `Date`, `Promise`, `String`,
+  // …) is provably not a DB handle — the global object's own names, enumerated at
+  // load, never a hand-written list.
+  if (JS_GLOBALS.has(base)) return 'not-handle';
   // A non-primitive type name (e.g. `D1Database`, `Pool`, `MyDb`) no longer
   // proves or disproves handle-ness: the parsed SQL argument is the handle
   // proof (Spec 70 criterion 9 deletes handle-type names as a test). The old
@@ -662,8 +688,9 @@ export function resolveReceiverRoot(
 // ── Form-3 this-chain resolution (Spec 69 R3) ────────────────────────────────
 
 /** Corpus-extracted type shape: type name → (member name → member type) plus the
- *  type's `extends` heritage. Populated by `extractTypeRegistry` in
- *  receiverResolution.ts; consumed here by {@link classifyThisChain}. */
+ *  type's `extends` heritage. Consumed by {@link classifyThisChain}. The legacy
+ *  producer (`extractTypeRegistry`) was deleted with `resolveCorpusReceivers`; no
+ *  phase-path producer populates this yet, so form-3 is currently unreachable. */
 export interface TypeRegistry {
   members: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** Method-signature names declared by an interface (e.g. `query`, `run`, `exec`). */
@@ -729,6 +756,7 @@ function classifyResolvedTypeName(typeName: string): RootDisposition {
   const base = baseTypeName(typeName);
   if (base === 'any' || base === 'unknown') return 'unproven';
   if (NON_HANDLE_PRIMITIVES.has(base)) return 'not-handle';
+  if (JS_GLOBALS.has(base)) return 'not-handle';
   return 'unproven';
 }
 

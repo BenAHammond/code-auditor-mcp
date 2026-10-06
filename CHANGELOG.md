@@ -113,41 +113,33 @@ method set in `provenance.ts`), so the key had no effect on which calls were
 treated as DB calls. It is removed from the config types, the defaults, and the
 threading; a `.codeauditor.json` that still sets it is now a no-op.
 
-### Handle verdicts propagate to sibling sites sharing a root (Spec 70 Item 1)
+### Legacy receiver-resolution path deleted — the phase model is the sole surface (Spec 70)
 
-**The Spec 69 §10 S5a receiver-resolution enumerator (`collectUnprovenQueryReceivers`,
+**The Spec 69 §10 S5a legacy receiver-resolution enumerator (`collectUnprovenQueryReceivers`,
 fed by `resolveCorpusReceivers`) folded each query-shaped call site independently, so
 a handle verdict proven at one site never reached sibling sites sharing the same
 root.** `db.prepare('SELECT …').bind(x).first()` is several sites on one root `db`:
 `db.prepare('SELECT …')` proves `db` a handle via its SQL argument, but `db.first()` /
 `db.all()` carry no SQL, so their root stayed `unproven` — the largest `db`-rooted
-unproven population in the product, list-free. The phase model already fixed this with
-the Spec 70 R3 propagation step (`applyR3FromSites`); the enumerator did not, so the
-two surfaces disagreed (846 vs 168 `db`-rooted unproven on recall-protocol).
+unproven population in the product, list-free. The phase model fixed this with the
+Spec 70 R3 propagation step (`applyR3FromSites`); the enumerator never did. Rather than
+mirror the fix into a second resolver, the legacy path is deleted: `resolveCorpusReceivers`,
+`collectUnprovenQueryReceivers`, their seven measurement scripts, and their parity tests
+are removed, leaving `runPhaseModel` → `computeReceiverProvenance` / `classifyBuildProvenance`
+as the sole receiver-resolution surface. The file-level R3 path (`applySqlArgumentInference`
+in `provenance.ts`) is unchanged.
 
-**The fix mirrors the phase step in the enumerator** (`applySqlArgumentInference`, now
-exported from `provenance.ts`): when the corpus names a SQL dialect, a first pass proves
-each root whose static SQL argument parses, seeds the cross-file provenance map, and the
-per-site fold then reads those roots as `handle`. It is gated on a named dialect,
-matching the phase path — a null dialect still abstains rather than prove a site under a
-guessed grammar.
+Six-corpus `db`-rooted unproven on the phase path:
 
-Six-corpus `db`-rooted unproven, before → after:
-
-| corpus | dialect | before | after | movement |
-|---|---|---|---|---|
-| recall-protocol | sqlite | 846 | 59 | −787 propagated |
-| endless-guessing | postgresql | 23 | 3 | −20 propagated |
-| hhra-org | null (ambiguous) | 1 | 1 | — |
-| knex | null (ambiguous) | 3 | 3 | — |
-| blitz | null (no driver) | 0 | 0 | — |
-| primer-css | null (no driver) | 0 | 0 | — |
-
-The recall-protocol −787 is exactly the 787 "propagatable" sites the measurement
-hypothesis named; the 59 remaining are type-only (a `D1Database`-typed parameter with
-no literal-SQL sibling in the file — the criterion-9 deleted annotation no longer
-proves them). hhra-org and knex are gated by an *ambiguous* dialect (multiple drivers),
-which is honest abstention, not a propagation gap.
+| corpus | db-rooted unproven |
+|---|---|
+| blitz | 101 |
+| knex | 32 |
+| recall-protocol | 21 |
+| hhra-org | 14 |
+| endless-guessing | 0 |
+| primer-css | 0 |
+| **total** | **168** |
 
 ### LokiJS sniff no longer reads the whole index into memory
 

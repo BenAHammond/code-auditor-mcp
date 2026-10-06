@@ -7,11 +7,12 @@
  * enforced on all code, always.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fingerprint, buildFingerprintInput } from './fingerprint.js';
 import { PACKAGE_VERSION } from './constants.js';
+import { getUserConfigRoot, projectHash } from './dataPaths.js';
 import type { Violation } from './types.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -66,6 +67,57 @@ export interface ClassifiedFindings {
 const BASELINE_FILENAME = '.codeauditor.baseline.json';
 const INVARIANTS_ANALYZER = 'invariants';
 
+/** Subdirectory of the user config root holding "already warned about a stale
+ *  baseline" markers — keyed by project hash, never written into the repo. */
+const STALE_NOTIFIED_DIR = 'baseline-migrated';
+
+/** Process-scoped guard mirroring `notifyLegacyIndexLocation`: warn at most once
+ *  per project hash per process; the persisted marker handles cross-process. */
+const notifiedThisProcess = new Set<string>();
+
+export interface BaselineLoadOptions {
+  /** Override the user config dir (tests). */
+  configDir?: string;
+  /** Override the notification sink (tests). Defaults to `console.error`. */
+  notify?: (message: string) => void;
+}
+
+function staleMarkerPath(projectRoot: string, configDir: string): string {
+  return path.join(configDir, STALE_NOTIFIED_DIR, projectHash(projectRoot));
+}
+
+/**
+ * Warn once (per project) that the baseline uses a pre-5.0.0 fingerprint scheme
+ * and is being ignored. The "once" is recorded in the user config dir — the
+ * stale baseline file itself is left untouched, because a read must not mutate
+ * the audited tree (the same rule that moved the index out of the repo).
+ */
+function warnStaleBaselineOnce(
+  projectRoot: string,
+  schemaVersion: number,
+  opts: BaselineLoadOptions,
+): void {
+  const configDir = path.resolve(opts.configDir ?? getUserConfigRoot());
+  const hash = projectHash(projectRoot);
+  if (notifiedThisProcess.has(hash) || existsSync(staleMarkerPath(projectRoot, configDir))) {
+    return;
+  }
+  notifiedThisProcess.add(hash);
+  const message =
+    `Baseline file has schemaVersion ${schemaVersion} (pre-5.0.0 fingerprint scheme); ` +
+    'its fingerprints no longer match current findings, so it is ignored. ' +
+    'Run `code-audit baseline` to re-snapshot with the current scheme.';
+  (opts.notify ?? ((m: string) => console.error(m)))(message);
+  try {
+    mkdirSync(path.join(configDir, STALE_NOTIFIED_DIR), { recursive: true });
+    // `wx` fails if the marker already exists — an idempotent "warned" flag.
+    writeFileSync(staleMarkerPath(projectRoot, configDir), '', { flag: 'wx' });
+  } catch {
+    // A config write failure (read-only home, race) means a possible repeat next
+    // run — the lesser evil vs. touching the repo. Never throw from a warning.
+  }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -75,7 +127,7 @@ const INVARIANTS_ANALYZER = 'invariants';
  * @param projectRoot - Absolute path to the project root containing the baseline file.
  * @returns The parsed baseline, or null when absent, incompatible, or unparseable.
  */
-export function loadBaseline(projectRoot: string): Baseline | null {
+export function loadBaseline(projectRoot: string, opts: BaselineLoadOptions = {}): Baseline | null {
   const filePath = path.join(projectRoot, BASELINE_FILENAME);
   try {
     if (!existsSync(filePath)) return null;
@@ -85,12 +137,14 @@ export function loadBaseline(projectRoot: string): Baseline | null {
     // fingerprint, so any baseline written by a pre-5.0.0 tool (schemaVersion
     // ≤ 3) is incompatible. Matching it would silently absorb a regression at
     // a lower precision, so reject it loudly with the regeneration command
-    // rather than ignore it or match it degraded.
+    // rather than ignore it or match it degraded. The rejection is a one-time
+    // event, not a per-run notice: the warning is recorded in the user config
+    // dir (keyed by project hash), so the next read returns null silently
+    // instead of re-warning on every invocation (including through the hook) —
+    // and the stale file is left untouched, because a read must not mutate the
+    // audited tree.
     if (parsed && typeof parsed.schemaVersion === 'number' && parsed.schemaVersion < 4) {
-      console.error(
-        `Baseline file has schemaVersion ${parsed.schemaVersion} (pre-5.0.0 fingerprint scheme). ` +
-        'Run `code-audit baseline` to re-snapshot with the current scheme.',
-      );
+      warnStaleBaselineOnce(projectRoot, parsed.schemaVersion, opts);
       return null;
     }
     if (!parsed || parsed.schemaVersion !== 4 || !Array.isArray(parsed.entries)) {

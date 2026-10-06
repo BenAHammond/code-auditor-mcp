@@ -2,8 +2,9 @@
  * Measure the *production* phase-model unproven surface (the cannot-fire signal
  * the audit actually reports — `runPhaseModel` → `classifyUnprovenQueryReceivers`),
  * and split it by the root's binding, so we can see whether the R3 sql-argument
- * propagation already closes the `db` sites the *legacy* `resolveCorpusReceivers`
- * path still reports (the 846/744 number). Read-only.
+ * propagation already closes the `db` sites (the `resolveCorpusReceivers` legacy
+ * path this script once compared against is now deleted — this is the only live
+ * resolver). Read-only.
  *
  * Usage:
  *   npx tsx scripts/measure-phase-unproven.ts /path/to/corpus
@@ -13,12 +14,18 @@ import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runPhaseModel } from '../src/phase/phaseModel.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
 import { detectDialect } from '../src/languages/sql/dialectDetection.js';
+import { assertCorpusPinned } from './corpus-pins.js';
 
 const projectRoot = process.argv[2];
 if (!projectRoot) {
   console.error('usage: measure-phase-unproven.ts <projectRoot>');
   process.exit(2);
 }
+
+// Corpus-integrity gate (Spec 70 item 2 — pin content, not HEAD). A dirty or
+// drifted corpus fails here BEFORE any parsing: a number measured against an
+// unreproducible tree is not a measurement.
+assertCorpusPinned(projectRoot);
 
 function tally<T>(items: Iterable<T>): Map<T, number> {
   const m = new Map<T, number>();

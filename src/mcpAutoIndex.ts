@@ -18,7 +18,7 @@ export async function runAutoIndex(projectPath: string): Promise<void> {
   logMcpInfo('auto-index', 'start', {
     projectPath: root,
     cwd: process.cwd(),
-    dataDir: process.env.CODE_AUDITOR_DATA_DIR ?? '(default: node_modules/.cache/code-auditor)'
+    dataDir: process.env.CODE_AUDITOR_DATA_DIR ?? '(default: user-level OS cache)'
   });
 
   const db = CodeIndexDB.getInstance();

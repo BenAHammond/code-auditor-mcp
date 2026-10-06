@@ -121,6 +121,7 @@ const COVERAGE_DIAGNOSTIC_KINDS = new Set([
   'config-key-rejected',
   'cannot-fire',
   'manifest-stale',
+  'pipeline-error',
 ]);
 
 /** Ledger rule IDs that resolved to a diagnostic (off the ladder, no severity).

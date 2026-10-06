@@ -79,7 +79,7 @@ describe('runZeroFilesDiagnostics', () => {
       analyzerName: 'errored-analyzer',
       kind: 'zero-files',
     });
-    expect(warnings[0].message).toContain('(1 file error(s))');
+    expect(warnings[0].message).toContain('1 file error(s): some-file.ts: parse failure');
   });
 
   it('fires both warning kinds simultaneously', () => {

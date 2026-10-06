@@ -19,9 +19,10 @@
  * the extract without re-parsing the file.
  */
 
-import type { AstFile, WithinFileProvenanceFact, ProvenanceEvidenceFact, WithinFileOwnCall } from './types.js';
+import type { AstFile, WithinFileProvenanceFact, ProvenanceEvidenceFact, WithinFileOwnCall, TsBindingFact } from './types.js';
 import type { ProvenanceEvidence } from '../analyzers/provenance.js';
 import type { OwnCall } from '../analyzers/tsExpressionDescriptor.js';
+import type { Binding } from '../analyzers/receiverRoot.js';
 import { RESOLUTION_IMPLEMENTATIONS } from '../analyzers/handleIdentification.js';
 import { isTestFile } from '../languages/testConventions.js';
 
@@ -45,6 +46,23 @@ export function evidenceToFact(e: ProvenanceEvidence): ProvenanceEvidenceFact {
 /** Project an `OwnCall` (interface) into its §4-serializable `type`. */
 function ownCallToFact(c: OwnCall): WithinFileOwnCall {
   return { callee: c.callee, isD1Rest: c.isD1Rest };
+}
+
+/** Project a `Binding` (interface) into its §4-serializable `type`. Exported so the
+ *  `receiver-activity` producer projects its bindings through the *same* mapping —
+ *  one projection, not two that could drift (the `receiver-activity` fact also
+ *  carries the binding env for the build-side `classifyBuildProvenance`).
+ * @param name - The bound name.
+ * @param b - The interface-form binding to project.
+ * @returns The §4-serializable `TsBindingFact`, omitting absent optional fields. */
+export function bindingToFact(name: string, b: Binding): TsBindingFact {
+  return {
+    name,
+    kind: b.kind,
+    ...(b.source !== undefined ? { source: b.source } : {}),
+    ...(b.typeText !== undefined ? { typeText: b.typeText } : {}),
+    ...(b.value !== undefined ? { value: b.value } : {}),
+  };
 }
 
 /**
@@ -71,6 +89,7 @@ export function extractWithinFileProvenance(file: AstFile): WithinFileProvenance
         format: file.format as 'typescript' | 'tsx' | 'javascript',
         ts: {
           seeds: [...extract.projection.seeds.values()].map(evidenceToFact),
+          bindings: [...extract.projection.bindings.entries()].map(([name, b]) => bindingToFact(name, b)),
           localFunctions: [...extract.projection.localFunctions],
           propagationRules: extract.projection.propagationRules,
           wrapperFunctions: extract.projection.wrapperFunctions.map((fn) => ({

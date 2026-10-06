@@ -28,15 +28,40 @@ fallback.
 | hhra-org | postgresql | 16 → 2 | **12.5%** (12.5%) | 116 (29 / 34) |
 | endless-guessing | sqlite | 63 → 6 | 9.5% (9.5%) | 3 (0 / 0) |
 | blitz | sqlite | 0 | — | 12 (1 / 0) |
-| knex | sqlite | 798 → 426 | 53.4% (53.4%) | 0 |
-| knex | postgresql | 798 → 341 | 42.7% (42.7%) | 0 |
-| knex | mysql | 798 → 533 | 66.8% (66.8%) | 0 |
+| knex | sqlite | 798 → 400 | 50.1% (53.4%) | 0 |
+| knex | postgresql | 798 → 308 | 38.6% (42.7%) | 0 |
+| knex | mysql | 798 → 523 | 65.5% (66.8%) | 0 |
 | primer-css | none | 0 | — | 0 |
 
 The one number that moved: **recall-protocol 32.2% → 11.3%** (171 → 60 failing
 literals). The 111 recovered literals were the `?1`/`?n` positional-parameter sites
 (the standard D1 form) plus the multi-statement and transaction-control strings. The
 other corpora are unchanged because their failures are not in those classes.
+
+## Dequoting-fix delta (`stripSqlQuotes`)
+
+A later fix — `stripSqlQuotes` (provenance.ts / UniversalDataAccessAnalyzer.ts) no
+longer hands the raw source slice to node-sql-parser, it un-escapes the inner JS/TS
+escapes first — moves only the **knex** rows above, because knex is the one corpus
+whose SQL literals carry escape sequences. The `(was)` value in each knex row is the
+pre-dequoting number this delta replaces.
+
+| corpus | dialect | recovered | fail % before → after |
+| --- | --- | --- | --- |
+| knex | sqlite | 26 | 53.4% → 50.1% |
+| knex | postgresql | 33 | 42.7% → 38.6% |
+| knex | mysql | 10 | 66.8% → 65.5% |
+
+Every recovered literal is in knex **test fixtures** (`test/unit/schema-builder/*.js`,
+`test/integration2/schema/*.spec.js`) — not `lib/` production code, where knex builds
+SQL dynamically with no static literal. The escapes are the two schema-DDL shapes:
+`\"` (a double-quoted identifier inside a double-quoted JS string, e.g.
+`"create view \"adults\" …"`) and `\'` (an embedded single quote in a column comment,
+e.g. `comment 'The table\'s first column'`). Before the fix the raw `\…` reached the
+parser and the statement failed; after un-escaping it parses as the identifier/string
+the author wrote. No oracle-gate aggregate moved: `verify:oracle-shortfalls` pins
+*candidate/extractor* facts (AST-projected, no SQL parse) and `ddl-declarations`
+(parses `.sql` files, not code literals), none of which the dequoting fix touches.
 
 ## Residual failure causes, by corpus
 

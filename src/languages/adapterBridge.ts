@@ -420,6 +420,27 @@ export function getParameterCount(node: ASTNode): number {
 // ---------------------------------------------------------------------------
 
 /**
+ * Node types that contribute one decision point each to cyclomatic complexity.
+ * This set is deliberately distinct from `LOOP_TYPES`/`CONDITIONAL_TYPES` (the
+ * "is this node a loop/conditional" predicates): a `switch_statement` is a
+ * conditional *shape*, but its decision points are its `switch_case` children —
+ * counting both the `switch_statement` and each `switch_case` double-counts the
+ * switch. It matches the TypeScript adapter's `calculateCyclomaticComplexity`
+ * (the `getComplexity` path `solid/method-complexity` reads), so the code-index
+ * and rule paths agree on the same function.
+ */
+const COMPLEXITY_TYPES = new Set([
+  'if_statement',
+  'for_statement',
+  'for_in_statement',
+  'while_statement',
+  'do_statement',
+  'switch_case',
+  'ternary_expression',
+  'catch_clause',
+]);
+
+/**
  * Calculate cyclomatic complexity by counting decision points.
  * @param node
  * @returns
@@ -431,7 +452,7 @@ export function calculateComplexity(node: ASTNode): number {
   const raw = getRawNode(node);
 
   function count(node: TreeSitterNode): void {
-    if (LOOP_TYPES.has(node.type) || CONDITIONAL_TYPES.has(node.type)) {
+    if (COMPLEXITY_TYPES.has(node.type)) {
       complexity++;
     }
     // Logical operators (&&, ||) add complexity

@@ -2,11 +2,12 @@
  * Bug #3 — the tool must never re-scan its own output.
  *
  * A prior audit writes two artifacts that a subsequent run must ignore:
- *   1. the persisted style/code index — now `node_modules/.cache/code-auditor/index.db`,
- *      a location gitignored by universal convention so consumers never have to
- *      touch their own `.gitignore` for an internal implementation detail;
+ *   1. the persisted style/code index — a **user-level OS cache** (project-scoped),
+ *      never a file inside the audited tree. A consuming repo receives a file
+ *      only when the developer names a path on the command line (Spec 70 item 3);
  *   2. the audit report (`audit-report.{json,html,csv,sarif}`), written into the
- *      project root, which inlines the offending source line.
+ *      project root only when `--output` is named, which inlines the offending
+ *      source line.
  *
  * Both can embed raw source snippets — the report especially, since it inlines
  * the offending line (e.g. `error_class = 'zombie-capped'`), which the
@@ -14,10 +15,11 @@
  * into the style index as an undefined-class finding citing `audit-report.json`.
  *
  * This test runs the audit twice in the same directory and asserts that the
- * index lands under `node_modules/.cache/code-auditor` (not a project-local
- * `.code-index` dir), and that no finding from the second run cites the report
- * or the index. It also asserts the run is non-vacuous: a genuine undefined
- * class in a real `.tsx` source file must still be flagged.
+ * index lands in the OS cache (via XDG_CACHE_HOME), that no index is written
+ * into the project tree (`node_modules/.cache` or a project-local `.code-index`
+ * dir), and that no finding from the second run cites the report or the index.
+ * It also asserts the run is non-vacuous: a genuine undefined class in a real
+ * `.tsx` source file must still be flagged.
  *
  * Integration suite — loads tree-sitter WASM; excluded from `npm run test`,
  * run with `npm run test:integration`.
@@ -64,12 +66,19 @@ const REPORT_SOURCE =
   `"snippet":"const el = <div className='zombie-capped'>hi</div>"}]}`;
 
 describe('Bug #3 — own-output exclusion (run twice, no finding cites the report)', () => {
-  it('stores the index under node_modules/.cache and never re-scans it or the report', async () => {
+  it('stores the index in the OS cache, never in the project, and never re-scans it or the report', async () => {
     const testDir = await mkdtemp(join(tmpdir(), 'ca-own-output-'));
+    const xdgCache = await mkdtemp(join(tmpdir(), 'ca-own-output-xdg-'));
+    const origXdg = process.env.XDG_CACHE_HOME;
     try {
+      // Route the OS cache into a scratch dir so the test is deterministic and
+      // never touches the developer's real user cache.
+      process.env.XDG_CACHE_HOME = xdgCache;
+
       await writeFile(join(testDir, 'widget.tsx'), TSX_SOURCE, 'utf-8');
       await writeFile(join(testDir, 'styles.css'), CSS_SOURCE, 'utf-8');
-      // Simulate a Node project: the nearest node_modules is the one we place here.
+      // Simulate a Node project. The OLD default wrote into `<root>/node_modules/
+      // .cache/code-auditor`; this proves the new default does not.
       await mkdir(join(testDir, 'node_modules'), { recursive: true });
 
       const run = () =>
@@ -80,24 +89,27 @@ describe('Bug #3 — own-output exclusion (run twice, no finding cites the repor
           scope: 'all',
         });
 
-      // Run 1 — indexes into node_modules/.cache/code-auditor (gitignored).
+      // Run 1 — indexes into the OS cache, never into the project tree.
       await run();
 
-      // The index now lives under node_modules/.cache, never in a project-local
-      // .code-index dir the consumer would have to gitignore by hand.
       expect(
         existsSync(join(testDir, 'node_modules', '.cache', 'code-auditor', 'index.db')),
-        'index must live under node_modules/.cache',
-      ).toBe(true);
+        'index must NOT be written into node_modules/.cache',
+      ).toBe(false);
       expect(
         existsSync(join(testDir, '.code-index')),
         'no legacy .code-index dir must be created',
       ).toBe(false);
+      // The index still persisted — just outside the project, in the OS cache.
+      const xdgEntries = await import('node:fs/promises').then((m) =>
+        m.readdir(join(xdgCache, 'code-auditor', 'projects'), { withFileTypes: true }),
+      );
+      expect(xdgEntries.some((e) => e.isDirectory()), 'index must land under the OS cache').toBe(true);
 
       // The tool would now have written its report into the project root.
       await writeFile(join(testDir, 'audit-report.json'), REPORT_SOURCE, 'utf-8');
 
-      // Run 2 — discovery must skip both the report and the index.
+      // Run 2 — discovery must skip the report (the index is outside the tree).
       const result = await run();
 
       const violations = result.analyzerResults['styles']?.violations ?? [];
@@ -128,7 +140,10 @@ describe('Bug #3 — own-output exclusion (run twice, no finding cites the repor
       );
       expect(diagCitesOwnOutput, 'no diagnostic may cite the report or index').toEqual([]);
     } finally {
+      if (origXdg === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = origXdg;
       try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      try { rmSync(xdgCache, { recursive: true, force: true }); } catch { /* ignore */ }
     }
   });
 });

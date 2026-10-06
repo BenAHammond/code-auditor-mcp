@@ -483,9 +483,10 @@ export class DaemonCore extends EventEmitter {
         const abs = path.join(this.projectRoot, filename.toString());
         // Ignore infra/non-source noise before it counts as activity or queues a
         // reconcile. The daemon's own heartbeat writes the lease row into the
-        // SQLite DB under `node_modules/.cache` every ~20s; without this filter
-        // that would (a) reset the idle timer forever and (b) re-audit on every
-        // heartbeat. Only a source-path change is a corpus change.
+        // SQLite DB (a user-level OS cache, outside the project tree) every ~20s;
+        // without this filter an in-tree `.cache`/`node_modules` change would (a)
+        // reset the idle timer forever and (b) re-audit on every such write.
+        // Only a source-path change is a corpus change.
         if (!isSourcePath(abs, this.projectRoot)) return;
         this.markActivity();
         this.pendingWatchPaths.add(abs);
@@ -525,10 +526,10 @@ export class DaemonCore extends EventEmitter {
       const deleted: string[] = [];
       const freshFiles: Record<string, FileRecord> = {};
       for (const abs of paths) {
-        // R5 — the watcher sees *everything* under the root, including the
-        // SQLite DB + WAL/SHM files this daemon writes to `node_modules/.cache`.
-        // A bare "something changed" signal would re-audit (near the full
-        // corpus) on every persist and loop. Only source paths are a corpus
+        // R5 — the watcher sees *everything* under the root, including any
+        // SQLite DB + WAL/SHM files an in-tree `.cache`/`node_modules` write
+        // produces. A bare "something changed" signal would re-audit (near the
+        // full corpus) on every persist and loop. Only source paths are a corpus
         // change; drop infra + non-source noise before classification.
         if (!isSourcePath(abs, this.projectRoot)) continue;
         const key = path.relative(this.projectRoot, abs);
@@ -760,8 +761,8 @@ function derivePhaseEta(
 
 /**
  * True if a watcher-flagged path belongs to the audited corpus (R5). The
- * watcher reports every change under the root — including the SQLite DB, WAL,
- * and SHM files this process writes to `node_modules/.cache` — so the
+ * watcher reports every change under the root — including any SQLite DB, WAL,
+ * and SHM files an in-tree `.cache`/`node_modules` write produces — so the
  * reconcile gate must filter to source extensions and never infra dirs, or a
  * single persist would re-audit the corpus and loop.
  */
