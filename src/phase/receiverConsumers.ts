@@ -1003,6 +1003,12 @@ export function classifyUnprovenQueryReceivers(
       file, isGo, tsExtracts, goExtracts, seeds, activityByFile, sqlDialect,
     });
 
+    // Re-fold each member candidate to its unproven verdict, then line-dedup —
+    // mirroring `classifyDataAccessCalls`'s step 2 (template preferred, else
+    // first). The broadened discovery matches both the `call_expression` node and
+    // its `template_string` child, so without the dedup one query-shaped site
+    // emits two identical cannot-fire diagnostics and doubles the coverage count.
+    const admitted: { cand: DataAccessCallCandidate; verdict: Extract<HandleVerdict, { kind: 'unproven' }> }[] = [];
     for (const cand of fileCands) {
       const id = dataAccessIdentity(cand);
       // Candidacy filter only — mirror the pre-pass's member-callee gate (an
@@ -1018,7 +1024,22 @@ export function classifyUnprovenQueryReceivers(
       if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
       const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect);
       if (!verdict || verdict.kind !== 'unproven') continue;
+      admitted.push({ cand, verdict });
+    }
 
+    const byLine = new Map<number, { cand: DataAccessCallCandidate; verdict: Extract<HandleVerdict, { kind: 'unproven' }> }[]>();
+    for (const a of admitted) {
+      const line = a.cand.line;
+      if (!byLine.has(line)) byLine.set(line, []);
+      byLine.get(line)!.push(a);
+    }
+    const unique: { cand: DataAccessCallCandidate; verdict: Extract<HandleVerdict, { kind: 'unproven' }> }[] = [];
+    for (const items of byLine.values()) {
+      unique.push(items.length === 1 ? items[0] : (items.find((it) => it.cand.isTemplateLiteral) ?? items[0]));
+    }
+
+    for (const { cand, verdict } of unique) {
+      const id = dataAccessIdentity(cand);
       const receiver = id.receiver ?? id.root ?? '(unknown)';
       const root = id.root ?? receiver;
       const method = id.method ?? '';
