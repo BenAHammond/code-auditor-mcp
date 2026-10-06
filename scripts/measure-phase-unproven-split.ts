@@ -6,6 +6,11 @@
  * should — or whether a residual stays unproven despite a sibling proving the
  * root. Read-only.
  *
+ * The "does a sibling prove the root" test uses the *production* extraction
+ * (`extractR3Sites`, which dequotes via `stripSqlQuotes`) and the production
+ * `identifyHandle` — not a re-implemented dequote — so a "should-propagate"
+ * result means exactly "production R3 would prove this root, if it ran".
+ *
  * Usage:
  *   npx tsx scripts/measure-phase-unproven-split.ts /path/to/corpus
  */
@@ -15,45 +20,15 @@ import { runPhaseModel } from '../src/phase/phaseModel.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
 import { detectDialect } from '../src/languages/sql/dialectDetection.js';
 import { identifyHandle } from '../src/analyzers/handleIdentification.js';
-import { buildBindingEnv, resolveReceiverRoot, type RootResolutionEnv } from '../src/analyzers/receiverRoot.js';
-import {
-  getCallExpressionCallee,
-  getMemberExpressionReceiver,
-  extractMemberExpressionProperty,
-} from '../src/analyzers/provenance.js';
-import { DB_CALL_METHODS } from '../src/analyzers/tsEcosystem.js';
+import { buildBindingEnv, type RootResolutionEnv } from '../src/analyzers/receiverRoot.js';
+import { extractR3Sites } from '../src/analyzers/provenance.js';
 import { LanguageRegistry } from '../src/languages/LanguageRegistry.js';
 import { readFile } from 'node:fs/promises';
-import type { ASTNode, LanguageAdapter } from '../src/languages/types.js';
 
 const projectRoot = process.argv[2];
 if (!projectRoot) {
   console.error('usage: measure-phase-unproven-split.ts <projectRoot>');
   process.exit(2);
-}
-
-const TS_STRING_LITERAL_TYPES = new Set(['string', 'template_string']);
-
-function unquote(text: string): string {
-  if (text.length >= 2 && (text[0] === '"' || text[0] === "'" || text[0] === '`')) return text.slice(1, -1);
-  return text;
-}
-
-function extractSqlArgument(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string | null {
-  const argsNode = adapter.getChildren(node).find((c) => c.type === 'arguments');
-  if (!argsNode) return null;
-  for (const arg of adapter.getChildren(argsNode)) {
-    if (arg.type === '(' || arg.type === ')' || arg.type === ',') continue;
-    if (!TS_STRING_LITERAL_TYPES.has(arg.type)) return null;
-    // Interpolated templates (`\`…${x}…\``) are not static SQL — mirror production
-    // `extractStaticSqlArgument`, which refuses them before `parseSql`.
-    if (arg.type === 'template_string') {
-      const kids = adapter.getChildren(arg) ?? [];
-      if (kids.some((c) => c.type === 'template_substitution')) return null;
-    }
-    return unquote(adapter.getNodeText(arg, sourceCode));
-  }
-  return null;
 }
 
 function tally<T>(items: Iterable<T>): Map<T, number> {
@@ -80,7 +55,9 @@ async function main() {
   const registry = LanguageRegistry.getInstance();
 
   // Per file: which roots have a handle-verdict site (direct sql-argument), and
-  // the handle sites themselves.
+  // the handle sites themselves. Uses the *production* R3 extraction, so a root
+  // counts as "proven by a sibling" only when `applyR3FromSites` would also prove
+  // it (same `extractR3Sites` + same `identifyHandle`).
   const handleRootsByFile = new Map<string, Set<string>>();
   const filesWithDb = new Set(dbUnproven.map((s) => s.file));
   for (const file of filesWithDb) {
@@ -103,23 +80,15 @@ async function main() {
       const bindings = buildBindingEnv(ast, adapter, content);
       const env: RootResolutionEnv = { provenance, bindings, adapter, sourceCode: content };
       const handleRoots = new Set<string>();
-      const calls = adapter.findNodes(ast, { custom: (n: ASTNode) => n.type === 'call_expression' });
-      for (const node of calls) {
-        const callee = getCallExpressionCallee(node, adapter);
-        if (!callee || (callee.type !== 'member_expression' && callee.type !== 'selector_expression')) continue;
-        const method = extractMemberExpressionProperty(callee, adapter, content);
-        if (!method || !DB_CALL_METHODS.has(method.toLowerCase())) continue;
-        const receiver = getMemberExpressionReceiver(callee, adapter, content) ?? '(unknown)';
-        const root = resolveReceiverRoot(callee, adapter, content);
-        if (root === null) continue;
+      for (const site of extractR3Sites(ast, adapter, content)) {
         const verdict = identifyHandle(
-          { format: 'typescript', root, receiver, method, sqlArgument: extractSqlArgument(node, adapter, content), thisField: false },
+          { format: 'typescript', root: site.root, receiver: site.receiver, method: site.method, sqlArgument: site.sqlArgument, thisField: site.thisField },
           {
             imports: new Map(), typeAnnotations: new Map(), bindings: new Map(), withinFileProvenance: new Map(),
             sqlDialect, resolution: { dialect: 'ts', env },
           },
         );
-        if (verdict.kind === 'handle') handleRoots.add(root);
+        if (verdict.kind === 'handle') handleRoots.add(site.root);
       }
       handleRootsByFile.set(file, handleRoots);
     } finally {

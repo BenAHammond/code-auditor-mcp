@@ -1108,11 +1108,10 @@ export function buildProvenanceContext(
   //    by its annotation, but `db.query('SELECT …')` still does — by the parsed
   //    argument, not the name. Runs before wrapper detection so a wrapper body's
   //    `db.prepare('SELECT …')` is already visible as a DB call to
-  //    `detectDbWrappers`. Only run when a dialect is named; without one
-  //    `identifyHandle` abstains (`unproven`) rather than guessing.
-  if (options.sqlDialect) {
-    dbProvenanced = applySqlArgumentInference(ast, adapter, sourceCode, dbProvenanced, options.sqlDialect);
-  }
+  //    `detectDbWrappers`. Runs even without a named dialect: `identifyHandle`
+  //    parses the literal under DEFAULT_SQL_DIALECT when the dialect is null
+  //    (Spec 70 R2), so a sibling's parseable literal still proves the receiver.
+  dbProvenanced = applySqlArgumentInference(ast, adapter, sourceCode, dbProvenanced, options.sqlDialect ?? null);
 
   // 4. Wrapper detection (structural, not name-based): learn DB-wrapper function
   //    names from function bodies — a body that constructs/calls a DB driver.
@@ -1221,7 +1220,7 @@ export function applySqlArgumentInference(
   adapter: LanguageAdapter,
   sourceCode: string,
   dbProvenanced: Map<string, ProvenanceEvidence>,
-  sqlDialect: Dialect,
+  sqlDialect: Dialect | null,
 ): Map<string, ProvenanceEvidence> {
   if (adapter.name === 'go') return dbProvenanced; // Go resolves cross-file; no TS env here.
 

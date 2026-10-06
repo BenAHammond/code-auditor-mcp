@@ -316,7 +316,7 @@ export function computeReceiverProvenance(
  *   `receiver-provenance` fixed point's `files[file].provenance`)
  * @param bindings the file's rehydrated binding environment
  * @param r3Sites the file's R3 sites (from the `receiver-activity` fact)
- * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @param sqlDialect the corpus's named dialect, or null to parse under the default
  * @returns the file's DB-provenanced name map after the within-file fixed point
  */
 export function classifyBuildProvenance(
@@ -335,10 +335,9 @@ export function classifyBuildProvenance(
   // 2. Propagate through assignments (mirror of `propagateProvenance`).
   prov = propagateProvenanceFromExtract(extract, prov);
 
-  // 3. R3 (only when a dialect is named — `identifyHandle` abstains otherwise).
-  if (sqlDialect) {
-    prov = applyR3FromSites(r3Sites, bindings, prov, sqlDialect);
-  }
+  // 3. R3 — runs even without a named dialect: `identifyHandle` parses the
+  //    literal under DEFAULT_SQL_DIALECT when the dialect is null (Spec 70 R2).
+  prov = applyR3FromSites(r3Sites, bindings, prov, sqlDialect);
 
   // 4. Function wrappers only (mirror of `detectDbWrappers` without classes).
   prov = detectDbWrapperFunctionsFromExtract(extract, prov);
@@ -361,7 +360,7 @@ function applyR3FromSites(
   r3Sites: readonly R3Site[],
   bindings: ReadonlyMap<string, Binding>,
   dbProvenanced: Map<string, ProvenanceEvidence>,
-  sqlDialect: Dialect,
+  sqlDialect: Dialect | null,
 ): Map<string, ProvenanceEvidence> {
   const env = { provenance: dbProvenanced, bindings, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
 

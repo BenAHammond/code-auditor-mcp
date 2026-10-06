@@ -116,7 +116,7 @@ dataSource.query("SELECT * FROM users WHERE org_id = ?");
     );
   });
 
-  it('R3 abstains (unproven) with no dialect named', () => {
+  it('R3 proves a SQL-argument receiver under the default dialect when none is named', () => {
     expectParity(
       `const dataSource = getConnection();
 dataSource.query("SELECT * FROM users WHERE org_id = ?");
