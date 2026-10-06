@@ -410,9 +410,10 @@ export function classifyRootIdentifier(
     // `this.<field>` is a field reference, never a local name. A parameter,
     // variable, import, function, or class of the same name is a *shadow*, not
     // the field's type — consulting it would let `env`/`ctx`/`state` resolve to
-    // a local's disposition instead of the field. Leave it unproven: the caller's
-    // form-3 heritage resolution (`classifyThisChain`) resolves base-class fields,
-    // and a plain unresolvable field stays cannot-fire rather than clean.
+    // a local's disposition instead of the field. Leave it unproven: a plain
+    // unresolvable field stays cannot-fire rather than clean. There is no
+    // type-heritage resolver to prove base-class fields — the form-3
+    // `classifyThisChain` was deleted as dead code (Spec 69 R3).
     return 'unproven';
   }
 
@@ -683,138 +684,4 @@ export function resolveReceiverRoot(
   }
 
   return null;
-}
-
-// ── Form-3 this-chain resolution (Spec 69 R3) ────────────────────────────────
-
-/** Corpus-extracted type shape: type name → (member name → member type) plus the
- *  type's `extends` heritage. Consumed by {@link classifyThisChain}. The legacy
- *  producer (`extractTypeRegistry`) was deleted with `resolveCorpusReceivers`; no
- *  phase-path producer populates this yet, so form-3 is currently unreachable. */
-export interface TypeRegistry {
-  members: ReadonlyMap<string, ReadonlyMap<string, string>>;
-  /** Method-signature names declared by an interface (e.g. `query`, `run`, `exec`). */
-  methods: ReadonlyMap<string, ReadonlySet<string>>;
-  heritage: ReadonlyMap<string, readonly string[]>;
-}
-
-/**
- * Cloudflare base-class field contracts: `this.<field>` → type, given the class's
- * type arguments. These describe the *base class's own field declarations* (a
- * structural registry of `env`/`ctx`/`state` as declared by the `agents` and
- * workers-types packages) — NOT a name list of receivers. Each entry maps the
- * base class's type parameters into its instance fields.
- */
-const BASE_CLASS_FIELD_TYPES: Readonly<Record<string, (args: readonly string[]) => Record<string, string>>> = {
-  // `Agent<Env>` (Cloudflare Agents SDK) exposes the Durable Object contract:
-  // `env` is the type parameter, `ctx` is `AgentContext` (= `DurableObjectState`).
-  Agent: (args) => ({ env: args[0] ?? 'Env', ctx: 'DurableObjectState' }),
-  // `DurableObject<Env>` (workers-types): env is the type parameter, ctx/state are
-  // the Durable Object state.
-  DurableObject: (args) => ({ env: args[0] ?? 'Env', ctx: 'DurableObjectState', state: 'DurableObjectState' }),
-  // `WorkerEntrypoint<Env>` (workers-types): env is the type parameter, ctx is the
-  // execution context.
-  WorkerEntrypoint: (args) => ({ env: args[0] ?? 'Env', ctx: 'ExecutionContext' }),
-};
-
-/** Ambient type-member contracts for Cloudflare's Durable Object SQLite API, which
- *  live in the workers-types package (not in-repo) so they have no in-repo
- *  declaration to read. */
-const AMBIENT_TYPE_MEMBERS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  DurableObjectState: { storage: 'DurableObjectStorage' },
-  DurableObjectStorage: { sql: 'SqlStorage' },
-};
-
-/** Split `Agent<Env>` → `{ base: 'Agent', args: ['Env'] }`. */
-function splitGenericType(text: string): { base: string; args: string[] } {
-  const t = text.trim();
-  const lt = t.indexOf('<');
-  if (lt <= 0 || !t.endsWith('>')) return { base: t, args: [] };
-  const base = t.slice(0, lt).trim();
-  const inner = t.slice(lt + 1, -1);
-  const args: string[] = [];
-  let depth = 0;
-  let current = '';
-  for (const ch of inner) {
-    if (ch === '<') depth++;
-    else if (ch === '>') depth--;
-    if (ch === ',' && depth === 0) {
-      args.push(current.trim());
-      current = '';
-      continue;
-    }
-    current += ch;
-  }
-  if (current.trim()) args.push(current.trim());
-  return { base, args };
-}
-
-/** Classify a resolved type name — a primitive is `not-handle`; anything else is
- *  `unproven` (never a guess). A DB-handle type name no longer proves handle:
- *  the parsed SQL argument is the handle proof (Spec 70 criterion 9). */
-function classifyResolvedTypeName(typeName: string): RootDisposition {
-  const base = baseTypeName(typeName);
-  if (base === 'any' || base === 'unknown') return 'unproven';
-  if (NON_HANDLE_PRIMITIVES.has(base)) return 'not-handle';
-  if (JS_GLOBALS.has(base)) return 'not-handle';
-  return 'unproven';
-}
-
-/** Resolve `typeName.member` to a type name via ambient contracts, then the
- *  corpus's own type members and `extends` heritage (transitively). */
-function resolveTypeMember(
-  typeName: string,
-  member: string,
-  typeRegistry: TypeRegistry,
-  visited: ReadonlySet<string> = new Set(),
-): string | null {
-  const base = baseTypeName(typeName);
-  if (visited.has(base)) return null;
-  const next = new Set(visited);
-  next.add(base);
-
-  const ambient = AMBIENT_TYPE_MEMBERS[base]?.[member];
-  if (ambient) return ambient;
-
-  const inRepo = typeRegistry.members.get(base)?.get(member);
-  if (inRepo) return inRepo;
-
-  for (const parent of typeRegistry.heritage.get(base) ?? []) {
-    const r = resolveTypeMember(parent, member, typeRegistry, next);
-    if (r) return r;
-  }
-  return null;
-}
-
-/**
- * Resolve a `this.<a>.<b>…` receiver chain to a disposition (form-3). The first
- * segment resolves to a type via the enclosing class's base-class heritage
- * (`extends Agent<Env>` → `this.env` is `Env`); each further segment resolves
- * through that type's declared members (`Env.DB` → `D1Database`, `ctx.storage.sql`
- * → `SqlStorage`). Returns `unproven` when the heritage, a segment, or the final
- * type cannot be resolved — never a guess.
- *
- * @param segments the chain segments following `this` (`env` in `this.env.DB`)
- * @param heritageText the enclosing class's `extends` clause text
- * @param typeRegistry the corpus type registry (members, methods, heritage)
- * @returns the chain's disposition, or `unproven` when unresolvable
- */
-export function classifyThisChain(
-  segments: readonly string[],
-  heritageText: string | null | undefined,
-  typeRegistry: TypeRegistry | undefined,
-): RootDisposition {
-  if (!heritageText || segments.length === 0 || !typeRegistry) return 'unproven';
-  const { base, args } = splitGenericType(heritageText);
-  const fieldResolver = BASE_CLASS_FIELD_TYPES[base];
-  if (!fieldResolver) return 'unproven';
-  const fields = fieldResolver(args);
-
-  let typeName: string | null = fields[segments[0]] ?? null;
-  if (!typeName) return 'unproven';
-  for (let i = 1; i < segments.length; i++) {
-    typeName = resolveTypeMember(typeName, segments[i], typeRegistry);
-    if (!typeName) return 'unproven';
-  }
-  return classifyResolvedTypeName(typeName);
 }
