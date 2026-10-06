@@ -1136,19 +1136,20 @@ describe('Spec-18 — CLI end-to-end', () => {
   });
 
   it('R6.7b — changed --json carries a cannot-fire diagnostic for a db: any receiver (file+line) without gating', async () => {
-    // Spec 69 §10 S5e: `db: any` is the definition of inconclusive — a parameter
-    // annotated `any` has no determinable DB-handle type, so the receiver's
-    // disposition is `unproven` and the query-shaped call reports `cannot-fire`
-    // (never a silent `clean`). This pins the agent-facing surface — `changed
-    // --json` (the hook gate) must carry the diagnostic with file + line, and the
-    // diagnostic itself must never gate (it is a coverage diagnostic, not a
-    // violation). The prior assertions pinned the deleted `unresolved-query`
-    // diagnostic keyed to an identifier; the corrected signal keys to the
-    // receiver's root resolution.
-    await writeFile(join(testDir, 'src', 'queries.ts'), 'export const UPSERT_SQL = `INSERT INTO metrics (hour_key, a) VALUES (?, ?)`;\n');
+    // `db: any` is the definition of inconclusive (Spec 69 §10 S5e): a parameter
+    // annotated `any` has no determinable DB-handle type, so a query-shaped call
+    // on it stays `unproven` and reports `cannot-fire` (never a silent `clean`).
+    // Spec 70 R3 makes a *parseable* SQL argument prove `handle`, so the argument
+    // here is Postgres `ILIKE` — dialect-specific syntax the default-sqlite
+    // grammar cannot read — to stay on the cannot-fire path (the dialect is
+    // undetermined, so the parse failure is attributed as possibly
+    // dialect-specific, not a negative verdict). This pins the agent-facing
+    // surface — `changed --json` (the hook gate) must carry the diagnostic with
+    // file + line, and the diagnostic itself must never gate (it is a coverage
+    // diagnostic, not a violation).
     await writeFile(
       join(testDir, 'src', 'lib.ts'),
-      'import { UPSERT_SQL } from "./queries";\n\nexport function record(db: any) {\n  return db.prepare(UPSERT_SQL).run();\n}\n',
+      'export function record(db: any) {\n  return db.prepare(`SELECT * FROM metrics WHERE name ILIKE \'%foo%\'`).run();\n}\n',
     );
     await writeConfig(testDir, {});
 
