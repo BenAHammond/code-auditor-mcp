@@ -4,12 +4,16 @@
  * transaction-control recognition) is in place, so the residual failure rate is
  * the honest `cannot-fire` surface (ON CONFLICT, Postgres casts, PL/pgSQL bodies).
  *
- * Extraction is the same population the regex→AST conversion will be handed: a
- * string/template literal that is the FIRST argument of a query-shaped call
- * (callee is a member/selector expression — `db.query("…")`, `knex.raw('…')`,
- * a `sql` tagged template), plus every `.sql` migration file. A leading-SQL-keyword
- * filter drops non-SQL string args (a table name, a config key) so the rate is a
- * *dialect* failure rate, not "everything a DB method is handed".
+ * Extraction is the *production* SQL-literal candidate walk — `extractStaticSql`
+ * from the data-access analyzer — not a re-implemented one. A candidate is a
+ * call/new-expression whose first static string/template argument (or tagged
+ * template body, or variable-assignment RHS) carries SQL text; Go's
+ * `interpreted_string_literal`/`raw_string_literal` and the ctx-first skip are
+ * the production function's own branches. No leading-SQL-keyword filter is
+ * applied here: production hands every extracted literal to `parseSql` and a
+ * non-SQL string (a table name, a config key) is a *real* `cannot-fire` — the
+ * failure rate is over the production population, so it matches what the phase
+ * path actually folds.
  *
  * `.sql` failures are split into template (`{{…}}` — not SQL until rendered) vs
  * unparseable (a dialect gap), so `{{VERSION}}` migrations do not inflate the
@@ -28,57 +32,9 @@ import { LanguageRegistry } from '../src/languages/LanguageRegistry.js';
 import type { ASTNode, LanguageAdapter, AST } from '../src/languages/types.js';
 import type { Dialect } from '../src/mcp-tools/discoveryQueries.js';
 import { parseSql, parseSqlProgram } from '../src/languages/sql/sqlAst.js';
-import { stripSqlQuotes } from '../src/analyzers/sqlLiteral.js';
+import { extractStaticSql } from '../src/analyzers/universal/UniversalDataAccessAnalyzer.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-
-/** String/template literal node types per format (mirrors receiverResolution.ts). */
-const GO_STRING_LITERAL_TYPES = new Set(['interpreted_string_literal', 'raw_string_literal']);
-const TS_STRING_LITERAL_TYPES = new Set(['string', 'template_string']);
-
-/**
- * A leading-SQL-statement classifier. Unambiguous statement verbs match bare;
- * verbs that double as English ("create", "update", "drop", "alter", "insert",
- * "delete") require a following SQL clause/object keyword so prose like
- * "update the config file" is not mistaken for SQL.
- */
-const SQL_HEURISTIC =
-  /^(?:SELECT\s+\S|WITH\s+\S|EXPLAIN|PRAGMA|VACUUM|BEGIN|COMMIT|ROLLBACK|TRUNCATE|GRANT|REVOKE|ANALYZE|ATTACH|DETACH|REINDEX|VALUES\s*\(|MERGE)\b|^(?:INSERT\s+(?:INTO|OR\b)|REPLACE\s+(?:INTO|OR\b)|UPDATE\s+\S+\s+SET\b|DELETE\s+FROM\b|CREATE\s+(?:TABLE|INDEX|UNIQUE|VIEW|TRIGGER|DATABASE|SCHEMA|TEMP|TEMPORARY)\b|ALTER\s+(?:TABLE|INDEX|VIEW)\b|DROP\s+(?:TABLE|INDEX|VIEW|TRIGGER|DATABASE|SCHEMA)\b)/i;
-
-function looksLikeSql(text: string): boolean {
-  return SQL_HEURISTIC.test(text.trim().replace(/^[\s;()]+/, ''));
-}
-
-/** The argument-list node type for a call, per format. */
-function argListType(adapter: LanguageAdapter): string {
-  return adapter.name === 'go' ? 'argument_list' : 'arguments';
-}
-
-function stringTypes(adapter: LanguageAdapter): ReadonlySet<string> {
-  return adapter.name === 'go' ? GO_STRING_LITERAL_TYPES : TS_STRING_LITERAL_TYPES;
-}
-
-/**
- * The first string/template literal argument of a query-shaped call, unquoted —
- * the exact population `extractSqlArgument` surfaces to `identifyHandle`. Returns
- * null when the callee is not a member/selector expression or the first argument
- * is not a plain literal.
- */
-function firstSqlArgument(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string | null {
-  const children = adapter.getChildren(node);
-  const callee = children.find((c) => c.type !== '(' && c.type !== ')' && c.type !== ',' && c.type !== 'arguments' && c.type !== 'argument_list');
-  if (!callee) return null;
-  if (callee.type !== 'member_expression' && callee.type !== 'selector_expression') return null;
-  const argsNode = children.find((c) => c.type === argListType(adapter));
-  if (!argsNode) return null;
-  const types = stringTypes(adapter);
-  for (const arg of adapter.getChildren(argsNode)) {
-    if (arg.type === '(' || arg.type === ')' || arg.type === ',') continue;
-    if (!types.has(arg.type)) return null;
-    return stripSqlQuotes(adapter.getNodeText(arg, sourceCode), { raw: arg.type === 'raw_string_literal' });
-  }
-  return null;
-}
 
 interface Failure {
   text: string;
@@ -98,7 +54,6 @@ async function measureCorpus(projectRoot: string, dialect: Dialect): Promise<voi
   let candidateCount = 0;
   let okCount = 0;
   let failCount = 0;
-  let skippedInterpolated = 0;
 
   const codeFailures: Failure[] = [];
   const sqlFileFailures: Failure[] = [];
@@ -151,15 +106,12 @@ async function measureCorpus(projectRoot: string, dialect: Dialect): Promise<voi
     }
     if (!ast) continue;
 
-    const calls = adapter.findNodes(ast, { custom: (n: ASTNode) => n.type === 'call_expression' });
+    const calls = adapter.findNodes(ast, {
+      custom: (n: ASTNode) => n.type === 'call_expression' || n.type === 'new_expression',
+    });
     for (const call of calls) {
-      const arg = firstSqlArgument(call, adapter, content);
+      const arg = extractStaticSql(call, adapter, content);
       if (arg === null) continue;
-      if (arg.includes('${')) {
-        skippedInterpolated++;
-        continue;
-      }
-      if (!looksLikeSql(arg)) continue;
       candidateCount++;
       const parsed = parseSql(arg, dialect);
       if (parsed.ok) {
@@ -175,7 +127,6 @@ async function measureCorpus(projectRoot: string, dialect: Dialect): Promise<voi
   const rate = candidateCount === 0 ? 0 : (failCount / candidateCount) * 100;
   console.log(`\n=== ${path.basename(projectRoot)}  (dialect: ${dialect}) ===`);
   console.log(`  code SQL literals:      ${candidateCount} candidates → ${okCount} ok / ${failCount} fail (${rate.toFixed(1)}% fail)`);
-  console.log(`  interpolated templates: ${skippedInterpolated} (skipped — not static SQL)`);
   console.log(`  .sql files:             ${sqlFileCount} files / ${sqlStatementCount} statements; ${sqlFileFailCount} unparseable, ${sqlFileTemplateCount} templated (not SQL)`);
   if (codeFailures.length > 0) {
     console.log(`  failing CODE literals (first ${Math.min(codeFailures.length, 25)}):`);

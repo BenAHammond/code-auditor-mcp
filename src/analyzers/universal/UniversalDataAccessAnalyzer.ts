@@ -793,7 +793,7 @@ function dedupeCandidateNodes(nodes: ASTNode[], adapter: LanguageAdapter): ASTNo
  * dynamic and yields null (its shape is interpolated, not a parseable literal);
  * that is `cannot-fire`, not a negative verdict.
  */
-function extractStaticSql(
+export function extractStaticSql(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
