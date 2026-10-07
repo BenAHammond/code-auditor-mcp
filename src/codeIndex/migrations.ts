@@ -10,6 +10,7 @@ import type { SqliteDatabase } from '../sqlite/types.js';
 import { openSqlite, DB_BUSY_TIMEOUT_MS } from '../sqlite/driver.js';
 import { statSync, existsSync, readFileSync, renameSync, openSync, readSync, closeSync } from 'fs';
 import path from 'path';
+import { ContextualError } from '../mcpToolErrors.js';
 
 const PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS = "PRAGMA table_info('findings_ledger_runs')";
 const PRAGMA_JOURNAL_WAL = 'journal_mode = WAL';
@@ -832,18 +833,20 @@ export class SchemaMigrations {
 
   // ── Schema migrations ────────────────────────────────────────────────
 
-  private runMigrations(): void {
-    // Read the currently stored schema version (if any)
-    const row = this.db.prepare(
-      "SELECT value FROM meta WHERE key = 'schema_version'"
-    ).get() as { value: string } | undefined;
-
-    const currentVersion = row ? parseInt(row.value, 10) : 0;
+  private runMigrations(currentVersion: number): void {
     this.migrateCoreTables(currentVersion);
     this.migrateConventionsExportKind(currentVersion);
     this.migrateRunLifecycle(currentVersion);
     this.migrateStyleCatalog(currentVersion);
     this.migrateSchemaUsageAndSignature(currentVersion);
+  }
+
+  /** Read the stored schema version, or null when the `meta` row is absent. */
+  private readSchemaVersion(): number | null {
+    const row = this.db.prepare(
+      "SELECT value FROM meta WHERE key = 'schema_version'"
+    ).get() as { value: string } | undefined;
+    return row ? parseInt(row.value, 10) : null;
   }
 
   /** Run a schema script only when the stored version precedes the target. */
@@ -1327,11 +1330,30 @@ export class SchemaMigrations {
     // created by it.
     const isFresh = !this.tableExists('functions');
 
+    // Spec 70 — refuse a *future* index before touching it. An index written by a
+    // newer code-auditor carries a schema_version above this build's; running the
+    // DDL and stamping `schema_version` over it would silently downgrade the index
+    // and then fail with a cryptic column error on the first query against the
+    // unknown shape. Read the stored version first (only an existing index has a
+    // `meta` table to read) and decline cleanly, naming both versions, so a
+    // future-index upgrade is an upgrade, never a corruption.
+    let storedVersion: number | null = null;
+    if (!isFresh) {
+      storedVersion = this.readSchemaVersion();
+      if (storedVersion !== null && storedVersion > schemaVersion) {
+        throw new ContextualError(
+          `Code index schema version ${storedVersion} is newer than this build supports (${schemaVersion}). ` +
+            'The index was written by a newer code-auditor; upgrade code-auditor or point it at a different index.',
+          { storedSchemaVersion: storedVersion, supportedSchemaVersion: schemaVersion },
+        );
+      }
+    }
+
     this.db.exec(SCHEMA_DDL);
 
     // Run schema migrations (only an existing index needs upgrading)
     if (!isFresh) {
-      this.runMigrations();
+      this.runMigrations(storedVersion ?? 0);
     }
 
     // Record schema version

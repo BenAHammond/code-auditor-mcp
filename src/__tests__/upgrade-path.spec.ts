@@ -25,6 +25,7 @@ import { fileURLToPath } from 'url';
 import { tmpdir } from 'os';
 import { migrateFromLokiJS, isLokiJSHeader } from '../codeIndex/migrations.js';
 import { CodeIndexDB } from '../codeIndexDB.js';
+import { openSqlite } from '../sqlite/driver.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_411 = join(__dirname, 'fixtures', 'upgrade', '4.1.1-sqlite-index.db');
@@ -114,5 +115,28 @@ describe('release upgrade path — LokiJS sniff vs. real 4.x index', () => {
     expect(wl.find(w => w.name === 'ignore-console')).toBeTruthy();
 
     await db.close();
+  });
+
+  it('declines an index written by a newer build (future schema version) instead of corrupting it', async () => {
+    // A future code-auditor writes schema_version above this build's. Opening it
+    // here would run the DDL and re-stamp `schema_version` down, then fail later
+    // with a cryptic column error — a silent downgrade of the user's index. The
+    // guard must refuse it up front with a message naming both versions.
+    const dbPath = join(dir, 'index.db');
+
+    // Build a real index at the current version, then bump its stored version as
+    // a newer build would have left it.
+    const seed = new CodeIndexDB(dbPath);
+    await seed.initialize();
+    await seed.close();
+
+    const raw = openSqlite(dbPath, { timeoutMs: 30_000 });
+    raw.exec("UPDATE meta SET value = '99' WHERE key = 'schema_version'");
+    raw.close();
+
+    const db = new CodeIndexDB(dbPath);
+    await expect(db.initialize()).rejects.toThrow(
+      /schema version 99 is newer than this build supports \(19\)/,
+    );
   });
 });
