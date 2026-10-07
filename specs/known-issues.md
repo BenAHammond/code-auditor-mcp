@@ -51,3 +51,62 @@ producer emitting *more* than the oracle, not to drive `expected ≈ actual`. It
 known weakness — a producer that silently stops emitting a fact kind is visible
 only if the re-recorded baseline is inspected against the `composition` prose —
 is a permanent property of a drift ratchet, not a defect to file.
+
+---
+
+## `node-sql-parser` rejects valid-SQLite literals on the SQL-argument path
+
+**Surface:** the receiver-resolution SQL-argument source (`sqlArgumentSource` in
+`src/analyzers/handleIdentification.ts`, via `parseSql` →
+`src/languages/sql/sqlAst.ts`) — the R3 arm that proves a receiver `handle` when
+its static SQL argument parses.
+
+**Mechanism.** node-sql-parser under its `sqlite` grammar (the default) refuses
+some literals sqlite itself accepts — `ESCAPE '\'` escape clauses, bare `?`
+placeholders in some positions, and reserved-word aliases. When the argument does
+not parse, `identifyHandle` returns `unproven` with a reason naming
+node-sql-parser, so the receiver surfaces as `cannot-fire` rather than a guessed
+`handle` / `not-handle`.
+
+**Why it is permanent.** It is an upstream grammar limitation, not a defect in
+this tool's resolution. The honest abstention is correct behavior: "I was handed
+SQL-shaped text and could not read it" (Spec 70 R1/R2) is exactly what an
+unparseable argument should report, and the residual shrinks only as upstream
+accepts more of the sqlite dialect.
+
+---
+
+## A codegen template token as an import specifier resolves to nothing
+
+**Surface:** import-specifier resolution (`resolveSpecifier` →
+`src/analyzers/receiverResolution.ts`) — the one seam that answers relative /
+`@/`-`~/` alias / tsconfig-`paths` / node_modules-vendor specifiers.
+
+**Mechanism.** blitz's generator templates import a placeholder —
+`import db from "__prismaFolder__"` — where `__prismaFolder__` is a codegen token
+replaced at scaffold time, not a specifier with any in-tree or vendor target. None
+of the four resolution arms reaches it, so the site reports `unproven`.
+
+**Why it is permanent.** The token is not a real import until codegen runs; the
+checkout contains the template, not the generated file. Guessing its target would
+be a fabrication — the honest answer is `unproven`.
+
+---
+
+## A bare specifier whose mapping is supplied by a build step, not the tree
+
+**Surface:** import-specifier resolution for bare specifiers (`resolveSpecifier`'s
+tsconfig-`paths` and vendor arms).
+
+**Mechanism.** blitz's `import db from "db"` resolves through a build-time alias,
+not through anything in the analyzed tree: the root tsconfig has no
+`compilerOptions.paths`, the `db/` folders carry no `package.json`, the clone has
+no `node_modules`, and no manifest declares a `db` dependency. The target module
+(`db/index.ts` → `enhancePrisma(PrismaClient)`) *does* exist in the tree — only
+the mapping from the bare `"db"` specifier to it is absent. That is why no
+resolver reaches it.
+
+**Why it is permanent.** A resolver must not guess by directory name: that
+`db/index.ts` exists is a coincidence the specifier cannot reach, and proving a
+handle from that coincidence would be a fabrication. The correct, permanent answer
+is `unproven`.
