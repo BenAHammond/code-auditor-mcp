@@ -29,7 +29,7 @@
 
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
 import type { ProvenanceEvidence } from './provenance.js';
-import { isNodeBuiltin, JS_GLOBALS } from './tsEcosystem.js';
+import { isNodeBuiltin, isDbHandleTypeName, JS_GLOBALS } from './tsEcosystem.js';
 
 /** A receiver root's disposition (Spec 69 §10 S5e). */
 export type RootDisposition = 'handle' | 'not-handle' | 'unproven';
@@ -492,13 +492,16 @@ function classifyTypeText(typeText: string, env: RootResolutionEnv, depth: numbe
   // …) is provably not a DB handle — the global object's own names, enumerated at
   // load, never a hand-written list.
   if (JS_GLOBALS.has(base)) return 'not-handle';
-  // A non-primitive type name (e.g. `D1Database`, `Pool`, `MyDb`) no longer
-  // proves or disproves handle-ness: the parsed SQL argument is the handle
-  // proof (Spec 70 criterion 9 deletes handle-type names as a test). The old
-  // `classifyRootIdentifier(base, …)` treated the *type* name as a *value*
-  // name, returning `not-handle` for an unbound ambient interface and thereby
-  // silently dropping a type-annotated handle before its SQL could be seen.
-  // Anything that is not a primitive stays `unproven` — visible, never clean.
+  // A bare type name that is a DB handle type in the manifest resolves `handle`
+  // (Decision A — the manifest keys on package AND type). `D1Database` /
+  // `D1PreparedStatement` (from `@cloudflare/workers-types`) and `Pool` /
+  // `Kysely` / `PrismaClient` prove their annotated receiver is a handle; a name
+  // absent from every manifest entry (`KVNamespace`, `R2Bucket`,
+  // `ExecutionContext`, `MyDb`) stays `unproven` — visible, never clean. This
+  // restores the type-annotation arm that criterion 9's deletion dropped, but
+  // grounded in the manifest *data* (the exported names of known DB packages)
+  // rather than a hand-written list.
+  if (isDbHandleTypeName(base)) return 'handle';
   return 'unproven';
 }
 

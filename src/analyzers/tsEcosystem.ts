@@ -78,6 +78,29 @@ export function handleTypesForPackage(specifier: string): ReadonlySet<string> | 
   return undefined;
 }
 
+/**
+ * The reverse index of `DB_HANDLE_TYPES`: every handle-type name across all
+ * manifest packages, flattened to one set. Decision A's type→package arm —
+ * `classifyTypeText` consults this to resolve a bare type annotation
+ * (`D1Database`, `Pool`, `Kysely`) to `handle`, while a name absent from every
+ * manifest entry (`KVNamespace`, `R2Bucket`, `ExecutionContext`) stays
+ * `unproven`. The verdict is a boolean (is this name a DB handle type of *some*
+ * package), so the *which-package* half is not carried here — that is answered by
+ * `handleTypesForPackage` at the import-seed step.
+ */
+const DB_HANDLE_TYPE_NAMES: ReadonlySet<string> = new Set(
+  [...DB_HANDLE_TYPES.values()].flatMap((names) => [...names]),
+);
+
+/**
+ * True when `name` is a handle type of *some* manifest DB package — the reverse
+ * of `handleTypesForPackage`. `classifyTypeText` uses this to resolve a bare type
+ * annotation to `handle` under Decision A.
+ */
+export function isDbHandleTypeName(name: string): boolean {
+  return DB_HANDLE_TYPE_NAMES.has(name);
+}
+
 // ─── The package discriminant: Node builtins + JS globals ─────────────────────
 //
 // The handle/not-handle decision cannot rest on a method *name* — `join` is

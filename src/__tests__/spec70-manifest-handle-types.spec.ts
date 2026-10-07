@@ -13,7 +13,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers, LanguageRegistry } from '../languages/index.js';
 import { parseFile } from '../languages/adapterBridge.js';
 import { extractDBProvenancedImports } from '../analyzers/provenance.js';
-import { handleTypesForPackage, DB_HANDLE_TYPES, DB_PACKAGES } from '../analyzers/tsEcosystem.js';
+import { classifyRootIdentifier, type RootResolutionEnv, type Binding } from '../analyzers/receiverRoot.js';
+import { handleTypesForPackage, isDbHandleTypeName, DB_HANDLE_TYPES, DB_PACKAGES } from '../analyzers/tsEcosystem.js';
 
 beforeAll(async () => {
   initializeLanguages();
@@ -75,5 +76,51 @@ describe('Spec 70 Decision A — manifest handle types', () => {
       'export const x = 1;',
     ].join('\n'));
     expect(names).toEqual(['PgPool']);
+  });
+});
+
+describe('Spec 70 Decision A — type→package resolution in classifyTypeText', () => {
+  /** Classify a variable annotated with `typeText`, through the same seam the
+   *  receiver-resolution processor uses (`classifyRootIdentifier` → `classifyTypeText`). */
+  function dispositionOf(typeText: string): string {
+    const bindings = new Map<string, Binding>([['db', { kind: 'variable', typeText }]]);
+    const env = {
+      provenance: new Map<string, never>(),
+      bindings,
+      adapter: undefined,
+      sourceCode: '',
+    } as unknown as RootResolutionEnv;
+    return classifyRootIdentifier('db', env);
+  }
+
+  it('treats every manifest handle type as a name, and every non-listed type as not', () => {
+    expect(isDbHandleTypeName('D1Database')).toBe(true);
+    expect(isDbHandleTypeName('D1PreparedStatement')).toBe(true);
+    expect(isDbHandleTypeName('Pool')).toBe(true);
+    expect(isDbHandleTypeName('Kysely')).toBe(true);
+    expect(isDbHandleTypeName('KVNamespace')).toBe(false);
+    expect(isDbHandleTypeName('R2Bucket')).toBe(false);
+    expect(isDbHandleTypeName('ExecutionContext')).toBe(false);
+    expect(isDbHandleTypeName('MyDb')).toBe(false);
+  });
+
+  it('resolves a bare D1Database type annotation to `handle`', () => {
+    expect(dispositionOf('D1Database')).toBe('handle');
+  });
+
+  it('resolves a union carrying a manifest handle type to `handle`', () => {
+    expect(dispositionOf('D1Database | null')).toBe('handle');
+  });
+
+  it('leaves a non-manifest type annotation (`KVNamespace`) `unproven`, never `handle`', () => {
+    expect(dispositionOf('KVNamespace')).toBe('unproven');
+    expect(dispositionOf('R2Bucket')).toBe('unproven');
+    expect(dispositionOf('ExecutionContext')).toBe('unproven');
+  });
+
+  it('still classifies primitives and JS globals `not-handle` (the manifest arm is not a catch-all)', () => {
+    expect(dispositionOf('string')).toBe('not-handle');
+    expect(dispositionOf('Promise')).toBe('not-handle');
+    expect(dispositionOf('Array<Pool>')).toBe('not-handle');
   });
 });
