@@ -26,7 +26,6 @@ import {
   extractInterfaceFields,
   resolveReceiverRoot,
   isDbShapedRoot,
-  resolveThisFieldType,
   findEnclosingClassHeritage,
   type RootResolutionEnv,
 } from '../receiverRoot.js';
@@ -3497,14 +3496,14 @@ interface HandleCallSiteIdentity {
   receiver: string | null;
   method: string | null;
   thisField: boolean;
-  thisFieldType: string | null;
+  thisHeritage: string | null;
   sqlArg: string | null;
   siteReceiver: string | null;
 }
 
 const NULL_HANDLE_IDENTITY: HandleCallSiteIdentity = {
   calleeType: null, name: null, root: null, receiver: null, method: null,
-  thisField: false, thisFieldType: null, sqlArg: null, siteReceiver: null,
+  thisField: false, thisHeritage: null, sqlArg: null, siteReceiver: null,
 };
 
 /** Project `handleVerdictForCall`'s structural gates (without `identifyHandle`) into
@@ -3530,7 +3529,7 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
     const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
     return {
       calleeType: 'member', name: null, root, receiver, method, thisField: false,
-      thisFieldType: null,
+      thisHeritage: null,
       sqlArg,
       siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
     };
@@ -3548,7 +3547,7 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
     return {
       calleeType: 'identifier', name, root: name, receiver: name, method: name,
       thisField: false,
-      thisFieldType: null,
+      thisHeritage: null,
       sqlArg: extractStaticSql(callNode, adapter, sourceCode),
       siteReceiver: null,
     };
@@ -3570,14 +3569,15 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
   // Spec 70 Q3 — a `this.<root>` receiver resolves to the enclosing class's
   // base-class field type (`extends WorkflowEntrypoint<Env>` → `this.env` is
   // `Env`), re-folded through the member path by the same heritage seam as the
-  // build side. Null when not `this`-rooted or the class has no base class.
-  const thisFieldType = thisRooted
-    ? resolveThisFieldType(root, findEnclosingClassHeritage(scan.ast, adapter, callNode, sourceCode))
+  // build side. The raw `extends` text is carried, resolved at fold time; null
+  // when not `this`-rooted or the class has no base class.
+  const thisHeritage = thisRooted
+    ? findEnclosingClassHeritage(scan.ast, adapter, callNode, sourceCode)
     : null;
   return {
     calleeType: 'member', name: null, root, receiver, method,
     thisField: thisRooted,
-    thisFieldType,
+    thisHeritage,
     sqlArg,
     siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
   };
@@ -3670,7 +3670,7 @@ function buildDataAccessCallCandidate(
     handleReceiver: handle.receiver,
     handleMethod: handle.method,
     handleThisField: handle.thisField,
-    handleThisFieldType: handle.thisFieldType,
+    handleThisHeritage: handle.thisHeritage,
     handleSqlArg: handle.sqlArg,
     handleSiteReceiver: handle.siteReceiver,
     skipCallForTemplateArg: shouldSkipCallForTemplateArg(node, adapter),
@@ -3802,7 +3802,7 @@ export function extractLoopQueryRawCandidates(
       handleReceiver: handle.receiver,
       handleMethod: handle.method,
       handleThisField: handle.thisField,
-      handleThisFieldType: handle.thisFieldType,
+      handleThisHeritage: handle.thisHeritage,
       handleSiteReceiver: handle.siteReceiver,
       sqlArg: handle.sqlArg,
     });

@@ -127,11 +127,12 @@ export interface CallSite {
   readonly sqlArgument: string | null;
   /** Whether the receiver chain bottoms out at `this`/`super` (a `this.<field>` reference). */
   readonly thisField: boolean;
-  /** The resolved type of `this.<root>` from the enclosing class's base-class
-   *  heritage (`extends WorkflowEntrypoint<Env>` → `this.env` is `Env`), or null
-   *  when the field is not a `this` reference or has no heritage contract (Spec 70
-   *  Q3). Absent on older/foreign call sites. */
-  readonly thisFieldType?: string | null;
+  /** The enclosing class's base-class heritage text (`WorkflowEntrypoint<Env>`),
+   *  or null when the field is not a `this` reference or the enclosing class has
+   *  no base class (Spec 70 Q3). Resolved at fold time via the env's
+   *  `resolveHeritageField` — the raw `extends` text is carried, not a pre-resolved
+   *  type. Absent on older/foreign call sites. */
+  readonly thisHeritage?: string | null;
 }
 
 // ─── Resolution facts ────────────────────────────────────────────────────────
@@ -423,7 +424,7 @@ const typescriptResolution: ResolutionImplementation = {
       memberPath: site.thisField
         ? deriveThisMemberPath(site.root, site.receiver)
         : deriveMemberPath(site.root, site.receiver, false),
-      thisFieldType: site.thisFieldType,
+      thisHeritage: site.thisHeritage,
     });
     // The package discriminant (not the method name) decides the disposition: an
     // unrecognized root is `unproven` (cannot-fire), never downgraded by method

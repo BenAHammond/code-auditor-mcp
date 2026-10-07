@@ -29,7 +29,7 @@
 
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
 import type { ProvenanceEvidence } from './provenance.js';
-import { isNodeBuiltin, isDbHandleTypeName, dbHandlePackagesForName, handleTypesForPackage, resolveWorkerHeritageField, JS_GLOBALS } from './tsEcosystem.js';
+import { isNodeBuiltin, isDbHandleTypeName, dbHandlePackagesForName, handleTypesForPackage, JS_GLOBALS } from './tsEcosystem.js';
 
 /** A receiver root's disposition (Spec 69 §10 S5e). */
 export type RootDisposition = 'handle' | 'not-handle' | 'unproven';
@@ -47,6 +47,21 @@ export type SpecifierResolution =
   | { readonly kind: 'in-repo'; readonly path: string }
   | { readonly kind: 'vendor'; readonly path: string }
   | { readonly kind: 'unresolved' };
+
+/**
+ * The fold-time heritage seam (Spec 70 Q3, Item 1): resolve `this.<field>` on a
+ * worker base class to its declared field type by reading the base class's
+ * declaration in the project's declared dependencies' `.d.ts` and substituting
+ * the heritage's type arguments. Returns `null` (abstain) when the base class,
+ * the field, or a referenced type argument cannot be resolved — never a guessed
+ * clean. Absent from the env (the Go path, the build-side R3 fold, and callers
+ * with no declared dependencies), the classifier abstains on every heritage arm.
+ */
+export type HeritageFieldResolver = (
+  base: string,
+  field: string,
+  args: readonly string[],
+) => string | null;
 
 /** How a name is bound in the file's scope chain. */
 export type BindingKind =
@@ -138,6 +153,16 @@ export interface RootResolutionEnv {
    * 70 criterion 9, Item 3).
    */
   declaredTypePackages?: ReadonlySet<string>;
+  /**
+   * The fold-time heritage seam (Spec 70 Q3, Item 1): resolve `this.<field>` on
+   * a worker base class to its declared field type by reading the base class's
+   * declaration in the project's declared dependencies' `.d.ts` and substituting
+   * the heritage's type arguments. Absent (Go env, build-side R3 fold, callers
+   * with no declared dependencies), the heritage arm in {@link classifyRootIdentifier}
+   * abstains (`unproven`). Built once per project by `makeHeritageResolver` in
+   * `receiverResolution.ts`.
+   */
+  resolveHeritageField?: HeritageFieldResolver;
   /**
    * Out-param populated by `classifyTypeText` when it rejects the ambient arm:
    * an unbound DB-handle type name whose declaring package is not a declared
@@ -550,22 +575,28 @@ export function classifyRootIdentifier(
   name: string,
   env: RootResolutionEnv,
   depth = 0,
-  opts?: { thisField?: boolean; memberPath?: readonly string[]; thisFieldType?: string | null },
+  opts?: { thisField?: boolean; memberPath?: readonly string[]; thisHeritage?: string | null },
 ): RootDisposition {
   if (!name) return 'unproven';
   if (env.provenance.has(name)) return 'handle';
   if (depth > 8) return 'unproven';
 
-  // Form-3 heritage (Spec 70 Q3): a `this.<field>` reference resolves to the
-  // enclosing class's base-class field type (`extends WorkflowEntrypoint<Env>`
+  // Form-3 heritage (Spec 70 Q3, Item 1): a `this.<field>` reference resolves to
+  // the enclosing class's base-class field type (`extends WorkflowEntrypoint<Env>`
   // → `this.env` is `Env`), then through the member path by the same
-  // interface-field seam as B3. This runs *before* the binding lookup — the
+  // interface-field seam as B3. The base class is resolved *to its declaration*
+  // in the project's declared dependencies' `.d.ts` via `env.resolveHeritageField`
+  // — never a bundled name map. This runs *before* the binding lookup — the
   // heritage contract is authoritative, and a same-named local binding is a
-  // shadow, not the field's type. No heritage contract → `thisFieldType` is
-  // null and the field stays `unproven` (abstain, never a guess from the class
-  // merely having a generic parameter).
-  if (opts?.thisField && opts.thisFieldType) {
-    return classifyTypeOrMember(opts.thisFieldType, opts.memberPath, env, depth + 1);
+  // shadow, not the field's type. No heritage (`thisHeritage` null), no resolver,
+  // or an unresolvable declaration all fall through to `unproven` (abstain,
+  // never a guess from the class merely having a generic parameter).
+  if (opts?.thisField && opts.thisHeritage && env.resolveHeritageField) {
+    const { base, args } = splitHeritage(opts.thisHeritage);
+    const fieldType = env.resolveHeritageField(base, name, args);
+    if (fieldType !== null) {
+      return classifyTypeOrMember(fieldType, opts.memberPath, env, depth + 1);
+    }
   }
 
   const binding = env.bindings.get(name);
@@ -996,31 +1027,12 @@ export function resolveReceiverRoot(
 
 // ── Form-3 this-field type heritage (Spec 70 Q3) ─────────────────────────────
 
-/**
- * Resolve the type of `this.<field>` from the enclosing class's `extends`
- * heritage (Spec 70 Q3): `extends WorkflowEntrypoint<Env>` → `this.env` is
- * `Env`. The base class is resolved *to its declaration* and the field's
- * declared type is read back out with the actual type argument substituted —
- * never a framework-name map, and never a guess from the class merely carrying
- * a generic parameter (B2's rule: resolve the declaration or abstain).
- *
- * The declaration source is {@link resolveWorkerHeritageField} in
- * `tsEcosystem.ts`: the worker base classes are ambient globals (no file import
- * to resolve through `resolveSpecifier`), so their field contracts are a
- * residual fact carried as declarative data beside `database-packages.json`,
- * with `$N` type-argument references substituted here. An unknown base class, a
- * field the class does not declare, or an unresolved type argument all abstain
- * (`null`) — the classifier reports `unproven`.
- */
-export function resolveThisFieldType(field: string, heritageText: string | null | undefined): string | null {
-  if (!heritageText || !field) return null;
-  const { base, args } = splitHeritage(heritageText);
-  return resolveWorkerHeritageField(base, field, args);
-}
-
 /** Split `Agent<Env>` / `WorkflowEntrypoint` into its base-class name and type
  *  arguments. A heritage with no `<…>` has an empty argument list; nested
- *  generics (`Foo<Bar<Baz>, Qux>`) split at top-level commas only. */
+ *  generics (`Foo<Bar<Baz>, Qux>`) split at top-level commas only. The base-class
+ *  name and arguments are then handed to `env.resolveHeritageField` for the
+ *  declaration lookup, or left unresolvable (abstain) when no resolver is
+ *  threaded. */
 function splitHeritage(text: string): { base: string; args: string[] } {
   const t = text.trim();
   const base = baseTypeName(t);

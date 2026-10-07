@@ -38,7 +38,9 @@ import {
   classifyRootIdentifier,
   type RootResolutionEnv,
   type SpecifierResolution,
+  type HeritageFieldResolver,
 } from './receiverRoot.js';
+import { parseFile, getNodeText } from '../languages/adapterBridge.js';
 import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 
@@ -312,6 +314,170 @@ function resolveVendorDeclaration(pkgRoot: string): string | null {
   }
   const idx = path.join(pkgRoot, 'index.d.ts');
   return existsSync(idx) ? idx : null;
+}
+
+// ── Form-3 heritage declaration reader (Spec 70 Q3, Item 1) ─────────────────
+
+/** The declared shape of one heritage base class, read from its `.d.ts`:
+ *  its type-parameter names/defaults and its instance field → declared type map.
+ *  No bundled name list — the declaration is the source of truth. */
+interface HeritageClassDecl {
+  typeParams: readonly HeritageTypeParam[];
+  fields: ReadonlyMap<string, string>;
+}
+
+/** One type parameter: its name and its declared default (`unknown` for
+ *  `Env = unknown`), or null when no default is declared. */
+interface HeritageTypeParam {
+  name: string;
+  default: string | null;
+}
+
+/** Strip a tree-sitter `default_type` (`= unknown`) / `type_annotation`
+ *  (`: Env`) wrapper to the bare type text. */
+function stripTypePrefix(text: string): string {
+  const t = text.trim();
+  return t.replace(/^[=:]/, '').trim();
+}
+
+/** Escape a literal for interpolation into a `RegExp` — the type-parameter
+ *  names become word-boundary alternatives. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** The enclosing class declaration named `base`, or null when the `.d.ts`
+ *  declares no such class. Both `class_declaration` and
+ *  `abstract_class_declaration` name their class via a leading `type_identifier`
+ *  child (tree-sitter renders a class name as a type identifier, not an
+ *  identifier). */
+function findClassNamed(root: ASTNode, base: string, sourceCode: string): ASTNode | null {
+  const stack: ASTNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === 'class_declaration' || node.type === 'abstract_class_declaration') {
+      const nameNode = node.children?.find((c) => c.type === 'type_identifier');
+      if (nameNode && getNodeText(nameNode, sourceCode) === base) return node;
+    }
+    if (node.children) for (const c of node.children) stack.push(c);
+  }
+  return null;
+}
+
+/** Read one heritage base class's declared type parameters and instance fields
+ *  from a `.d.ts`. Returns null (abstain) when the file is unreadable, unparseable,
+ *  or declares no class named `base`. Only `public_field_definition` members are
+ *  read — `method_signature`/`constructor` members carry no field type and are
+ *  skipped, so a base class that declares only methods yields no fields. */
+function readClassFieldTypes(dtsPath: string, base: string): HeritageClassDecl | null {
+  let content: string;
+  try {
+    content = readFileSync(dtsPath, 'utf-8');
+  } catch {
+    return null;
+  }
+  const ast = parseFile(dtsPath, content);
+  if (!ast) return null;
+  const classNode = findClassNamed(ast.root, base, content);
+  if (!classNode) return null;
+
+  const typeParams: HeritageTypeParam[] = [];
+  const fields = new Map<string, string>();
+  for (const child of classNode.children ?? []) {
+    if (child.type === 'type_parameters') {
+      for (const tp of child.children ?? []) {
+        if (tp.type !== 'type_parameter') continue;
+        let name: string | null = null;
+        let def: string | null = null;
+        for (const c of tp.children ?? []) {
+          if (c.type === 'type_identifier' && name === null) name = getNodeText(c, content);
+          else if (c.type === 'default_type') def = stripTypePrefix(getNodeText(c, content));
+        }
+        if (name !== null) typeParams.push({ name, default: def });
+      }
+    } else if (child.type === 'class_body') {
+      for (const member of child.children ?? []) {
+        if (member.type !== 'public_field_definition') continue;
+        let fieldName: string | null = null;
+        let fieldType: string | null = null;
+        for (const c of member.children ?? []) {
+          if (c.type === 'property_identifier') fieldName = getNodeText(c, content);
+          else if (c.type === 'type_annotation') fieldType = stripTypePrefix(getNodeText(c, content));
+        }
+        if (fieldName !== null && fieldType !== null) fields.set(fieldName, fieldType);
+      }
+    }
+  }
+  return { typeParams, fields };
+}
+
+/** Substitute the declared field type's type-parameter references with the
+ *  heritage's type arguments (or the declared default when an argument is absent).
+ *  A single combined word-boundary pass avoids chained substitution (a replacement
+ *  that is itself another parameter's name). Returns null (abstain) when the
+ *  declared type references a parameter that has neither an argument nor a
+ *  declared default — never a guessed clean. */
+function substituteTypeParams(
+  declared: string,
+  typeParams: readonly HeritageTypeParam[],
+  args: readonly string[],
+): string | null {
+  if (typeParams.length === 0) return declared;
+  const names = typeParams.map((p) => p.name);
+  const pattern = names.map(escapeRegExp).sort((a, b) => b.length - a.length).join('|');
+  const re = new RegExp(`\\b(?:${pattern})\\b`, 'g');
+  let ok = true;
+  const result = declared.replace(re, (m) => {
+    const idx = names.indexOf(m);
+    const replacement = args[idx] ?? typeParams[idx].default;
+    if (replacement === null || replacement === undefined) {
+      ok = false;
+      return m;
+    }
+    return replacement;
+  });
+  return ok ? result : null;
+}
+
+/** Build the heritage field resolver for a project: given a base class name, its
+ *  type arguments, and a `this.<field>` name, resolve the field's declared type
+ *  from the base class's `.d.ts` in the project's declared dependencies. Each
+ *  declared package is tried in turn (the base class may be an ambient global from
+ *  any of them — `@cloudflare/workers-types`, the `agents` SDK, …), its vendor
+ *  declaration resolved through the same `resolveVendorSpecifier` seam the import
+ *  path uses (with a synthetic importer at the project root, since an ambient
+ *  class carries no real importing file). Returns null when no declared dependency
+ *  ships a `.d.ts` that declares the base class — which is every pinned clone, none
+ *  of which carries `node_modules` — so the classifier abstains. Results are
+ *  cached per base class name.
+ */
+export function makeHeritageResolver(
+  projectRoot: string | undefined,
+  declaredTypePackages: ReadonlySet<string> | undefined,
+): HeritageFieldResolver | null {
+  if (!projectRoot || !declaredTypePackages || declaredTypePackages.size === 0) return null;
+  const importer = path.join(projectRoot, 'index.ts');
+  const cache = new Map<string, HeritageClassDecl | null>();
+  return (base, field, args) => {
+    let decl = cache.get(base);
+    if (decl === undefined) {
+      decl = null;
+      for (const pkg of declaredTypePackages) {
+        const dts = resolveVendorSpecifier(pkg, importer, projectRoot);
+        if (!dts) continue;
+        const found = readClassFieldTypes(dts, base);
+        if (found) {
+          decl = found;
+          break;
+        }
+      }
+      cache.set(base, decl);
+    }
+    if (!decl) return null;
+    const declared = decl.fields.get(field);
+    if (declared === undefined) return null;
+    return substituteTypeParams(declared, decl.typeParams, args);
+  };
 }
 
 /** Resolve a base path (with or without extension) to a known in-repo file. */

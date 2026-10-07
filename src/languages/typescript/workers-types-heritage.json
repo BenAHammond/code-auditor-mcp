@@ -1,6 +1,0 @@
-{
-  "Agent": { "env": "$0", "ctx": "DurableObjectState" },
-  "DurableObject": { "env": "$0", "ctx": "DurableObjectState", "state": "DurableObjectState" },
-  "WorkerEntrypoint": { "env": "$0", "ctx": "ExecutionContext" },
-  "WorkflowEntrypoint": { "env": "$0", "ctx": "ExecutionContext" }
-}

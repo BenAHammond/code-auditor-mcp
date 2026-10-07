@@ -511,9 +511,10 @@ export type LoopQueryRawCandidate = {
   readonly handleReceiver: string | null;
   readonly handleMethod: string | null;
   readonly handleThisField: boolean;
-  /** `this.<root>` heritage-resolved field type (`extends WorkflowEntrypoint<Env>`
-   *  → `this.env` is `Env`), or null when not `this`-rooted or no heritage. */
-  readonly handleThisFieldType: string | null;
+  /** The enclosing class's base-class heritage text (`WorkflowEntrypoint<Env>`),
+   *  or null when not `this`-rooted or the class has no base class (Spec 70 Q3).
+   *  Resolved at fold time via the env's `resolveHeritageField`. */
+  readonly handleThisHeritage: string | null;
   /** The handle verdict's site-dialect receiver (raw nullable
    *  `getMemberExpressionReceiver` of the callee) — `resolveSiteDialect` reads
    *  the nullable raw, distinct from `handleReceiver` (`receiver ?? root`). */
@@ -1081,9 +1082,10 @@ export type DataAccessCallCandidate = {
   readonly handleReceiver: string | null;
   readonly handleMethod: string | null;
   readonly handleThisField: boolean;
-  /** `this.<root>` heritage-resolved field type (`extends WorkflowEntrypoint<Env>`
-   *  → `this.env` is `Env`), or null when not `this`-rooted or no heritage. */
-  readonly handleThisFieldType: string | null;
+  /** The enclosing class's base-class heritage text (`WorkflowEntrypoint<Env>`),
+   *  or null when not `this`-rooted or the class has no base class (Spec 70 Q3).
+   *  Resolved at fold time via the env's `resolveHeritageField`. */
+  readonly handleThisHeritage: string | null;
   /** `extractStaticSql(callNode)` — the handle verdict's SQL argument (the
    *  enclosing-call first arg for a template, the node's own arg otherwise).
    *  Distinct from `sqlArg` (`extractStaticSql(node)`) for a template that is a
@@ -1779,7 +1781,7 @@ export type ReceiverActivityR3Site = {
   readonly method: string;
   readonly sqlArgument: string;
   readonly thisField: boolean;
-  readonly thisFieldType: string | null;
+  readonly thisHeritage: string | null;
 };
 
 /**

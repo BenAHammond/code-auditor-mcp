@@ -29,7 +29,6 @@ import {
   extractInterfaceFields,
   type RootResolutionEnv,
   resolveReceiverRoot,
-  resolveThisFieldType,
   findEnclosingClassHeritage,
   type Binding,
 } from './receiverRoot.js';
@@ -1278,8 +1277,8 @@ export function applySqlArgumentInference(
     if (sqlArgument === null) return;
 
     const thisField = receiverRootIsThis(callee, adapter);
-    const thisFieldType = thisField
-      ? resolveThisFieldType(root, findEnclosingClassHeritage(ast, adapter, node, sourceCode))
+    const thisHeritage = thisField
+      ? findEnclosingClassHeritage(ast, adapter, node, sourceCode)
       : null;
 
     const verdict = identifyHandle(
@@ -1290,7 +1289,7 @@ export function applySqlArgumentInference(
         method,
         sqlArgument,
         thisField,
-        thisFieldType,
+        thisHeritage,
       },
       {
         imports: new Map(),
@@ -1329,11 +1328,12 @@ export interface R3Site {
   readonly method: string;
   readonly sqlArgument: string;
   readonly thisField: boolean;
-  /** The resolved type of `this.<root>` from the enclosing class's base-class
-   *  heritage (`extends WorkflowEntrypoint<Env>` → `this.env` is `Env`), or null
-   *  when the site is not a `this` reference or has no heritage contract (Spec 70
-   *  Q3). */
-  readonly thisFieldType: string | null;
+  /** The enclosing class's base-class heritage text (`WorkflowEntrypoint<Env>`),
+   *  or null when the site is not a `this` reference or the enclosing class has no
+   *  base class (Spec 70 Q3). Resolved at fold time, not here — the raw `extends`
+   *  text is carried so the fold can look it up in declared dependencies' `.d.ts`.
+   */
+  readonly thisHeritage: string | null;
 }
 
 /**
@@ -1379,8 +1379,8 @@ export function extractR3Sites(
     if (sqlArgument === null) return;
 
     const thisField = receiverRootIsThis(callee, adapter);
-    const thisFieldType = thisField
-      ? resolveThisFieldType(root, findEnclosingClassHeritage(ast, adapter, node, sourceCode))
+    const thisHeritage = thisField
+      ? findEnclosingClassHeritage(ast, adapter, node, sourceCode)
       : null;
 
     sites.push({
@@ -1389,7 +1389,7 @@ export function extractR3Sites(
       method,
       sqlArgument,
       thisField,
-      thisFieldType,
+      thisHeritage,
     });
   });
 

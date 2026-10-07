@@ -52,7 +52,7 @@ export function extractReceiverActivity(file: AstFile): ReceiverActivityFact[] {
         method: s.method,
         sqlArgument: s.sqlArgument,
         thisField: s.thisField,
-        thisFieldType: s.thisFieldType,
+        thisHeritage: s.thisHeritage,
       })),
       dbActivity: [...dbActivity],
     },

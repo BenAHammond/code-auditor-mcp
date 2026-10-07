@@ -34,7 +34,7 @@ import type {
   WithinFileProvenanceFact,
 } from './types.js';
 import type { ProvenanceEvidence, R3Site } from '../analyzers/provenance.js';
-import type { Binding, RootResolutionEnv, SpecifierResolution } from '../analyzers/receiverRoot.js';
+import type { Binding, RootResolutionEnv, SpecifierResolution, HeritageFieldResolver } from '../analyzers/receiverRoot.js';
 import type { TsWithinFileProvenanceExtract } from '../analyzers/tsExpressionDescriptor.js';
 import { classifyBuildProvenance, evidenceFromFact, rehydrateWithinFileProvenance, bindingFromFact } from './receiverProvenance.js';
 import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
@@ -57,7 +57,7 @@ import {
 import { rawInsertColumnsFromAst } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import type { GoResolutionEnv, GoBinding } from '../languages/go/goResolution.js';
 import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
-import { describeUnprovenReceiver, resolveSpecifier, type TsconfigPathMap } from '../analyzers/receiverResolution.js';
+import { describeUnprovenReceiver, resolveSpecifier, makeHeritageResolver, type TsconfigPathMap } from '../analyzers/receiverResolution.js';
 
 // ── Specifier resolution (Spec 70 B1) ────────────────────────────────────────
 
@@ -105,7 +105,7 @@ export function rehydrateReceiverActivity(fact: ReceiverActivityFact | undefined
       method: s.method,
       sqlArgument: s.sqlArgument,
       thisField: s.thisField,
-      thisFieldType: s.thisFieldType,
+      thisHeritage: s.thisHeritage,
     })),
     dbActivity: new Set(fact.dbActivity),
   };
@@ -405,6 +405,7 @@ function admitDbCall(
   interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
   declaredTypePackages: ReadonlySet<string> | undefined,
   resolveImport: SpecifierResolver | undefined,
+  resolveHeritageField: HeritageFieldResolver | undefined,
 ): { dialect: Dialect | null } | null {
   const siteDialect =
     call.calleeType === 'identifier'
@@ -412,7 +413,7 @@ function admitDbCall(
       : resolveSiteDialectFromReceiver(call.receiver, dbProvenanced);
   const dialect = siteDialect ?? sqlDialect ?? null;
 
-  const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+  const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
   const facts = {
     imports: new Map(),
     typeAnnotations: new Map(),
@@ -492,6 +493,7 @@ export function classifySchemaUsage(
   const seeds = rehydrateReceiverProvenance(provenance);
   const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
   const resolver = makeSpecifierResolver(withinFacts, projectRoot, tsconfig);
+  const heritageResolver = makeHeritageResolver(projectRoot, declaredTypePackages) ?? undefined;
 
   const out: SchemaUsageFact[] = [];
   for (const cand of candidates) {
@@ -522,7 +524,7 @@ export function classifySchemaUsage(
     // here; its `unresolved` record is re-derived by `classifyUnresolvedQuerySites`.
     for (const call of cand.dbCalls) {
       if (call.sqlText === null) continue;
-      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport);
+      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
       if (!admitted) continue;
       const parsed = parseSqlTables(call.sqlText, call.location, sourceCode, undefined, admitted.dialect, null);
       for (const ref of parsed.references) {
@@ -567,6 +569,7 @@ export function classifyUnresolvedQuerySites(
   const seeds = rehydrateReceiverProvenance(provenance);
   const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
   const resolver = makeSpecifierResolver(withinFacts, projectRoot, tsconfig);
+  const heritageResolver = makeHeritageResolver(projectRoot, declaredTypePackages) ?? undefined;
 
   const out: UnresolvedQuerySite[] = [];
   for (const cand of candidates) {
@@ -584,7 +587,7 @@ export function classifyUnresolvedQuerySites(
       if (call.unresolved === null) continue;
       // Re-admit via `identifyHandle` — mirror the legacy `dbCallVerdict` gate so
       // a non-DB receiver (`page.$`, `$('.foo')`) never emits `unresolved-query`.
-      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport);
+      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
       if (!admitted) continue;
       out.push({ file: cand.file, identifier: call.unresolved.identifier, location: call.unresolved.location });
     }
@@ -606,7 +609,7 @@ interface HandleIdentity {
   readonly receiver: string | null;
   readonly method: string | null;
   readonly thisField: boolean;
-  readonly thisFieldType: string | null;
+  readonly thisHeritage: string | null;
   readonly sqlArg: string | null;
   readonly siteReceiver: string | null;
 }
@@ -621,7 +624,7 @@ function dataAccessIdentity(cand: DataAccessCallCandidate): HandleIdentity {
     receiver: cand.handleReceiver,
     method: cand.handleMethod,
     thisField: cand.handleThisField,
-    thisFieldType: cand.handleThisFieldType,
+    thisHeritage: cand.handleThisHeritage,
     sqlArg: cand.handleSqlArg,
     siteReceiver: cand.handleSiteReceiver,
   };
@@ -638,7 +641,7 @@ function loopQueryIdentity(cand: LoopQueryRawCandidate): HandleIdentity {
     receiver: cand.handleReceiver,
     method: cand.handleMethod,
     thisField: cand.handleThisField,
-    thisFieldType: cand.handleThisFieldType,
+    thisHeritage: cand.handleThisHeritage,
     sqlArg: cand.sqlArg,
     siteReceiver: cand.handleSiteReceiver,
   };
@@ -664,6 +667,7 @@ function reFoldHandleVerdict(
   interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
   declaredTypePackages: ReadonlySet<string> | undefined,
   resolveImport: SpecifierResolver | undefined,
+  resolveHeritageField: HeritageFieldResolver | undefined,
 ): HandleVerdict | null {
   if (id.format === 'go') {
     if (!goEnv || id.calleeType !== 'member' || !id.root || !id.method) return null;
@@ -698,7 +702,7 @@ function reFoldHandleVerdict(
       !!binding.typeText;
     if (!isProvenanced && !isTypeAnnotated) return null;
     const dialect = dialectForEvidence(dbProvenanced.get(name)) ?? sqlDialect ?? null;
-    const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+    const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
     return identifyHandle(
       {
         format: 'typescript',
@@ -722,7 +726,7 @@ function reFoldHandleVerdict(
   if (id.calleeType === 'member') {
     if (!id.root || !id.method) return null;
     const dialect = resolveSiteDialectFromReceiver(id.siteReceiver, dbProvenanced) ?? sqlDialect ?? null;
-    const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+    const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
     return identifyHandle(
       {
         format: 'typescript',
@@ -731,7 +735,7 @@ function reFoldHandleVerdict(
         method: id.method,
         sqlArgument: id.sqlArg,
         thisField: id.thisField,
-        thisFieldType: id.thisFieldType,
+        thisHeritage: id.thisHeritage,
       },
       {
         imports: new Map(),
@@ -885,6 +889,7 @@ export function classifyDataAccessCalls(
   const seeds = rehydrateReceiverProvenance(provenance);
   const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
   const resolver = makeSpecifierResolver(withinFacts, projectRoot, tsconfig);
+  const heritageResolver = makeHeritageResolver(projectRoot, declaredTypePackages) ?? undefined;
 
   // Group candidates by file, preserving the raw fact's (input-file) order.
   const byFile = new Map<string, DataAccessCallCandidate[]>();
@@ -913,7 +918,7 @@ export function classifyDataAccessCalls(
     // 1. Discovery filter — `isDbCallCandidate`, re-folding the handle verdict.
     const discovered: { cand: DataAccessCallCandidate; verdict: HandleVerdict | null }[] = [];
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport);
+      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
       const handleAdmits = verdict !== null && verdict.kind !== 'not-handle';
       const isCandidate =
         handleAdmits || cand.isQueryBuilderShape || cand.isTaggedSqlCall || cand.isVariableAssignmentSql;
@@ -974,6 +979,7 @@ export function classifyLoopQueries(
   const seeds = rehydrateReceiverProvenance(provenance);
   const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
   const resolver = makeSpecifierResolver(withinFacts, projectRoot, tsconfig);
+  const heritageResolver = makeHeritageResolver(projectRoot, declaredTypePackages) ?? undefined;
 
   const byFile = new Map<string, LoopQueryRawCandidate[]>();
   for (const cand of candidates) {
@@ -997,7 +1003,7 @@ export function classifyLoopQueries(
     const loopOrdinals = new Map<string, number>();
     const resolveImport = resolver ? (source: string) => resolver(source, file) : undefined;
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, undefined, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport);
+      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, undefined, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
       if (!verdict || verdict.kind !== 'handle') continue;
 
       const dedupKey = String(cand.loopStartOffset);
@@ -1054,6 +1060,7 @@ export function classifyUnprovenQueryReceivers(
   const seeds = rehydrateReceiverProvenance(provenance);
   const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
   const resolver = makeSpecifierResolver(withinFacts, projectRoot, tsconfig);
+  const heritageResolver = makeHeritageResolver(projectRoot, declaredTypePackages) ?? undefined;
 
   const byFile = new Map<string, DataAccessCallCandidate[]>();
   for (const cand of candidates) {
@@ -1092,7 +1099,7 @@ export function classifyUnprovenQueryReceivers(
       // `not-handle` root resolves to `not-handle` below.
       if (id.calleeType !== 'member') continue;
       if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
-      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport);
+      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
       if (!verdict || verdict.kind !== 'unproven') continue;
       admitted.push({ cand, verdict });
     }

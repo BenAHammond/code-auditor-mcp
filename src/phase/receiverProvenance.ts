@@ -383,7 +383,7 @@ function applyR3FromSites(
         method: site.method,
         sqlArgument: site.sqlArgument,
         thisField: site.thisField,
-        thisFieldType: site.thisFieldType,
+        thisHeritage: site.thisHeritage,
       },
       {
         imports: new Map(),
