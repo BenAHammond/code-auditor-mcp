@@ -1,5 +1,6 @@
 import { builtinModules } from 'node:module';
 import databasePackages from '../languages/typescript/database-packages.json' with { type: 'json' };
+import workerHeritage from '../languages/typescript/workers-types-heritage.json' with { type: 'json' };
 
 /**
  * The TypeScript resolution implementation's ecosystem data.
@@ -118,6 +119,63 @@ export function dbHandlePackagesForName(name: string): ReadonlySet<string> | und
     if (names.has(name)) result.push(pkg);
   }
   return result.length > 0 ? new Set(result) : undefined;
+}
+
+// ─── Worker base-class field contracts (Spec 70 Q3 heritage) ─────────────────
+//
+// `WorkflowEntrypoint<Env>` / `WorkerEntrypoint<Env>` / `Agent<Env>` /
+// `DurableObject<Env>` are *global* types: `@cloudflare/workers-types` (and the
+// `agents` SDK) declares them as ambient globals when the package is a tsconfig
+// `types` entry, so a Worker class `extends WorkflowEntrypoint<Env>` carries no
+// import to resolve. The heritage arm therefore cannot resolve the base class
+// through a file import; its declaration is a *residual* fact (like which
+// packages are DB clients) that no in-repo resolution can derive from the
+// audited code. That contract lives here, beside `database-packages.json`, as
+// declarative data: each base class keys the instance fields it *declares*,
+// where a field type of `$N` refers to the class's Nth type argument.
+//
+// The `$0` → first-type-argument substitution is the honest half of the old
+// `BASE_CLASS_FIELD_TYPES` replica: `this.env` is the class's type parameter
+// (`env: Env`), `this.ctx`/`this.state` are concrete worker types. There is no
+// per-class lambda and no name list — only the declared field names and their
+// declared types, read back out with the actual type argument substituted.
+
+/** The declared instance fields of each worker base class, keyed base-class name
+ *  → field name → type text. `$N` in a type text is the Nth type argument
+ *  (`$0` = `Env` in `WorkflowEntrypoint<Env>`); the substitution default is
+ *  `Env`. */
+export const WORKER_HERITAGE_FIELDS: Readonly<Record<string, Readonly<Record<string, string>>>> =
+  workerHeritage as Readonly<Record<string, Readonly<Record<string, string>>>>;
+
+/** The default substituted for a `$0` field reference when the heritage carries
+ *  no type argument (`extends WorkflowEntrypoint` → `env: Env`). */
+const HERITAGE_DEFAULT_TYPE_ARG = 'Env';
+
+/**
+ * Resolve `this.<field>` on a worker base class to its declared field type,
+ * substituting the class's type arguments. Returns `null` (abstain) when the
+ * base class, the field, or a referenced type argument is unknown — never a
+ * guessed clean. `base` is the un-parameterized class name (`WorkflowEntrypoint`),
+ * `args` the heritage's type arguments (`['Env']`).
+ */
+export function resolveWorkerHeritageField(
+  base: string,
+  field: string,
+  args: readonly string[],
+): string | null {
+  const fields = WORKER_HERITAGE_FIELDS[base];
+  if (!fields) return null;
+  const declared = fields[field];
+  if (declared === undefined) return null;
+  // `$N` → args[N] (or the default for `$0`); a type argument referenced past
+  // the end with no default is unresolvable → abstain.
+  const substituted = declared.replace(/\$(\d+)/g, (_m, digits: string) => {
+    const index = Number(digits);
+    if (index === 0 && args[0] === undefined) return HERITAGE_DEFAULT_TYPE_ARG;
+    const arg = args[index];
+    return arg === undefined ? ' ' : arg;
+  });
+  return substituted.includes(' ') ? null : substituted;
 }
 
 // ─── The package discriminant: Node builtins + JS globals ─────────────────────

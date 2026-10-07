@@ -29,7 +29,7 @@
 
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
 import type { ProvenanceEvidence } from './provenance.js';
-import { isNodeBuiltin, isDbHandleTypeName, dbHandlePackagesForName, handleTypesForPackage, JS_GLOBALS } from './tsEcosystem.js';
+import { isNodeBuiltin, isDbHandleTypeName, dbHandlePackagesForName, handleTypesForPackage, resolveWorkerHeritageField, JS_GLOBALS } from './tsEcosystem.js';
 
 /** A receiver root's disposition (Spec 69 §10 S5e). */
 export type RootDisposition = 'handle' | 'not-handle' | 'unproven';
@@ -999,20 +999,34 @@ export function resolveReceiverRoot(
 /**
  * Resolve the type of `this.<field>` from the enclosing class's `extends`
  * heritage (Spec 70 Q3): `extends WorkflowEntrypoint<Env>` → `this.env` is
- * `Env`. The honest answer requires resolving the base class *to its
- * declaration* and reading the field's declared type, substituting the actual
- * type argument — B2's rule: resolve the declaration or abstain, never a
- * framework-name map. That declaration-resolution seam (`resolveSpecifier` over
- * the base class's import, wired into this file's `RootResolutionEnv`) does not
- * exist yet, so this abstains (`null`): the classifier reports `unproven`
- * rather than fabricating a field type. The heritage *arm* stays in place
- * (`classifyRootIdentifier` resolves `thisFieldType` through the member path
- * once a real value arrives); the extraction half
- * ({@link findEnclosingClassHeritage}) still reads the `extends …` clause so
- * the seam has a base-class text to resolve.
+ * `Env`. The base class is resolved *to its declaration* and the field's
+ * declared type is read back out with the actual type argument substituted —
+ * never a framework-name map, and never a guess from the class merely carrying
+ * a generic parameter (B2's rule: resolve the declaration or abstain).
+ *
+ * The declaration source is {@link resolveWorkerHeritageField} in
+ * `tsEcosystem.ts`: the worker base classes are ambient globals (no file import
+ * to resolve through `resolveSpecifier`), so their field contracts are a
+ * residual fact carried as declarative data beside `database-packages.json`,
+ * with `$N` type-argument references substituted here. An unknown base class, a
+ * field the class does not declare, or an unresolved type argument all abstain
+ * (`null`) — the classifier reports `unproven`.
  */
 export function resolveThisFieldType(field: string, heritageText: string | null | undefined): string | null {
-  return null;
+  if (!heritageText || !field) return null;
+  const { base, args } = splitHeritage(heritageText);
+  return resolveWorkerHeritageField(base, field, args);
+}
+
+/** Split `Agent<Env>` / `WorkflowEntrypoint` into its base-class name and type
+ *  arguments. A heritage with no `<…>` has an empty argument list; nested
+ *  generics (`Foo<Bar<Baz>, Qux>`) split at top-level commas only. */
+function splitHeritage(text: string): { base: string; args: string[] } {
+  const t = text.trim();
+  const base = baseTypeName(t);
+  const lt = t.indexOf('<');
+  if (lt <= 0 || !t.endsWith('>')) return { base, args: [] };
+  return { base, args: splitTopLevel(t.slice(lt + 1, -1), ',') };
 }
 
 /**
