@@ -29,7 +29,7 @@
 
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
 import type { ProvenanceEvidence } from './provenance.js';
-import { isNodeBuiltin, isDbHandleTypeName, handleTypesForPackage, JS_GLOBALS } from './tsEcosystem.js';
+import { isNodeBuiltin, isDbHandleTypeName, dbHandlePackagesForName, handleTypesForPackage, JS_GLOBALS } from './tsEcosystem.js';
 
 /** A receiver root's disposition (Spec 69 §10 S5e). */
 export type RootDisposition = 'handle' | 'not-handle' | 'unproven';
@@ -107,6 +107,23 @@ export interface RootResolutionEnv {
    * Go env and in callers that classify a bare root with no member chain.
    */
   interfaceFields?: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  /**
+   * Project-level declared type packages — package.json `dependencies` ∪
+   * `devDependencies` ∪ tsconfig `compilerOptions.types`. The ambient arm of
+   * `classifyTypeText` (an unbound DB-handle type name) credits `handle` only
+   * when a manifest package that declares the name is present here; absent, the
+   * arm abstains (`unproven`) — no declared dependency, no ambient credit (Spec
+   * 70 criterion 9, Item 3).
+   */
+  declaredTypePackages?: ReadonlySet<string>;
+  /**
+   * Out-param populated by `classifyTypeText` when it rejects the ambient arm:
+   * an unbound DB-handle type name whose declaring package is not a declared
+   * dependency. `resolveRoot` clears it before classifying and reads it to give
+   * the cannot-fire reason "the type name resolved to nothing" instead of the
+   * generic binding cause.
+   */
+  ambientRejectionReason?: string;
   /** The adapter + source text for reading value/type node text. */
   adapter: LanguageAdapter;
   sourceCode: string;
@@ -742,7 +759,20 @@ function classifyTypeText(typeText: string, env: RootResolutionEnv, depth: numbe
     // variable / parameter / field / function bind only a *value*, not a type,
     // so a type annotation naming one still refers to the ambient type.
   }
-  if (isDbHandleTypeName(base)) return 'handle';
+  if (isDbHandleTypeName(base)) {
+    // The ambient arm (Spec 70 criterion 9, Item 3): an unbound handle-type name
+    // is credited only when a manifest package that declares it is a declared
+    // dependency of the project (package.json deps/devDeps or tsconfig `types`).
+    // Otherwise the name resolved to nothing — cannot-fire, never a guessed
+    // clean — and the cause is recorded for `resolveRoot`'s reason.
+    const declaring = dbHandlePackagesForName(base);
+    const declared = env.declaredTypePackages;
+    if (declaring && declared && [...declaring].some((pkg) => declared.has(pkg))) {
+      return 'handle';
+    }
+    env.ambientRejectionReason = `type \`${base}\` resolves to nothing (its declaring package is not a declared dependency)`;
+    return 'unproven';
+  }
   return 'unproven';
 }
 
@@ -933,66 +963,22 @@ export function resolveReceiverRoot(
 // ── Form-3 this-field type heritage (Spec 70 Q3) ─────────────────────────────
 
 /**
- * Cloudflare base-class field contracts: `this.<field>` → type, given the
- * class's type arguments. Each entry maps the base class's type parameters into
- * its instance fields (a structural registry of `env`/`ctx`/`state` as declared
- * by the workers-types / agents packages) — NOT a name list of receivers.
- * `WorkflowEntrypoint<Env>` is the Q3 addition: `this.env` is `Env`, the field
- * the member path then resolves through `interfaceFields` to a DB handle.
- */
-const BASE_CLASS_FIELD_TYPES: Readonly<Record<string, (args: readonly string[]) => Record<string, string>>> = {
-  // `Agent<Env>` (Cloudflare Agents SDK): env is the type parameter, ctx is the
-  // Durable Object state.
-  Agent: (args) => ({ env: args[0] ?? 'Env', ctx: 'DurableObjectState' }),
-  // `DurableObject<Env>` (workers-types): env is the type parameter, ctx/state are
-  // the Durable Object state.
-  DurableObject: (args) => ({ env: args[0] ?? 'Env', ctx: 'DurableObjectState', state: 'DurableObjectState' }),
-  // `WorkerEntrypoint<Env>` (workers-types): env is the type parameter, ctx is the
-  // execution context.
-  WorkerEntrypoint: (args) => ({ env: args[0] ?? 'Env', ctx: 'ExecutionContext' }),
-  // `WorkflowEntrypoint<Env>` (workers-types): env is the type parameter, ctx is
-  // the execution context. The Q3 addition — `this.env.DB` resolves through `env`
-  // → `Env` → `interfaceFields['Env']['DB']`.
-  WorkflowEntrypoint: (args) => ({ env: args[0] ?? 'Env', ctx: 'ExecutionContext' }),
-};
-
-/** Split `Agent<Env>` → `{ base: 'Agent', args: ['Env'] }`. */
-function splitGenericType(text: string): { base: string; args: string[] } {
-  const t = text.trim();
-  const lt = t.indexOf('<');
-  if (lt <= 0 || !t.endsWith('>')) return { base: t, args: [] };
-  const base = t.slice(0, lt).trim();
-  const inner = t.slice(lt + 1, -1);
-  const args: string[] = [];
-  let depth = 0;
-  let current = '';
-  for (const ch of inner) {
-    if (ch === '<') depth++;
-    else if (ch === '>') depth--;
-    if (ch === ',' && depth === 0) {
-      args.push(current.trim());
-      current = '';
-      continue;
-    }
-    current += ch;
-  }
-  if (current.trim()) args.push(current.trim());
-  return { base, args };
-}
-
-/**
  * Resolve the type of `this.<field>` from the enclosing class's `extends`
  * heritage (Spec 70 Q3): `extends WorkflowEntrypoint<Env>` → `this.env` is
- * `Env`. Returns `null` when the heritage, the base class, or the field is
- * unknown — the classifier then abstains (`unproven`), never guessing a handle
- * from the class merely having a generic parameter.
+ * `Env`. The honest answer requires resolving the base class *to its
+ * declaration* and reading the field's declared type, substituting the actual
+ * type argument — B2's rule: resolve the declaration or abstain, never a
+ * framework-name map. That declaration-resolution seam (`resolveSpecifier` over
+ * the base class's import, wired into this file's `RootResolutionEnv`) does not
+ * exist yet, so this abstains (`null`): the classifier reports `unproven`
+ * rather than fabricating a field type. The heritage *arm* stays in place
+ * (`classifyRootIdentifier` resolves `thisFieldType` through the member path
+ * once a real value arrives); the extraction half
+ * ({@link findEnclosingClassHeritage}) still reads the `extends …` clause so
+ * the seam has a base-class text to resolve.
  */
 export function resolveThisFieldType(field: string, heritageText: string | null | undefined): string | null {
-  if (!heritageText || !field) return null;
-  const { base, args } = splitGenericType(heritageText);
-  const fieldResolver = BASE_CLASS_FIELD_TYPES[base];
-  if (!fieldResolver) return null;
-  return fieldResolver(args)[field] ?? null;
+  return null;
 }
 
 /**

@@ -982,6 +982,7 @@ export const CORPUS_PRODUCERS = {
         facts['receiver-provenance'],
         facts['receiver-activity'],
         ctx?.sqlDialect ?? null,
+        ctx?.declaredTypePackages,
       );
     },
   } satisfies CorpusProcessor<'schema-usage', readonly ['schema-usage-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
@@ -1008,6 +1009,7 @@ export const CORPUS_PRODUCERS = {
         facts['receiver-provenance'],
         facts['receiver-activity'],
         ctx?.sqlDialect ?? null,
+        ctx?.declaredTypePackages,
       );
     },
   } satisfies CorpusProcessor<'data-access-calls', readonly ['data-access-calls-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
@@ -1029,6 +1031,7 @@ export const CORPUS_PRODUCERS = {
         facts['receiver-provenance'],
         facts['receiver-activity'],
         ctx?.sqlDialect ?? null,
+        ctx?.declaredTypePackages,
       );
     },
   } satisfies CorpusProcessor<'loop-queries', readonly ['loop-query-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,

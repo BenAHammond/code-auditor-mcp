@@ -80,11 +80,16 @@ describe('Spec 70 Q3 — resolveThisFieldType (heritage text → field type)', (
 });
 
 describe('Spec 70 Q3 — classifyRootIdentifier heritage arm', () => {
-  /** A resolution env carrying only the interface field map, no bindings/provenance. */
+  /** A resolution env carrying the interface field map plus the `D1Database`
+   *  import the fixture declares (`import { D1Database } from
+   *  '@cloudflare/workers-types'`), so the heritage arm's final `D1Database`
+   *  classification resolves by origin rather than the ambient gate. */
   function envWithFields(interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>>): RootResolutionEnv {
     return {
       provenance: new Map<string, never>(),
-      bindings: new Map<string, Binding>(),
+      bindings: new Map<string, Binding>([
+        ['D1Database', { kind: 'import', source: '@cloudflare/workers-types' }],
+      ]),
       interfaceFields,
       adapter: undefined,
       sourceCode: '',
@@ -117,7 +122,10 @@ describe('Spec 70 Q3 — classifyRootIdentifier heritage arm', () => {
 
   it('heritage is authoritative before a same-named local binding (shadow, not the field)', () => {
     const env = envWithFields(new Map([['Env', new Map([['DB', 'D1Database']])]]));
-    const bindings = new Map<string, Binding>([['env', { kind: 'variable', typeText: 'string' }]]);
+    const bindings = new Map<string, Binding>([
+      ['D1Database', { kind: 'import', source: '@cloudflare/workers-types' }],
+      ['env', { kind: 'variable', typeText: 'string' }],
+    ]);
     const shadowed = { ...env, bindings } as RootResolutionEnv;
     // `env` is a `this.env` field: the local `string` variable is a shadow and must
     // not downgrade the heritage-resolved `Env` → handle.

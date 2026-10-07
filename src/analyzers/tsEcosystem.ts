@@ -101,6 +101,25 @@ export function isDbHandleTypeName(name: string): boolean {
   return DB_HANDLE_TYPE_NAMES.has(name);
 }
 
+/**
+ * The *declaring packages* of a handle-type name — every manifest package whose
+ * handle list contains `name`. `classifyTypeText`'s ambient arm consults this to
+ * gate the unbound-name credit (Spec 70 criterion 9, Item 3): a bare `D1Database`
+ * with no import is `handle` only when a package that declares it is a declared
+ * dependency of the project — otherwise the name resolved to nothing. A name
+ * declared by several packages (`Pool` under `pg`/`mysql2`/`@neondatabase/serverless`,
+ * `Database` under `better-sqlite3`/`bun:sqlite`/`node:sqlite`) returns the whole
+ * set; the caller asks whether *any* of them is declared.
+ */
+export function dbHandlePackagesForName(name: string): ReadonlySet<string> | undefined {
+  if (!name) return undefined;
+  const result: string[] = [];
+  for (const [pkg, names] of DB_HANDLE_TYPES) {
+    if (names.has(name)) result.push(pkg);
+  }
+  return result.length > 0 ? new Set(result) : undefined;
+}
+
 // ─── The package discriminant: Node builtins + JS globals ─────────────────────
 //
 // The handle/not-handle decision cannot rest on a method *name* — `join` is

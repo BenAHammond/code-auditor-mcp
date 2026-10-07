@@ -163,6 +163,12 @@ export interface PhaseInfra {
    *  to every parsed file so the `data-access-calls` producer parses SQL-content
    *  facts rather than regex. Absent in the slice tests (single fixture). */
   sqlDialect?: Dialect | null;
+  /** Spec 70 criterion 9 (Item 3) — the project's declared type packages
+   *  (package.json `dependencies`/`devDependencies` ∪ tsconfig `compilerOptions.types`),
+   *  the ambient-arm gate for an unbound handle-type name. Absent (undefined) the
+   *  gate abstains: an unbound `D1Database` without a declared dependency stays
+   *  `unproven` rather than being credited `handle`. */
+  declaredTypePackages?: ReadonlySet<string>;
 }
 
 /**
@@ -409,6 +415,7 @@ async function buildFacts(
     indexHandle: infra?.indexHandle,
     externalTables: infra?.externalTables,
     sqlDialect: infra?.sqlDialect,
+    declaredTypePackages: infra?.declaredTypePackages,
   };
   // §5 DAG — topological sort. A corpus producer's `needs` may reference other
   // corpus kinds (e.g. the four receiver consumers depend on `receiver-provenance`,
@@ -454,6 +461,7 @@ async function buildFacts(
       receiverProvenanceFact,
       (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
       infra?.sqlDialect ?? null,
+      infra?.declaredTypePackages,
     );
     // Spec 70 1b — the `unresolved-query` half (a third coverage signal, alongside
     // the two above): re-derive the re-admitted unresolvable-SQL DB-calls from the
@@ -467,6 +475,7 @@ async function buildFacts(
         receiverProvenanceFact,
         (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
         infra?.sqlDialect ?? null,
+        infra?.declaredTypePackages,
       );
     }
   }

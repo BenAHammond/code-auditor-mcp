@@ -379,6 +379,7 @@ function admitDbCall(
   bindings: ReadonlyMap<string, Binding>,
   sqlDialect: Dialect | null,
   interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
+  declaredTypePackages: ReadonlySet<string> | undefined,
 ): { dialect: Dialect | null } | null {
   const siteDialect =
     call.calleeType === 'identifier'
@@ -386,7 +387,7 @@ function admitDbCall(
       : resolveSiteDialectFromReceiver(call.receiver, dbProvenanced);
   const dialect = siteDialect ?? sqlDialect ?? null;
 
-  const env = { provenance: dbProvenanced, bindings, interfaceFields, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+  const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
   const facts = {
     imports: new Map(),
     typeAnnotations: new Map(),
@@ -458,6 +459,7 @@ export function classifySchemaUsage(
   provenance: ReceiverProvenanceFact,
   activityFacts: readonly ReceiverActivityFact[],
   sqlDialect: Dialect | null,
+  declaredTypePackages: ReadonlySet<string> | undefined,
 ): SchemaUsageFact[] {
   const extracts = rehydrateWithinTsExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
@@ -491,7 +493,7 @@ export function classifySchemaUsage(
     // here; its `unresolved` record is re-derived by `classifyUnresolvedQuerySites`.
     for (const call of cand.dbCalls) {
       if (call.sqlText === null) continue;
-      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields);
+      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields, declaredTypePackages);
       if (!admitted) continue;
       const parsed = parseSqlTables(call.sqlText, call.location, sourceCode, undefined, admitted.dialect, null);
       for (const ref of parsed.references) {
@@ -528,6 +530,7 @@ export function classifyUnresolvedQuerySites(
   provenance: ReceiverProvenanceFact,
   activityFacts: readonly ReceiverActivityFact[],
   sqlDialect: Dialect | null,
+  declaredTypePackages: ReadonlySet<string> | undefined,
 ): UnresolvedQuerySite[] {
   const extracts = rehydrateWithinTsExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
@@ -548,7 +551,7 @@ export function classifyUnresolvedQuerySites(
       if (call.unresolved === null) continue;
       // Re-admit via `identifyHandle` — mirror the legacy `dbCallVerdict` gate so
       // a non-DB receiver (`page.$`, `$('.foo')`) never emits `unresolved-query`.
-      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields);
+      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields, declaredTypePackages);
       if (!admitted) continue;
       out.push({ file: cand.file, identifier: call.unresolved.identifier, location: call.unresolved.location });
     }
@@ -626,6 +629,7 @@ function reFoldHandleVerdict(
   goEnv: GoResolutionEnv | undefined,
   sqlDialect: Dialect | null,
   interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
+  declaredTypePackages: ReadonlySet<string> | undefined,
 ): HandleVerdict | null {
   if (id.format === 'go') {
     if (!goEnv || id.calleeType !== 'member' || !id.root || !id.method) return null;
@@ -660,7 +664,7 @@ function reFoldHandleVerdict(
       !!binding.typeText;
     if (!isProvenanced && !isTypeAnnotated) return null;
     const dialect = dialectForEvidence(dbProvenanced.get(name)) ?? sqlDialect ?? null;
-    const env = { provenance: dbProvenanced, bindings, interfaceFields, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+    const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
     return identifyHandle(
       {
         format: 'typescript',
@@ -684,7 +688,7 @@ function reFoldHandleVerdict(
   if (id.calleeType === 'member') {
     if (!id.root || !id.method) return null;
     const dialect = resolveSiteDialectFromReceiver(id.siteReceiver, dbProvenanced) ?? sqlDialect ?? null;
-    const env = { provenance: dbProvenanced, bindings, interfaceFields, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+    const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
     return identifyHandle(
       {
         format: 'typescript',
@@ -838,6 +842,7 @@ export function classifyDataAccessCalls(
   provenance: ReceiverProvenanceFact,
   activityFacts: readonly ReceiverActivityFact[],
   sqlDialect: Dialect | null,
+  declaredTypePackages: ReadonlySet<string> | undefined,
 ): ResolvedQuery[] {
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const goExtracts = rehydrateWithinGoExtracts(withinFacts);
@@ -869,7 +874,7 @@ export function classifyDataAccessCalls(
     // 1. Discovery filter — `isDbCallCandidate`, re-folding the handle verdict.
     const discovered: { cand: DataAccessCallCandidate; verdict: HandleVerdict | null }[] = [];
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields);
+      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages);
       const handleAdmits = verdict !== null && verdict.kind !== 'not-handle';
       const isCandidate =
         handleAdmits || cand.isQueryBuilderShape || cand.isTaggedSqlCall || cand.isVariableAssignmentSql;
@@ -922,6 +927,7 @@ export function classifyLoopQueries(
   provenance: ReceiverProvenanceFact,
   activityFacts: readonly ReceiverActivityFact[],
   sqlDialect: Dialect | null,
+  declaredTypePackages: ReadonlySet<string> | undefined,
 ): LoopQueryFact[] {
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
@@ -948,7 +954,7 @@ export function classifyLoopQueries(
     const reported = new Set<string>();
     const loopOrdinals = new Map<string, number>();
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, undefined, sqlDialect, extract?.interfaceFields);
+      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, undefined, sqlDialect, extract?.interfaceFields, declaredTypePackages);
       if (!verdict || verdict.kind !== 'handle') continue;
 
       const dedupKey = String(cand.loopStartOffset);
@@ -996,6 +1002,7 @@ export function classifyUnprovenQueryReceivers(
   provenance: ReceiverProvenanceFact,
   activityFacts: readonly ReceiverActivityFact[],
   sqlDialect: Dialect | null,
+  declaredTypePackages: ReadonlySet<string> | undefined,
 ): UnprovenQueryReceiver[] {
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const goExtracts = rehydrateWithinGoExtracts(withinFacts);
@@ -1038,7 +1045,7 @@ export function classifyUnprovenQueryReceivers(
       // `not-handle` root resolves to `not-handle` below.
       if (id.calleeType !== 'member') continue;
       if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
-      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields);
+      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages);
       if (!verdict || verdict.kind !== 'unproven') continue;
       admitted.push({ cand, verdict });
     }

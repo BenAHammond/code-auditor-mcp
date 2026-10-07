@@ -46,7 +46,7 @@ import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js'
 import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
 import { applyDismissals } from './dismissals.js';
 import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
-import { readTsconfigAliases, readPackageEntryPoints, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
+import { readTsconfigAliases, readPackageEntryPoints, readDeclaredTypePackages, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
 import { normalizeDialect, type Dialect } from './mcp-tools/discoveryQueries.js';
 import { detectDialect } from './languages/sql/dialectDetection.js';
 
@@ -747,6 +747,7 @@ function buildPipelineAnalyzerConfig(
     importVirtualModules: mergedOptions.importVirtualModules ?? DEFAULT_VIRTUAL_MODULES,
     tsconfigAliases: readTsconfigAliases(root),
     packageEntryPoints: readPackageEntryPoints(root).entryPaths,
+    declaredTypePackages: readDeclaredTypePackages(root),
     // Spec 70 R1 — surfaced under `_infra` so `runPipeline` can hand the named
     // dialect to the phase model's data-access producer without reading the
     // data-access namespace.
@@ -895,6 +896,7 @@ async function applyPhaseModelSplit(inputs: {
       externalTables,
       workerCount: resolveWorkerCount(),
       sqlDialect: infraConfig.sqlDialect as Dialect | null | undefined,
+      declaredTypePackages: infraConfig.declaredTypePackages as ReadonlySet<string> | undefined,
       // Spec 70 2b — the diverging-clone write: seed `dry_pair_history` from the
       // phase `code-block` fact (replacing `createDryVisitor`/`persistDryPairs`).
       persistDryPairHistory: (facts) => {

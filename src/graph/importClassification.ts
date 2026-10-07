@@ -464,3 +464,52 @@ export function readPackageEntryPoints(projectRoot: string): PackageEntryPoints 
 
   return { entryPaths: [...expandEntryPointFacades(declared, projectRoot)], hasPackageJson: true };
 }
+
+// ── declared type packages (ambient-type gate) ───────────────────────────────
+
+/**
+ * The project's *declared type packages* — the packages whose ambient type names
+ * the project has opted into, read from its own statements: package.json
+ * `dependencies` ∪ `devDependencies` ∪ tsconfig `compilerOptions.types`. The
+ * receiver-resolution ambient arm (Spec 70 criterion 9, Item 3) credits an
+ * unbound DB-handle type name (`D1Database` with no import) only when its
+ * declaring package is declared here; otherwise the name resolved to nothing.
+ *
+ * Both files are already read for the alias/entry-point work
+ * (`readTsconfigAliases` / `readPackageEntryPoints`); this reads the one field
+ * each of those drops (`types` / dependency keys). Absent or malformed files
+ * contribute nothing (the gate's safe default: no declared dependency, no
+ * ambient credit). tsconfig `extends` is not followed for `types` — a base
+ * config's `types` is uncommon, and missing it abstains (`unproven`) rather than
+ * over-crediting.
+ *
+ * @param projectRoot - Absolute project root whose package.json + tsconfig.json are read.
+ * @returns The union of declared dependency and type-package names.
+ */
+export function readDeclaredTypePackages(projectRoot: string): ReadonlySet<string> {
+  const declared = new Set<string>();
+
+  try {
+    const pkg = JSON.parse(stripJsonComments(fs.readFileSync(path.resolve(projectRoot, 'package.json'), 'utf-8')));
+    for (const key of ['dependencies', 'devDependencies'] as const) {
+      const obj = pkg[key];
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        for (const name of Object.keys(obj as Record<string, unknown>)) declared.add(name);
+      }
+    }
+  } catch {
+    // absent/malformed package.json — no declared runtime deps.
+  }
+
+  try {
+    const ts = JSON.parse(stripJsonComments(fs.readFileSync(path.resolve(projectRoot, 'tsconfig.json'), 'utf-8')));
+    const types = ts?.compilerOptions?.types;
+    if (Array.isArray(types)) {
+      for (const t of types) if (typeof t === 'string') declared.add(t);
+    }
+  } catch {
+    // absent/malformed tsconfig — no declared type packages.
+  }
+
+  return declared;
+}

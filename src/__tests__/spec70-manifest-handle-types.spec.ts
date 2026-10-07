@@ -82,11 +82,12 @@ describe('Spec 70 Decision A — manifest handle types', () => {
 describe('Spec 70 Decision A — type→package resolution in classifyTypeText', () => {
   /** Classify a variable annotated with `typeText`, through the same seam the
    *  receiver-resolution processor uses (`classifyRootIdentifier` → `classifyTypeText`). */
-  function dispositionOf(typeText: string): string {
+  function dispositionOf(typeText: string, declaredTypePackages?: ReadonlySet<string>): string {
     const bindings = new Map<string, Binding>([['db', { kind: 'variable', typeText }]]);
     const env = {
       provenance: new Map<string, never>(),
       bindings,
+      declaredTypePackages,
       adapter: undefined,
       sourceCode: '',
     } as unknown as RootResolutionEnv;
@@ -104,12 +105,16 @@ describe('Spec 70 Decision A — type→package resolution in classifyTypeText',
     expect(isDbHandleTypeName('MyDb')).toBe(false);
   });
 
-  it('resolves a bare D1Database type annotation to `handle`', () => {
-    expect(dispositionOf('D1Database')).toBe('handle');
+  it('resolves a bare D1Database type annotation to `handle` only with a declared dependency', () => {
+    // Ambient arm (Item 3): an unbound handle-type name is credited only when its
+    // declaring package is a declared dependency — package.json or tsconfig `types`.
+    expect(dispositionOf('D1Database', new Set(['@cloudflare/workers-types']))).toBe('handle');
+    expect(dispositionOf('D1Database')).toBe('unproven');
   });
 
-  it('resolves a union carrying a manifest handle type to `handle`', () => {
-    expect(dispositionOf('D1Database | null')).toBe('handle');
+  it('resolves a union carrying a manifest handle type to `handle` only with a declared dependency', () => {
+    expect(dispositionOf('D1Database | null', new Set(['@cloudflare/workers-types']))).toBe('handle');
+    expect(dispositionOf('D1Database | null')).toBe('unproven');
   });
 
   it('leaves a non-manifest type annotation (`KVNamespace`) `unproven`, never `handle`', () => {
@@ -128,12 +133,13 @@ describe('Spec 70 Decision A — type→package resolution in classifyTypeText',
 describe('Spec 70 criterion 9 — type name resolves to its origin before the manifest', () => {
   /** Classify a variable typed `typeText`, with an extra name→binding map for the
    *  type-name origin (an import, a local type/class declaration, or none). */
-  function dispositionWith(bindings: Record<string, Binding>, typeText = 'D1Database'): string {
+  function dispositionWith(bindings: Record<string, Binding>, typeText = 'D1Database', declaredTypePackages?: ReadonlySet<string>): string {
     const map = new Map<string, Binding>(Object.entries(bindings));
     map.set('db', { kind: 'variable', typeText });
     const env = {
       provenance: new Map<string, never>(),
       bindings: map,
+      declaredTypePackages,
       adapter: undefined,
       sourceCode: '',
     } as unknown as RootResolutionEnv;
@@ -161,8 +167,9 @@ describe('Spec 70 criterion 9 — type name resolves to its origin before the ma
     expect(dispositionWith({ D1Database: { kind: 'class' } })).toBe('unproven');
   });
 
-  it('an ambient (unbound) manifest handle name still resolves `handle` (no import, no shadow)', () => {
-    expect(dispositionWith({})).toBe('handle');
+  it('an ambient (unbound) manifest handle name resolves `handle` only with a declared dependency', () => {
+    expect(dispositionWith({}, 'D1Database', new Set(['@cloudflare/workers-types']))).toBe('handle');
+    expect(dispositionWith({})).toBe('unproven');
   });
 });
 

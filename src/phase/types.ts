@@ -2203,6 +2203,12 @@ export interface CorpusContext {
    *  (single fixture, no corpus) — the producers then run on the default (null)
    *  dialect and SQL-argument facts `cannot-fire`. */
   sqlDialect?: Dialect | null;
+  /** Spec 70 criterion 9 (Item 3) — the project's declared type packages
+   *  (package.json `dependencies`/`devDependencies` ∪ tsconfig `compilerOptions.types`),
+   *  the ambient-arm gate for an unbound handle-type name. Absent (undefined) the
+   *  gate abstains: an unbound `D1Database` without a declared dependency stays
+   *  `unproven` rather than being credited `handle`. */
+  declaredTypePackages?: ReadonlySet<string>;
 }
 
 /** A corpus processor: receives complete upstream facts, no AST, no format. */

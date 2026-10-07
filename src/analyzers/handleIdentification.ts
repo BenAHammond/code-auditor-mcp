@@ -413,6 +413,10 @@ const typescriptResolution: ResolutionImplementation = {
       return { root: site.root, disposition: 'unproven', reason: 'missing TypeScript resolution environment' };
     }
     const env = facts.resolution.env;
+    // Clear the ambient-rejection out-param before classifying — the reason below
+    // reads it only when this classification set it, never a stale value from a
+    // prior site sharing the env.
+    env.ambientRejectionReason = undefined;
     const classified = classifyRootIdentifier(site.root, env, 0, {
       thisField: site.thisField,
       memberPath: site.thisField
@@ -429,7 +433,7 @@ const typescriptResolution: ResolutionImplementation = {
       disposition,
       reason:
         disposition === 'unproven'
-          ? describeUnprovenCause(site.root, env.provenance, env.bindings.get(site.root), TYPESCRIPT_FIELD_WORDING)
+          ? env.ambientRejectionReason ?? describeUnprovenCause(site.root, env.provenance, env.bindings.get(site.root), TYPESCRIPT_FIELD_WORDING)
           : disposition,
     };
   },
