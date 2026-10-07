@@ -1135,21 +1135,23 @@ describe('Spec-18 — CLI end-to-end', () => {
     expect(newViolations.length).toBe(0);
   });
 
-  it('R6.7b — changed --json carries a cannot-fire diagnostic for a db: any receiver (file+line) without gating', async () => {
+  it('R6.7b — changed --json carries a receiver-level cannot-fire diagnostic for a db: any receiver (file+line) without gating', async () => {
     // `db: any` is the definition of inconclusive (Spec 69 §10 S5e): a parameter
     // annotated `any` has no determinable DB-handle type, so a query-shaped call
     // on it stays `unproven` and reports `cannot-fire` (never a silent `clean`).
     // Spec 70 R3 makes a *parseable* SQL argument prove `handle`, so the argument
-    // here is Postgres `ILIKE` — dialect-specific syntax the default-sqlite
-    // grammar cannot read — to stay on the cannot-fire path (the dialect is
-    // undetermined, so the parse failure is attributed as possibly
-    // dialect-specific, not a negative verdict). This pins the agent-facing
-    // surface — `changed --json` (the hook gate) must carry the diagnostic with
-    // file + line, and the diagnostic itself must never gate (it is a coverage
-    // diagnostic, not a violation).
+    // here is *structurally invalid* SQL — `SELECT * FROM WHERE` has no table
+    // reference, a syntax error in every dialect node-sql-parser ships — to keep
+    // the receiver on the cannot-fire path. This is deliberately NOT a
+    // dialect-specific feature (the previous `ILIKE` only failed the sqlite
+    // grammar): a structural error never parses, so the assertion does not flip
+    // if the dialect handling or the default grammar changes. This pins the
+    // agent-facing surface — `changed --json` (the hook gate) must carry the
+    // diagnostic with file + line, and the diagnostic itself must never gate
+    // (it is a coverage diagnostic, not a violation).
     await writeFile(
       join(testDir, 'src', 'lib.ts'),
-      'export function record(db: any) {\n  return db.prepare(`SELECT * FROM metrics WHERE name ILIKE \'%foo%\'`).run();\n}\n',
+      'export function record(db: any) {\n  return db.prepare(`SELECT * FROM WHERE name = \'foo\'`).run();\n}\n',
     );
     await writeConfig(testDir, {});
 
@@ -1177,6 +1179,55 @@ describe('Spec-18 — CLI end-to-end', () => {
     // `changed` scope — but that is orthogonal to what this test pins.)
     const cannotFireAsViolation = parsed.violations.some((v: any) => v.rule === 'cannot-fire');
     expect(cannotFireAsViolation).toBe(false);
+  });
+
+  it('R6.7c — cross-file import shape reports import-level cannot-fire + unresolved-query', async () => {
+    // The cross-file import shape is the coverage this suite must not lose:
+    // `db.prepare(UPSERT_SQL)` where `UPSERT_SQL` is imported from an in-repo
+    // `./sql` module that does NOT resolve to a provenanced DB handle. The
+    // receiver's provenance is *undetermined*, so the phase model emits two
+    // diagnostics, both on the coverage channel (never a violation):
+    //   1. an import-level `cannot-fire` naming the unresolved specifier and the
+    //      imported name(s) it could not attribute (`details.source`/`details.names`);
+    //   2. an `unresolved-query` naming the unresolved identifier used as the
+    //      query argument (`details.identifier`).
+    // This is the shape the inline-literal test (R6.7b) cannot cover — the
+    // receiver-level `cannot-fire` there is a *different* diagnostic.
+    await writeFile(
+      join(testDir, 'src', 'sql.ts'),
+      'export const UPSERT_SQL = `INSERT INTO metrics (name) VALUES (?) ON CONFLICT DO UPDATE SET name = excluded.name`;\n',
+    );
+    await writeFile(
+      join(testDir, 'src', 'lib.ts'),
+      "import { UPSERT_SQL } from './sql';\n\nexport function record(db: any) {\n  return db.prepare(UPSERT_SQL).run();\n}\n",
+    );
+    await writeConfig(testDir, {});
+
+    // Seed a baseline so `changed` resolves the project (mirrors R6.7b).
+    runCli(`baseline -p "${testDir}" --json`, testDir);
+
+    const r = runCli(`changed "${join(testDir, 'src', 'lib.ts')}" -p "${testDir}" --json`, testDir);
+
+    const parsed = JSON.parse(r.stdout);
+    expect(Array.isArray(parsed.violations)).toBe(true);
+    expect(Array.isArray(parsed.diagnostics)).toBe(true);
+
+    // 1. import-level cannot-fire: unresolved specifier + imported name.
+    const importCannotFire = parsed.diagnostics.filter(
+      (d: any) => d.kind === 'cannot-fire' && d.details?.source === './sql',
+    );
+    expect(importCannotFire.length).toBeGreaterThanOrEqual(1);
+    expect(importCannotFire.some((d: any) => d.details?.names?.includes('UPSERT_SQL'))).toBe(true);
+
+    // 2. unresolved-query: the identifier used as the query argument.
+    const unresolvedQuery = parsed.diagnostics.filter(
+      (d: any) => d.kind === 'unresolved-query' && d.details?.identifier === 'UPSERT_SQL',
+    );
+    expect(unresolvedQuery.length).toBeGreaterThanOrEqual(1);
+
+    // Neither diagnostic may gate (coverage channel only).
+    expect(parsed.violations.some((v: any) => v.rule === 'cannot-fire')).toBe(false);
+    expect(parsed.violations.some((v: any) => v.rule === 'unresolved-query')).toBe(false);
   });
 
   it('R6.8 — CLI: --fail-on-regression exits 2 when debt increases', async () => {
