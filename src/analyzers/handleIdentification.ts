@@ -524,10 +524,10 @@ const sqlArgumentSource: EvidenceSource<'sql-argument'> = {
     if (facts.sqlDialect === null) {
       return {
         kind: 'unproven',
-        reason: `SQL argument does not parse under the default ${DEFAULT_SQL_DIALECT} grammar, and the dialect is undetermined — the failure may be dialect-specific syntax: ${parsed.reason}`,
+        reason: `node-sql-parser could not parse the SQL argument under the default ${DEFAULT_SQL_DIALECT} grammar, and the dialect is undetermined — the failure may be dialect-specific syntax: ${parsed.reason}`,
       };
     }
-    return { kind: 'unproven', reason: `SQL argument does not parse under ${facts.sqlDialect}: ${parsed.reason}` };
+    return { kind: 'unproven', reason: `node-sql-parser could not parse the SQL argument under ${facts.sqlDialect}: ${parsed.reason}` };
   },
 };
 
