@@ -134,12 +134,12 @@ Six-corpus `db`-rooted unproven on the phase path:
 | corpus | db-rooted unproven |
 |---|---|
 | blitz | 101 |
-| knex | 32 |
+| knex | 14 |
 | recall-protocol | 21 |
-| hhra-org | 14 |
+| hhra-org | 5 |
 | endless-guessing | 0 |
 | primer-css | 0 |
-| **total** | **168** |
+| **total** | **141** |
 
 ### LokiJS sniff no longer reads the whole index into memory
 
