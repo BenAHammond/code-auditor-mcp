@@ -124,3 +124,90 @@ describe('Spec 70 Decision A — type→package resolution in classifyTypeText',
     expect(dispositionOf('Array<Pool>')).toBe('not-handle');
   });
 });
+
+describe('Spec 70 criterion 9 — type name resolves to its origin before the manifest', () => {
+  /** Classify a variable typed `typeText`, with an extra name→binding map for the
+   *  type-name origin (an import, a local type/class declaration, or none). */
+  function dispositionWith(bindings: Record<string, Binding>, typeText = 'D1Database'): string {
+    const map = new Map<string, Binding>(Object.entries(bindings));
+    map.set('db', { kind: 'variable', typeText });
+    const env = {
+      provenance: new Map<string, never>(),
+      bindings: map,
+      adapter: undefined,
+      sourceCode: '',
+    } as unknown as RootResolutionEnv;
+    return classifyRootIdentifier('db', env);
+  }
+
+  it('resolves an import from @cloudflare/workers-types to `handle` (matching handle name)', () => {
+    expect(dispositionWith({ D1Database: { kind: 'import', source: '@cloudflare/workers-types' } })).toBe('handle');
+  });
+
+  it('resolves an import from a non-manifest package to `unproven`, not `handle`', () => {
+    expect(dispositionWith({ D1Database: { kind: 'import', source: 'my-own-d1' } })).toBe('unproven');
+  });
+
+  it('resolves an import of a non-handle name from a manifest package to `unproven`', () => {
+    // KVNamespace is exported by @cloudflare/workers-types but is not a handle type.
+    expect(dispositionWith({ KVNamespace: { kind: 'import', source: '@cloudflare/workers-types' } }, 'KVNamespace')).toBe('unproven');
+  });
+
+  it('a local `interface D1Database` shadows the ambient manifest name → `unproven`', () => {
+    expect(dispositionWith({ D1Database: { kind: 'type' } })).toBe('unproven');
+  });
+
+  it('a local `class D1Database` shadows the ambient manifest name → `unproven`', () => {
+    expect(dispositionWith({ D1Database: { kind: 'class' } })).toBe('unproven');
+  });
+
+  it('an ambient (unbound) manifest handle name still resolves `handle` (no import, no shadow)', () => {
+    expect(dispositionWith({})).toBe('handle');
+  });
+});
+
+describe('Spec 70 criterion 10 — a named import from a DB package resolves by its handle list', () => {
+  /** Classify the *imported name itself* as the root — a bare-identifier call
+   *  `eq(…)` whose binding is `import { eq } from 'drizzle-orm'`. */
+  function importDisposition(name: string, source: string, importKind?: 'default' | 'named' | 'namespace'): string {
+    const bindings = new Map<string, Binding>([[name, { kind: 'import', source, ...(importKind ? { importKind } : {}) }]]);
+    const env = {
+      provenance: new Map<string, never>(),
+      bindings,
+      adapter: undefined,
+      sourceCode: '',
+    } as unknown as RootResolutionEnv;
+    return classifyRootIdentifier(name, env);
+  }
+
+  it('resolves a named import absent from the handle list to `not-handle` (proven, not dropped)', () => {
+    // eq/inArray/relations are drizzle-orm exports but not its handle types.
+    expect(importDisposition('eq', 'drizzle-orm')).toBe('not-handle');
+    expect(importDisposition('inArray', 'drizzle-orm')).toBe('not-handle');
+    expect(importDisposition('relations', 'drizzle-orm')).toBe('not-handle');
+  });
+
+  it('resolves a named import present in the handle list to `handle` (unprovenanced arm)', () => {
+    expect(importDisposition('Pool', 'pg')).toBe('handle');
+    expect(importDisposition('D1Database', '@cloudflare/workers-types')).toBe('handle');
+  });
+
+  it('resolves a named import from a non-manifest package to `unproven`', () => {
+    expect(importDisposition('something', 'left-pad')).toBe('unproven');
+  });
+
+  it('a Node builtin import stays `not-handle`', () => {
+    expect(importDisposition('readFile', 'node:fs')).toBe('not-handle');
+  });
+
+  it('a default import from a DB package is its handle, regardless of the local name', () => {
+    // `import mysql from 'mysql2/promise'` — the local name `mysql` is not in the
+    // handle list, but a default import's name is arbitrary: the package's default
+    // IS its handle, never `not-handle`.
+    expect(importDisposition('mysql', 'mysql2/promise', 'default')).toBe('handle');
+  });
+
+  it('a namespace import from a DB package is its handle', () => {
+    expect(importDisposition('pg', 'pg', 'namespace')).toBe('handle');
+  });
+});

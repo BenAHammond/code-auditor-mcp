@@ -26,8 +26,11 @@ import { DB_PACKAGES, handleTypesForPackage } from './tsEcosystem.js';
 import {
   buildBindingEnv,
   classifyRootIdentifier,
+  extractInterfaceFields,
   type RootResolutionEnv,
   resolveReceiverRoot,
+  resolveThisFieldType,
+  findEnclosingClassHeritage,
   type Binding,
 } from './receiverRoot.js';
 import { identifyHandle } from './handleIdentification.js';
@@ -1187,6 +1190,7 @@ export function collectDbActivity(
   const env: RootResolutionEnv = {
     provenance: dbProvenanced,
     bindings: buildBindingEnv(ast, adapter, sourceCode),
+    interfaceFields: extractInterfaceFields(ast, adapter, sourceCode),
     adapter,
     sourceCode,
   };
@@ -1247,6 +1251,7 @@ export function applySqlArgumentInference(
   const env: RootResolutionEnv = {
     provenance: dbProvenanced,
     bindings: buildBindingEnv(ast, adapter, sourceCode),
+    interfaceFields: extractInterfaceFields(ast, adapter, sourceCode),
     adapter,
     sourceCode,
   };
@@ -1272,6 +1277,11 @@ export function applySqlArgumentInference(
     const sqlArgument = extractStaticSqlArgument(node, adapter, sourceCode);
     if (sqlArgument === null) return;
 
+    const thisField = receiverRootIsThis(callee, adapter);
+    const thisFieldType = thisField
+      ? resolveThisFieldType(root, findEnclosingClassHeritage(ast, adapter, node, sourceCode))
+      : null;
+
     const verdict = identifyHandle(
       {
         format: 'typescript',
@@ -1279,7 +1289,8 @@ export function applySqlArgumentInference(
         receiver,
         method,
         sqlArgument,
-        thisField: receiverRootIsThis(callee, adapter),
+        thisField,
+        thisFieldType,
       },
       {
         imports: new Map(),
@@ -1318,6 +1329,11 @@ export interface R3Site {
   readonly method: string;
   readonly sqlArgument: string;
   readonly thisField: boolean;
+  /** The resolved type of `this.<root>` from the enclosing class's base-class
+   *  heritage (`extends WorkflowEntrypoint<Env>` → `this.env` is `Env`), or null
+   *  when the site is not a `this` reference or has no heritage contract (Spec 70
+   *  Q3). */
+  readonly thisFieldType: string | null;
 }
 
 /**
@@ -1362,12 +1378,18 @@ export function extractR3Sites(
     const sqlArgument = extractStaticSqlArgument(node, adapter, sourceCode);
     if (sqlArgument === null) return;
 
+    const thisField = receiverRootIsThis(callee, adapter);
+    const thisFieldType = thisField
+      ? resolveThisFieldType(root, findEnclosingClassHeritage(ast, adapter, node, sourceCode))
+      : null;
+
     sites.push({
       root,
       receiver,
       method,
       sqlArgument,
-      thisField: receiverRootIsThis(callee, adapter),
+      thisField,
+      thisFieldType,
     });
   });
 
@@ -2295,6 +2317,7 @@ export function extractTsWithinFileProvenance(
   const seeds = extractDBProvenancedImports(ast, adapter);
   const localFunctions = collectLocalFunctionNames(ast, adapter, sourceCode);
   const bindings = buildBindingEnv(ast, adapter, sourceCode);
+  const interfaceFields = extractInterfaceFields(ast, adapter, sourceCode);
 
   // ── Propagation rules, in `walkAST` pre-order ─────────────────────────────
   const propagationRules: PropagationRule[] = [];
@@ -2412,5 +2435,5 @@ export function extractTsWithinFileProvenance(
     wrapperClasses.push({ name, classCalls });
   }
 
-  return { seeds, bindings, localFunctions, propagationRules, wrapperFunctions, wrapperClasses, returningFunctions };
+  return { seeds, bindings, localFunctions, propagationRules, wrapperFunctions, wrapperClasses, returningFunctions, interfaceFields };
 }

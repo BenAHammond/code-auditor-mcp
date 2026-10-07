@@ -19,12 +19,15 @@ import {
   type DetectionMode,
 } from '../provenance.js';
 import { extractStaticSql, extractGoStaticSql, isTemplateLiteral, isTaggedTemplateSqlCall } from '../sqlLiteral.js';
-import { isOrmMethod } from '../tsEcosystem.js';
+import { isOrmMethod, handleTypesForPackage } from '../tsEcosystem.js';
 import { identifyHandle, type HandleVerdict } from '../handleIdentification.js';
 import {
   buildBindingEnv,
+  extractInterfaceFields,
   resolveReceiverRoot,
   isDbShapedRoot,
+  resolveThisFieldType,
+  findEnclosingClassHeritage,
   type RootResolutionEnv,
 } from '../receiverRoot.js';
 import {
@@ -288,6 +291,9 @@ interface DataAccessScanContext {
   adapter: LanguageAdapter;
   sourceCode: string;
   config: DataAccessAnalyzerConfig;
+  /** The parsed file AST — `handleCallSiteIdentity` reads it to resolve the
+   *  enclosing class's base-class field types (Spec 70 Q3 heritage). */
+  ast: AST;
   provenanceContext?: ProvenanceContext;
   /** Per-file TypeScript binding environment `identifyHandle` reads for
    *  declaration resolution. Built once per file; absent for Go / non-code. */
@@ -538,7 +544,14 @@ function handleVerdictForCall(
       !!binding &&
       (binding.kind === 'variable' || binding.kind === 'field' || binding.kind === 'parameter') &&
       !!binding.typeText;
-    if (!isProvenanced && !isTypeAnnotated) return null;
+    // A named import from a manifest DB package (`import { eq } from
+    // 'drizzle-orm'`) is a DB *signal* even when the name isn't a handle — it
+    // must reach `identifyHandle` so it can be proven `not-handle`, not dropped
+    // here on the negative for want of evidence (Spec 70 — a site that stops
+    // being reported has to be proven not-a-handle).
+    const isDbPackageImport =
+      !!binding && binding.kind === 'import' && handleTypesForPackage(binding.source ?? '') !== undefined;
+    if (!isProvenanced && !isTypeAnnotated && !isDbPackageImport) return null;
     return identifyHandle(
       {
         format: 'typescript',
@@ -3238,6 +3251,7 @@ function buildHandleEnv(
   return {
     provenance: provenanceContext.dbProvenanced,
     bindings: buildBindingEnv(ast, adapter, sourceCode),
+    interfaceFields: extractInterfaceFields(ast, adapter, sourceCode),
     adapter,
     sourceCode,
   };
@@ -3289,6 +3303,7 @@ function buildDataAccessScan(
     adapter,
     sourceCode,
     config: finalConfig,
+    ast,
     provenanceContext,
     handleEnv: buildHandleEnv(ast, adapter, sourceCode, provenanceContext),
     goEnv: buildGoEnv(ast, adapter, sourceCode, provenanceContext),
@@ -3373,6 +3388,7 @@ function buildCandidateScan(
     adapter,
     sourceCode,
     config: finalConfig,
+    ast,
     provenanceContext,
     handleEnv: buildHandleEnv(ast, adapter, sourceCode, provenanceContext),
     goEnv: buildGoEnv(ast, adapter, sourceCode, provenanceContext),
@@ -3481,13 +3497,14 @@ interface HandleCallSiteIdentity {
   receiver: string | null;
   method: string | null;
   thisField: boolean;
+  thisFieldType: string | null;
   sqlArg: string | null;
   siteReceiver: string | null;
 }
 
 const NULL_HANDLE_IDENTITY: HandleCallSiteIdentity = {
   calleeType: null, name: null, root: null, receiver: null, method: null,
-  thisField: false, sqlArg: null, siteReceiver: null,
+  thisField: false, thisFieldType: null, sqlArg: null, siteReceiver: null,
 };
 
 /** Project `handleVerdictForCall`'s structural gates (without `identifyHandle`) into
@@ -3513,6 +3530,7 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
     const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
     return {
       calleeType: 'member', name: null, root, receiver, method, thisField: false,
+      thisFieldType: null,
       sqlArg,
       siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
     };
@@ -3530,6 +3548,7 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
     return {
       calleeType: 'identifier', name, root: name, receiver: name, method: name,
       thisField: false,
+      thisFieldType: null,
       sqlArg: extractStaticSql(callNode, adapter, sourceCode),
       siteReceiver: null,
     };
@@ -3548,9 +3567,17 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
     return NULL_HANDLE_IDENTITY;
   }
   const receiver = getMemberExpressionReceiver(callee, adapter, sourceCode) ?? root;
+  // Spec 70 Q3 — a `this.<root>` receiver resolves to the enclosing class's
+  // base-class field type (`extends WorkflowEntrypoint<Env>` → `this.env` is
+  // `Env`), re-folded through the member path by the same heritage seam as the
+  // build side. Null when not `this`-rooted or the class has no base class.
+  const thisFieldType = thisRooted
+    ? resolveThisFieldType(root, findEnclosingClassHeritage(scan.ast, adapter, callNode, sourceCode))
+    : null;
   return {
     calleeType: 'member', name: null, root, receiver, method,
     thisField: thisRooted,
+    thisFieldType,
     sqlArg,
     siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
   };
@@ -3643,6 +3670,7 @@ function buildDataAccessCallCandidate(
     handleReceiver: handle.receiver,
     handleMethod: handle.method,
     handleThisField: handle.thisField,
+    handleThisFieldType: handle.thisFieldType,
     handleSqlArg: handle.sqlArg,
     handleSiteReceiver: handle.siteReceiver,
     skipCallForTemplateArg: shouldSkipCallForTemplateArg(node, adapter),
@@ -3774,6 +3802,7 @@ export function extractLoopQueryRawCandidates(
       handleReceiver: handle.receiver,
       handleMethod: handle.method,
       handleThisField: handle.thisField,
+      handleThisFieldType: handle.thisFieldType,
       handleSiteReceiver: handle.siteReceiver,
       sqlArg: handle.sqlArg,
     });

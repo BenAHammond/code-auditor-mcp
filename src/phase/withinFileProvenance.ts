@@ -60,6 +60,7 @@ export function bindingToFact(name: string, b: Binding): TsBindingFact {
     name,
     kind: b.kind,
     ...(b.source !== undefined ? { source: b.source } : {}),
+    ...(b.importKind !== undefined ? { importKind: b.importKind } : {}),
     ...(b.typeText !== undefined ? { typeText: b.typeText } : {}),
     ...(b.value !== undefined ? { value: b.value } : {}),
   };
@@ -98,6 +99,12 @@ export function extractWithinFileProvenance(file: AstFile): WithinFileProvenance
           })),
           wrapperClasses: extract.projection.wrapperClasses,
           returningFunctions: extract.projection.returningFunctions,
+          interfaceFields: [...(extract.projection.interfaceFields ?? new Map()).entries()].map(
+            ([name, fields]) => ({
+              name,
+              fields: [...fields.entries()].map(([field, typeText]) => ({ name: field, typeText })),
+            }),
+          ),
         },
       },
     ];

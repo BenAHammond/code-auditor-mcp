@@ -19,7 +19,7 @@ import {
   type ProvenanceContext,
   type DetectionMode,
 } from '../provenance.js';
-import { buildBindingEnv, type RootResolutionEnv } from '../receiverRoot.js';
+import { buildBindingEnv, extractInterfaceFields, type RootResolutionEnv } from '../receiverRoot.js';
 import { makeVisitorStatus, getFilesProcessed } from '../../pipeline.js';
 
 // Spec 34 — schema analyzer split (Step 0 reconciliation): shared types,
@@ -381,6 +381,7 @@ function buildSchemaHandleEnv(
   return {
     provenance: provenanceContext.dbProvenanced,
     bindings: buildBindingEnv(ast, adapter, sourceCode),
+    interfaceFields: extractInterfaceFields(ast, adapter, sourceCode),
     adapter,
     sourceCode,
   };

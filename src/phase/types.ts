@@ -40,7 +40,7 @@ import type { IndexHandle } from '../types.js';
 import type { DdlForeignKey } from '../analyzers/universal/schema/migrations.js';
 import type { ProvenanceReason } from '../analyzers/provenance.js';
 import type { TsExpressionDescriptor, PropagationRule, ClassCall } from '../analyzers/tsExpressionDescriptor.js';
-import type { BindingKind, ValueDescriptor } from '../analyzers/receiverRoot.js';
+import type { BindingKind, ImportKind, ValueDescriptor } from '../analyzers/receiverRoot.js';
 import type { HandleVerdict } from '../analyzers/handleIdentification.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import type { UnresolvedQuery } from '../analyzers/universal/schema/codeAnalysis.js';
@@ -511,6 +511,9 @@ export type LoopQueryRawCandidate = {
   readonly handleReceiver: string | null;
   readonly handleMethod: string | null;
   readonly handleThisField: boolean;
+  /** `this.<root>` heritage-resolved field type (`extends WorkflowEntrypoint<Env>`
+   *  → `this.env` is `Env`), or null when not `this`-rooted or no heritage. */
+  readonly handleThisFieldType: string | null;
   /** The handle verdict's site-dialect receiver (raw nullable
    *  `getMemberExpressionReceiver` of the callee) — `resolveSiteDialect` reads
    *  the nullable raw, distinct from `handleReceiver` (`receiver ?? root`). */
@@ -1078,6 +1081,9 @@ export type DataAccessCallCandidate = {
   readonly handleReceiver: string | null;
   readonly handleMethod: string | null;
   readonly handleThisField: boolean;
+  /** `this.<root>` heritage-resolved field type (`extends WorkflowEntrypoint<Env>`
+   *  → `this.env` is `Env`), or null when not `this`-rooted or no heritage. */
+  readonly handleThisFieldType: string | null;
   /** `extractStaticSql(callNode)` — the handle verdict's SQL argument (the
    *  enclosing-call first arg for a template, the node's own arg otherwise).
    *  Distinct from `sqlArg` (`extractStaticSql(node)`) for a template that is a
@@ -1685,6 +1691,19 @@ export type TsWithinFileProvenanceProjection = {
   readonly wrapperFunctions: readonly { readonly name: string; readonly ownCalls: readonly WithinFileOwnCall[] }[];
   readonly wrapperClasses: readonly { readonly name: string; readonly classCalls: readonly ClassCall[] }[];
   readonly returningFunctions: readonly { readonly name: string; readonly returnExprs: readonly TsExpressionDescriptor[] }[];
+  readonly interfaceFields: readonly InterfaceFieldFact[];
+};
+
+/**
+ * The serializable projection of `extractInterfaceFields` (`receiverRoot.ts`) —
+ * one interface/type-alias name → its declared field name → type-text pairs, for
+ * the member-chain resolution arm (Spec 70 decision B3). `interface Env { DB:
+ * D1Database }` projects as `{ name: 'Env', fields: [{ name: 'DB', typeText:
+ * 'D1Database' }] }`.
+ */
+export type InterfaceFieldFact = {
+  readonly name: string;
+  readonly fields: readonly { readonly name: string; readonly typeText: string }[];
 };
 
 /**
@@ -1748,6 +1767,7 @@ export type TsBindingFact = {
   readonly name: string;
   readonly kind: BindingKind;
   readonly source?: string;
+  readonly importKind?: ImportKind;
   readonly typeText?: string;
   readonly value?: ValueDescriptor;
 };
@@ -1759,6 +1779,7 @@ export type ReceiverActivityR3Site = {
   readonly method: string;
   readonly sqlArgument: string;
   readonly thisField: boolean;
+  readonly thisFieldType: string | null;
 };
 
 /**

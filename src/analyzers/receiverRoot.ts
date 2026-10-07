@@ -29,7 +29,7 @@
 
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
 import type { ProvenanceEvidence } from './provenance.js';
-import { isNodeBuiltin, isDbHandleTypeName, JS_GLOBALS } from './tsEcosystem.js';
+import { isNodeBuiltin, isDbHandleTypeName, handleTypesForPackage, JS_GLOBALS } from './tsEcosystem.js';
 
 /** A receiver root's disposition (Spec 69 §10 S5e). */
 export type RootDisposition = 'handle' | 'not-handle' | 'unproven';
@@ -41,7 +41,14 @@ export type BindingKind =
   | 'parameter'
   | 'field'
   | 'function'
-  | 'class';
+  | 'class'
+  | 'type';
+
+/** How an import binding's specifier was written (Spec 70 criterion 10). A
+ *  default/namespace import's local name is arbitrary (it is the package's
+ *  handle), while a named import's name is the handle only when the manifest
+ *  lists it. */
+export type ImportKind = 'default' | 'named' | 'namespace';
 
 /**
  * A serializable description of a binding's initializer/value expression,
@@ -73,6 +80,9 @@ export interface Binding {
   kind: BindingKind;
   /** Import source specifier (kind === 'import'). */
   source?: string;
+  /** How an import was written (kind === 'import'): default / named / namespace.
+   *  Absent on older/foreign bindings, read as `named` by the classifier. */
+  importKind?: ImportKind;
   /** Type-annotation text (variable / parameter / field / function return). */
   typeText?: string;
   /** Initializer / value expression, as a serializable descriptor (variable /
@@ -88,6 +98,15 @@ export interface RootResolutionEnv {
   bindings: ReadonlyMap<string, Binding>;
   /** Resolve an import specifier to an in-repo absolute path, or null. */
   resolveImport?: (source: string) => string | null;
+  /**
+   * Interface / type-alias field types, keyed `interfaceName → fieldName → typeText`
+   * (`interface Env { DB: D1Database }` → `Env → { DB: 'D1Database' }`). The
+   * member-chain resolution arm (Spec 70 decision B3) reads this to resolve a
+   * member receiver (`env.DB`) through its interface's field type — `env` typed
+   * `Env` is not a handle, but `Env.DB` is `D1Database`, which is. Absent in the
+   * Go env and in callers that classify a bare root with no member chain.
+   */
+  interfaceFields?: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** The adapter + source text for reading value/type node text. */
   adapter: LanguageAdapter;
   sourceCode: string;
@@ -95,7 +114,7 @@ export interface RootResolutionEnv {
 
 // ── Binding extraction ───────────────────────────────────────────────────────
 
-/** Node types that declare a value name in the file scope. */
+/** Node types that declare a name in the file scope (value and/or type). */
 const VALUE_DECLARATION_TYPES = new Set([
   'variable_declarator',
   'required_parameter',
@@ -107,6 +126,9 @@ const VALUE_DECLARATION_TYPES = new Set([
   'generator_function_declaration',
   'class_declaration',
   'abstract_class_declaration',
+  'interface_declaration',
+  'type_alias_declaration',
+  'enum_declaration',
 ]);
 
 const FUNCTION_NAME_TYPES = new Set([
@@ -118,6 +140,16 @@ const FUNCTION_NAME_TYPES = new Set([
 const CLASS_NAME_TYPES = new Set([
   'class_declaration',
   'abstract_class_declaration',
+]);
+
+/** Node types that declare a *type-only* name (interface / type alias / enum) —
+ *  a name that can appear in a type annotation but is not a runtime value, so a
+ *  value reference to it is `unproven` and a same-named handle type is shadowed
+ *  (Spec 70 criterion 9 — the type→package lookup must know the name is local). */
+const TYPE_DECLARATION_TYPES = new Set([
+  'interface_declaration',
+  'type_alias_declaration',
+  'enum_declaration',
 ]);
 
 /**
@@ -145,7 +177,8 @@ export function buildBindingEnv(
       const name = spec.alias ?? spec.name;
       if (!name || name === '*') continue;
       if (!bindings.has(name)) {
-        bindings.set(name, { kind: 'import', source: imp.source });
+        const importKind: ImportKind = spec.isDefault ? 'default' : spec.isNamespace ? 'namespace' : 'named';
+        bindings.set(name, { kind: 'import', source: imp.source, importKind });
       }
     }
   }
@@ -192,6 +225,12 @@ export function buildBindingEnv(
     if (CLASS_NAME_TYPES.has(node.type)) {
       const name = adapter.getNodeName(node);
       if (name && !bindings.has(name)) bindings.set(name, { kind: 'class' });
+      continue;
+    }
+
+    if (TYPE_DECLARATION_TYPES.has(node.type)) {
+      const name = adapter.getNodeName(node);
+      if (name && !bindings.has(name)) bindings.set(name, { kind: 'type' });
     }
   }
 
@@ -286,6 +325,75 @@ function bindingFromField(node: ASTNode, adapter: LanguageAdapter, sourceCode: s
     typeText: typeNode ? adapter.getNodeText(typeNode, sourceCode).trim() : undefined,
     value: valueNode ? describeValue(valueNode, adapter, sourceCode) : undefined,
   };
+}
+
+/**
+ * Extract interface and type-alias field-type maps (`Env → { DB: 'D1Database' }`)
+ * for the member-chain resolution arm (Spec 70 decision B3). Walks
+ * `interface_declaration` bodies (`interface_body`) and `type_alias_declaration`
+ * object-literal bodies (`object_type`) for `property_signature` nodes, mapping
+ * each declared field name to its type text. A name with a body but no typed
+ * fields still yields a (possibly empty) entry — the entry's presence tells
+ * {@link classifyMemberPath} the name is a *known* interface, so an unknown
+ * field cannot-fire rather than falls back to the bare type name.
+ */
+export function extractInterfaceFields(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): Map<string, Map<string, string>> {
+  const fields = new Map<string, Map<string, string>>();
+  const decls = adapter.findNodes(ast, {
+    custom: (n: ASTNode) =>
+      n.type === 'interface_declaration' ||
+      (n.type === 'type_alias_declaration' &&
+        adapter.getChildren(n).some((c) => c.type === 'object_type')),
+  });
+
+  for (const decl of decls) {
+    const nameNode = adapter.getChildren(decl).find((c) => c.type === 'type_identifier');
+    const name = nameNode ? adapter.getNodeText(nameNode, sourceCode) : null;
+    if (!name) continue;
+    const body = adapter
+      .getChildren(decl)
+      .find((c) => c.type === 'interface_body' || c.type === 'object_type');
+    if (!body) continue;
+
+    let fieldMap = fields.get(name);
+    if (!fieldMap) {
+      fieldMap = new Map<string, string>();
+      fields.set(name, fieldMap);
+    }
+
+    for (const sig of adapter.getChildren(body)) {
+      if (sig.type !== 'property_signature') continue;
+      const fieldNameNode = adapter.getChildren(sig).find((c) => c.type === 'property_identifier');
+      const fieldName = fieldNameNode ? adapter.getNodeText(fieldNameNode, sourceCode) : null;
+      if (!fieldName) continue;
+      const typeText = propertySignatureFieldType(sig, adapter, sourceCode);
+      if (typeText === undefined) continue;
+      if (!fieldMap.has(fieldName)) fieldMap.set(fieldName, typeText);
+    }
+  }
+
+  return fields;
+}
+
+/** Read a `property_signature`'s type text, stripping the annotation's `:`. */
+function propertySignatureFieldType(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | undefined {
+  const typeAnn = adapter.getChildren(node).find((c) => c.type === 'type_annotation');
+  if (!typeAnn) return undefined;
+  const typeNode = adapter.getChildren(typeAnn).find((c) => c.type !== ':');
+  if (typeNode) {
+    const text = adapter.getNodeText(typeNode, sourceCode);
+    if (text) return text.trim();
+  }
+  const raw = adapter.getNodeText(typeAnn, sourceCode);
+  return raw ? raw.trim().replace(/^:\s*/, '') : undefined;
 }
 
 /**
@@ -385,18 +493,33 @@ const NON_HANDLE_PRIMITIVES = new Set([
  * @param name the bare root identifier to classify
  * @param env the file's resolution environment (provenance, bindings, adapter)
  * @param depth recursion guard; classification gives up past depth 8
- * @param opts `thisField` marks the name as a `this.<field>` reference
+ * @param opts `thisField` marks the name as a `this.<field>` reference;
+ *            `memberPath` is the receiver's member chain after the root
+ *            (e.g. `env.DB.prepare` → `['DB']`), resolved through the root's
+ *            interface field types when present (Spec 70 decision B3)
  * @returns `handle`, `not-handle`, or `unproven`
  */
 export function classifyRootIdentifier(
   name: string,
   env: RootResolutionEnv,
   depth = 0,
-  opts?: { thisField?: boolean },
+  opts?: { thisField?: boolean; memberPath?: readonly string[]; thisFieldType?: string | null },
 ): RootDisposition {
   if (!name) return 'unproven';
   if (env.provenance.has(name)) return 'handle';
   if (depth > 8) return 'unproven';
+
+  // Form-3 heritage (Spec 70 Q3): a `this.<field>` reference resolves to the
+  // enclosing class's base-class field type (`extends WorkflowEntrypoint<Env>`
+  // → `this.env` is `Env`), then through the member path by the same
+  // interface-field seam as B3. This runs *before* the binding lookup — the
+  // heritage contract is authoritative, and a same-named local binding is a
+  // shadow, not the field's type. No heritage contract → `thisFieldType` is
+  // null and the field stays `unproven` (abstain, never a guess from the class
+  // merely having a generic parameter).
+  if (opts?.thisField && opts.thisFieldType) {
+    return classifyTypeOrMember(opts.thisFieldType, opts.memberPath, env, depth + 1);
+  }
 
   const binding = env.bindings.get(name);
   if (!binding) {
@@ -411,27 +534,112 @@ export function classifyRootIdentifier(
     // variable, import, function, or class of the same name is a *shadow*, not
     // the field's type — consulting it would let `env`/`ctx`/`state` resolve to
     // a local's disposition instead of the field. Leave it unproven: a plain
-    // unresolvable field stays cannot-fire rather than clean. There is no
-    // type-heritage resolver to prove base-class fields — the form-3
-    // `classifyThisChain` was deleted as dead code (Spec 69 R3).
+    // unresolvable field stays cannot-fire rather than clean.
     return 'unproven';
   }
 
   switch (binding.kind) {
     case 'import':
-      return classifyImportSource(binding.source ?? '', env);
+      return classifyImportSource(binding.source ?? '', name, binding.importKind, env);
     case 'variable':
     case 'field':
-      if (binding.typeText) return classifyTypeText(binding.typeText, env, depth);
+      if (binding.typeText) return classifyTypeOrMember(binding.typeText, opts?.memberPath, env, depth);
       if (binding.value) return classifyValue(binding.value, env, depth);
       return 'unproven';
     case 'parameter':
-      if (binding.typeText) return classifyTypeText(binding.typeText, env, depth);
+      if (binding.typeText) return classifyTypeOrMember(binding.typeText, opts?.memberPath, env, depth);
       return 'unproven';
     case 'function':
     case 'class':
+    case 'type':
       return 'unproven';
   }
+}
+
+/**
+ * Classify a typed binding, resolving a member chain through interface field
+ * types when one is supplied (Spec 70 decision B3). With no member path this is
+ * the plain type-text classification.
+ */
+function classifyTypeOrMember(
+  typeText: string,
+  memberPath: readonly string[] | undefined,
+  env: RootResolutionEnv,
+  depth: number,
+): RootDisposition {
+  if (memberPath && memberPath.length > 0) {
+    return classifyMemberPath(typeText, memberPath, env, depth);
+  }
+  return classifyTypeText(typeText, env, depth);
+}
+
+/**
+ * Resolve a member receiver through its interface / type-alias field types
+ * (Spec 70 decision B3): `env.DB` where `env` is typed `Env` and
+ * `interface Env { DB: D1Database }` resolves `DB` → `D1Database` → handle.
+ * Each step looks up the head member's declared field type in
+ * `env.interfaceFields` and recurses on the remaining path; the final field
+ * type is classified by the ordinary type-text rules. A field absent from the
+ * known interface (or a type name with no known fields) cannot-fire — the
+ * member is not a declared DB field, never a guessed clean.
+ */
+function classifyMemberPath(
+  typeText: string,
+  memberPath: readonly string[],
+  env: RootResolutionEnv,
+  depth: number,
+): RootDisposition {
+  const fields = env.interfaceFields;
+  if (!fields || memberPath.length === 0) return classifyTypeText(typeText, env, depth);
+  const base = baseTypeName(typeText);
+  const iface = fields.get(base);
+  if (!iface) return classifyTypeText(typeText, env, depth);
+  const [head, ...rest] = memberPath;
+  const fieldType = iface.get(head);
+  if (fieldType === undefined) return 'unproven';
+  if (rest.length === 0) return classifyTypeText(fieldType, env, depth + 1);
+  return classifyMemberPath(fieldType, rest, env, depth + 1);
+}
+
+/**
+ * Derive the receiver's member path after the root from the site strings (Spec 70
+ * decision B3). `receiver` is the member-chain text left of the method (`env.DB`
+ * for `env.DB.prepare`); `root` is its leftmost identifier (`env`); the path is
+ * the non-root segments (`['DB']`). A `this`/`super`-rooted receiver has no
+ * resolvable member path (its `thisField` guard already leaves it unproven), and
+ * any segment that is not a plain identifier (a method name, an index, a call
+ * result) is dropped to empty — only declared interface fields are resolvable.
+ */
+export function deriveMemberPath(
+  root: string,
+  receiver: string,
+  thisField: boolean,
+): readonly string[] {
+  if (thisField || !root || !receiver.startsWith(root)) return [];
+  const rest = receiver.slice(root.length).replace(/^[.\s]+/, '');
+  if (!rest) return [];
+  const parts = rest.split('.').map((p) => p.trim()).filter((p) => p.length > 0);
+  if (parts.length === 0 || parts.some((p) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(p))) return [];
+  return parts;
+}
+
+/**
+ * Derive the member path after the root for a `this`/`super`-rooted receiver
+ * (Spec 70 Q3): `this.env.DB` → root `env`, path `['DB']`. Unlike
+ * {@link deriveMemberPath} (which returns `[]` for a `this`-rooted receiver), the
+ * `this.`/`super.` prefix is stripped first so the root's member chain is
+ * recoverable — it resolves through the root's base-class field type (`this.env`
+ * is `Env`) and then the same interface-field seam as B3.
+ */
+export function deriveThisMemberPath(root: string, receiver: string): readonly string[] {
+  if (!root || !receiver) return [];
+  const t = receiver.trim().replace(/^(?:this|super)\./, '');
+  if (!t.startsWith(root)) return [];
+  const rest = t.slice(root.length).replace(/^[.\s]+/, '');
+  if (!rest) return [];
+  const parts = rest.split('.').map((p) => p.trim()).filter((p) => p.length > 0);
+  if (parts.length === 0 || parts.some((p) => !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(p))) return [];
+  return parts;
 }
 
 /**
@@ -453,17 +661,30 @@ export function isDbShapedRoot(root: string, env: RootResolutionEnv, opts?: { th
   return classifyRootIdentifier(root, env, 0, opts) !== 'not-handle';
 }
 
-function classifyImportSource(source: string, env: RootResolutionEnv): RootDisposition {
+function classifyImportSource(
+  source: string,
+  name: string,
+  importKind: ImportKind | undefined,
+  env: RootResolutionEnv,
+): RootDisposition {
   const isRelative = source.startsWith('./') || source.startsWith('../');
   const isAlias = source.startsWith('@/') || source.startsWith('~/');
   if (!isRelative && !isAlias) {
-    // Bare specifier → node_modules or a Node builtin. A DB package would already
-    // be provenanced (extractDBProvenancedImports); a Node builtin (`fs`,
-    // `node:path`, …) is provably not a DB client → `not-handle`. Anything else
-    // reaching here is NOT in the database-packages manifest — Spec 70 R4: an
-    // unrecognized package reached by resolution reports cannot-fire, never a
-    // guessed clean.
+    // Bare specifier → node_modules or a Node builtin. A Node builtin (`fs`,
+    // `node:path`, …) is provably not a DB client → `not-handle`. A manifest DB
+    // package resolves by import kind: a default/namespace import is the
+    // package's handle (its local name is arbitrary — `import mysql from
+    // 'mysql2/promise'`), while a *named* import is a handle only when the
+    // manifest lists its name — `import { eq } from 'drizzle-orm'` is provably
+    // NOT a handle, `import { Pool } from 'pg'` is. An unrecognized package
+    // reached by resolution reports cannot-fire (Spec 70 R4), never a guessed
+    // clean.
     if (isNodeBuiltin(source)) return 'not-handle';
+    const handles = handleTypesForPackage(source);
+    if (handles) {
+      if (importKind === 'default' || importKind === 'namespace') return 'handle';
+      return handles.has(name) ? 'handle' : 'not-handle';
+    }
     return 'unproven';
   }
   if (!env.resolveImport) return 'unproven';
@@ -492,15 +713,35 @@ function classifyTypeText(typeText: string, env: RootResolutionEnv, depth: numbe
   // …) is provably not a DB handle — the global object's own names, enumerated at
   // load, never a hand-written list.
   if (JS_GLOBALS.has(base)) return 'not-handle';
-  // A bare type name that is a DB handle type in the manifest resolves `handle`
-  // (Decision A — the manifest keys on package AND type). `D1Database` /
-  // `D1PreparedStatement` (from `@cloudflare/workers-types`) and `Pool` /
-  // `Kysely` / `PrismaClient` prove their annotated receiver is a handle; a name
-  // absent from every manifest entry (`KVNamespace`, `R2Bucket`,
-  // `ExecutionContext`, `MyDb`) stays `unproven` — visible, never clean. This
-  // restores the type-annotation arm that criterion 9's deletion dropped, but
-  // grounded in the manifest *data* (the exported names of known DB packages)
-  // rather than a hand-written list.
+  // Resolve a handle-candidate type name to its *origin* before consulting the
+  // manifest (Spec 70 criterion 9 — the lookup keys on package AND type). A bare
+  // name match against the flattened handle-name set would credit a project's own
+  // unrelated `D1Database` declaration or an import from a non-DB package, so ask
+  // where the name came from first:
+  //   · an import resolves through its package's handle list in the manifest;
+  //   · a local type declaration (class/interface/type-alias/enum) shadows the
+  //     ambient manifest name — it is not the DB handle;
+  //   · only an *ambient* (unbound) name falls through to the name match, which
+  //     is what a Workers `D1Database` without an import relies on (the type is
+  //     injected by `@cloudflare/workers-types` via tsconfig `types`).
+  const binding = env.bindings.get(base);
+  if (binding) {
+    if (binding.kind === 'import') {
+      const handles = handleTypesForPackage(binding.source ?? '');
+      if (handles?.has(base)) return 'handle';
+      // Imported from a non-manifest package, or a non-handle name from a DB
+      // package (`KVNamespace` from `@cloudflare/workers-types`) — cannot-fire,
+      // never a guessed clean.
+      return 'unproven';
+    }
+    if (binding.kind === 'class' || binding.kind === 'type') {
+      // A local class/interface/type-alias/enum of this name shadows the ambient
+      // manifest type — it is not the DB handle.
+      return 'unproven';
+    }
+    // variable / parameter / field / function bind only a *value*, not a type,
+    // so a type annotation naming one still refers to the ambient type.
+  }
   if (isDbHandleTypeName(base)) return 'handle';
   return 'unproven';
 }
@@ -687,4 +928,106 @@ export function resolveReceiverRoot(
   }
 
   return null;
+}
+
+// ── Form-3 this-field type heritage (Spec 70 Q3) ─────────────────────────────
+
+/**
+ * Cloudflare base-class field contracts: `this.<field>` → type, given the
+ * class's type arguments. Each entry maps the base class's type parameters into
+ * its instance fields (a structural registry of `env`/`ctx`/`state` as declared
+ * by the workers-types / agents packages) — NOT a name list of receivers.
+ * `WorkflowEntrypoint<Env>` is the Q3 addition: `this.env` is `Env`, the field
+ * the member path then resolves through `interfaceFields` to a DB handle.
+ */
+const BASE_CLASS_FIELD_TYPES: Readonly<Record<string, (args: readonly string[]) => Record<string, string>>> = {
+  // `Agent<Env>` (Cloudflare Agents SDK): env is the type parameter, ctx is the
+  // Durable Object state.
+  Agent: (args) => ({ env: args[0] ?? 'Env', ctx: 'DurableObjectState' }),
+  // `DurableObject<Env>` (workers-types): env is the type parameter, ctx/state are
+  // the Durable Object state.
+  DurableObject: (args) => ({ env: args[0] ?? 'Env', ctx: 'DurableObjectState', state: 'DurableObjectState' }),
+  // `WorkerEntrypoint<Env>` (workers-types): env is the type parameter, ctx is the
+  // execution context.
+  WorkerEntrypoint: (args) => ({ env: args[0] ?? 'Env', ctx: 'ExecutionContext' }),
+  // `WorkflowEntrypoint<Env>` (workers-types): env is the type parameter, ctx is
+  // the execution context. The Q3 addition — `this.env.DB` resolves through `env`
+  // → `Env` → `interfaceFields['Env']['DB']`.
+  WorkflowEntrypoint: (args) => ({ env: args[0] ?? 'Env', ctx: 'ExecutionContext' }),
+};
+
+/** Split `Agent<Env>` → `{ base: 'Agent', args: ['Env'] }`. */
+function splitGenericType(text: string): { base: string; args: string[] } {
+  const t = text.trim();
+  const lt = t.indexOf('<');
+  if (lt <= 0 || !t.endsWith('>')) return { base: t, args: [] };
+  const base = t.slice(0, lt).trim();
+  const inner = t.slice(lt + 1, -1);
+  const args: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of inner) {
+    if (ch === '<') depth++;
+    else if (ch === '>') depth--;
+    if (ch === ',' && depth === 0) {
+      args.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) args.push(current.trim());
+  return { base, args };
+}
+
+/**
+ * Resolve the type of `this.<field>` from the enclosing class's `extends`
+ * heritage (Spec 70 Q3): `extends WorkflowEntrypoint<Env>` → `this.env` is
+ * `Env`. Returns `null` when the heritage, the base class, or the field is
+ * unknown — the classifier then abstains (`unproven`), never guessing a handle
+ * from the class merely having a generic parameter.
+ */
+export function resolveThisFieldType(field: string, heritageText: string | null | undefined): string | null {
+  if (!heritageText || !field) return null;
+  const { base, args } = splitGenericType(heritageText);
+  const fieldResolver = BASE_CLASS_FIELD_TYPES[base];
+  if (!fieldResolver) return null;
+  return fieldResolver(args)[field] ?? null;
+}
+
+/**
+ * The enclosing class declaration's `extends` clause text
+ * (`WorkflowEntrypoint<Env>`), or null when the node is not inside a class or
+ * the class has no base class. The smallest enclosing class wins (nested classes
+ * resolve to the innermost), matching the deleted form-3 producer.
+ */
+export function findEnclosingClassHeritage(
+  ast: AST,
+  adapter: LanguageAdapter,
+  node: ASTNode,
+  sourceCode: string,
+): string | null {
+  const line = node.location.start.line;
+  const classes = adapter.findNodes(ast, {
+    custom: (n: ASTNode) => n.type === 'class_declaration' || n.type === 'abstract_class_declaration',
+  });
+  let best: ASTNode | null = null;
+  let bestSpan = Number.POSITIVE_INFINITY;
+  for (const cls of classes) {
+    const start = cls.location.start.line;
+    const end = cls.location.end.line;
+    if (start <= line && line <= end) {
+      const span = end - start;
+      if (span < bestSpan) {
+        bestSpan = span;
+        best = cls;
+      }
+    }
+  }
+  if (!best) return null;
+  const heritage = adapter.getChildren(best).find((c) => c.type === 'class_heritage');
+  if (!heritage) return null;
+  const ext = adapter.getChildren(heritage).find((c) => c.type === 'extends_clause');
+  if (!ext) return null;
+  return adapter.getNodeText(ext, sourceCode).trim().replace(/^extends\s+/, '');
 }

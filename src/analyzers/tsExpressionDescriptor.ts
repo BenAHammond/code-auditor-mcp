@@ -111,6 +111,12 @@ export interface TsWithinFileProvenanceExtract {
   readonly wrapperClasses: readonly { readonly name: string; readonly classCalls: readonly ClassCall[] }[];
   /** Function names + their return-expression projections, in `findNodes` pre-order. */
   readonly returningFunctions: readonly { readonly name: string; readonly returnExprs: readonly TsExpressionDescriptor[] }[];
+  /**
+   * `extractInterfaceFields` — interface / type-alias field types
+   * (`Env → { DB: 'D1Database' }`), for the member-chain resolution arm
+   * (Spec 70 decision B3). Absent for Go.
+   */
+  readonly interfaceFields?: ReadonlyMap<string, ReadonlyMap<string, string>>;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

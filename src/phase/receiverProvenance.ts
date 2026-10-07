@@ -78,6 +78,7 @@ export function bindingFromFact(b: TsBindingFact): Binding {
   return {
     kind: b.kind,
     ...(b.source !== undefined ? { source: b.source } : {}),
+    ...(b.importKind !== undefined ? { importKind: b.importKind } : {}),
     ...(b.typeText !== undefined ? { typeText: b.typeText } : {}),
     ...(b.value !== undefined ? { value: b.value } : {}),
   };
@@ -104,6 +105,9 @@ function tsExtractFromFact(p: TsWithinFileProvenanceProjection): TsWithinFilePro
     wrapperFunctions: p.wrapperFunctions,
     wrapperClasses: p.wrapperClasses,
     returningFunctions: p.returningFunctions,
+    interfaceFields: new Map(
+      p.interfaceFields.map((i) => [i.name, new Map(i.fields.map((f) => [f.name, f.typeText]))]),
+    ),
   };
 }
 
@@ -337,7 +341,7 @@ export function classifyBuildProvenance(
 
   // 3. R3 — runs even without a named dialect: `identifyHandle` parses the
   //    literal under DEFAULT_SQL_DIALECT when the dialect is null (Spec 70 R2).
-  prov = applyR3FromSites(r3Sites, bindings, prov, sqlDialect);
+  prov = applyR3FromSites(r3Sites, bindings, prov, sqlDialect, extract.interfaceFields);
 
   // 4. Function wrappers only (mirror of `detectDbWrappers` without classes).
   prov = detectDbWrapperFunctionsFromExtract(extract, prov);
@@ -361,8 +365,9 @@ function applyR3FromSites(
   bindings: ReadonlyMap<string, Binding>,
   dbProvenanced: Map<string, ProvenanceEvidence>,
   sqlDialect: Dialect | null,
+  interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
 ): Map<string, ProvenanceEvidence> {
-  const env = { provenance: dbProvenanced, bindings, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+  const env = { provenance: dbProvenanced, bindings, interfaceFields, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
 
   for (const site of r3Sites) {
     const verdict = identifyHandle(
@@ -373,6 +378,7 @@ function applyR3FromSites(
         method: site.method,
         sqlArgument: site.sqlArgument,
         thisField: site.thisField,
+        thisFieldType: site.thisFieldType,
       },
       {
         imports: new Map(),
