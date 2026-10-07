@@ -308,14 +308,26 @@ async function discoverAuditFiles(
       fileCount: files.length
     });
   } else if (scope === 'changed') {
-    // Changed scope: detect modified files
-    const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
-    await db.initialize();
+    // Changed scope: detect modified files. Fail open on an unavailable index
+    // (a future schema version is the sharpest case): when the caller pinned
+    // explicit files we audit those without touching the index; otherwise there
+    // is nothing to diff against, so the run degrades to zero files and the
+    // analyze phase reports the index skip as a coverage diagnostic (never a
+    // fatal — the hook must complete with the exit code it would otherwise have).
+    let db: CodeIndexDB | undefined;
+    try {
+      db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
+      await db.initialize();
+    } catch (err) {
+      logMcpInfo('discovery', 'changed scope index unavailable (continuing)', {
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
     const modifiedFiles = mergedOptions.explicitFiles !== undefined
       ? mergedOptions.explicitFiles
-      : await db.detectModifiedFiles(
+      : (db ? await db.detectModifiedFiles(
           path.resolve(mergedOptions.projectRoot || process.cwd())
-        );
+        ) : []);
     files = [...new Set(modifiedFiles.map((f) => path.resolve(f)))].sort();
     logMcpInfo('discovery', 'changed scope resolved', {
       fileCount: files.length
@@ -1214,7 +1226,7 @@ async function runPipelineStage(inputs: {
   let indexFactsWritten = 0;
   let writeIndexFactsMs = 0;
 
-  const { auditIndex, pipelineIndexHandle } = await initializeAuditIndex(root);
+  const { auditIndex, pipelineIndexHandle, indexSkipDiagnostic } = await initializeAuditIndex(root);
 
   const {
     pipelineVisitors, pipelineReducers, pipelineDerivedReducers,
@@ -1362,6 +1374,13 @@ async function runPipelineStage(inputs: {
     }
   }
 
+  // An unavailable index (e.g. a future schema version) is reported as a
+  // coverage diagnostic — never raised as a fatal — so the run still completes
+  // with the exit code it would otherwise have had.
+  if (indexSkipDiagnostic) {
+    pipelineDiagnostics = [...(pipelineDiagnostics ?? []), indexSkipDiagnostic];
+  }
+
   return {
     analyzerResults,
     phaseFindings,
@@ -1393,16 +1412,33 @@ async function runPipelineStage(inputs: {
 async function initializeAuditIndex(root: string): Promise<{
   auditIndex: CodeIndexDB | undefined;
   pipelineIndexHandle: IndexHandle | undefined;
+  indexSkipDiagnostic: AuditDiagnostic | undefined;
 }> {
   let auditIndex: CodeIndexDB | undefined;
+  let indexSkipDiagnostic: AuditDiagnostic | undefined;
   try {
     auditIndex = CodeIndexDB.getInstance(undefined, root);
     await auditIndex.initialize();
     logMcpInfo('analysis', 'code index initialized for analyzers', { isInitialized: (auditIndex as any).isInitialized, dbPath: (auditIndex as any).dbPath });
   } catch (err) {
-    logMcpInfo('analysis', 'failed to initialize code index for analyzers (continuing)', {
-      error: err instanceof Error ? err.message : String(err)
-    });
+    // Fail-open (Spec 71 R7 shape): a failed init — including a *future* index
+    // schema version — must not crash the audit. Drop the half-built singleton
+    // (its concern modules are undefined after a failed createSchema) so every
+    // downstream `if (auditIndex)` guard reads "no index", and record the skip
+    // as a coverage diagnostic naming the cause so "indexed analysis skipped"
+    // is visible in the report, not raised as a fatal.
+    auditIndex = undefined;
+    const message = err instanceof Error ? err.message : String(err);
+    const context = (err as { context?: Record<string, unknown> } | undefined)?.context;
+    indexSkipDiagnostic = {
+      analyzerName: 'code-index',
+      kind: 'engine-error',
+      message: `Indexed analysis skipped: ${message}`,
+      ...(context && typeof context.storedSchemaVersion === 'number' && typeof context.supportedSchemaVersion === 'number'
+        ? { details: { storedSchemaVersion: context.storedSchemaVersion, supportedSchemaVersion: context.supportedSchemaVersion } }
+        : {}),
+    };
+    logMcpInfo('analysis', 'failed to initialize code index for analyzers (continuing)', { error: message });
   }
 
   // Build IndexHandle for pipeline reducers
@@ -1419,7 +1455,7 @@ async function initializeAuditIndex(root: string): Promise<{
       rawDb: auditIndex!.rawDb,
     };
   }
-  return { auditIndex, pipelineIndexHandle };
+  return { auditIndex, pipelineIndexHandle, indexSkipDiagnostic };
 }
 
 /** Shape of a metadata diagnostic (zero-files, lint config, pipeline). */
