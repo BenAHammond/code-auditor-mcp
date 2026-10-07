@@ -38,7 +38,7 @@ import { parseFile } from '../languages/adapterBridge.js';
 import type { LanguageAdapter } from '../languages/types.js';
 import { UniversalSOLIDAnalyzer, DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
 import { UniversalDRYAnalyzer, DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
-import { UniversalDataAccessAnalyzer, DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { runDataAccessSlice, runLoopQueriesSlice, runSecuritySlice } from '../phase/runner.js';
 import { UniversalSecretsAnalyzer, DEFAULT_SECRETS_CONFIG } from '../analyzers/universal/UniversalSecretsAnalyzer.js';
 import { UniversalSecurityAnalyzer, DEFAULT_SECURITY_CONFIG } from '../analyzers/universal/UniversalSecurityAnalyzer.js';
 import { UniversalDocumentationAnalyzer, DEFAULT_DOCUMENTATION_CONFIG } from '../analyzers/universal/UniversalDocumentationAnalyzer.js';
@@ -52,7 +52,6 @@ import { join } from 'node:path';
 let tsAdapter: LanguageAdapter;
 let solid: UniversalSOLIDAnalyzer;
 let dry: UniversalDRYAnalyzer;
-let dataAccess: UniversalDataAccessAnalyzer;
 let secrets: UniversalSecretsAnalyzer;
 let security: UniversalSecurityAnalyzer;
 let schema: UniversalSchemaAnalyzer;
@@ -66,7 +65,6 @@ beforeAll(async () => {
   if (!tsAdapter) throw new Error('TypeScript adapter not registered');
   solid = new UniversalSOLIDAnalyzer();
   dry = new UniversalDRYAnalyzer();
-  dataAccess = new UniversalDataAccessAnalyzer();
   secrets = new UniversalSecretsAnalyzer();
   security = new UniversalSecurityAnalyzer();
   schema = new UniversalSchemaAnalyzer();
@@ -115,22 +113,23 @@ const runDry: Runner = async (code) => {
   return ruleIds(vs);
 };
 
-/** Data-access — SQL injection / org-filter / query-shape guards. */
+/** Data-access — SQL injection / query-shape / loop / hardcoded-connection
+ *  guards. The deleted `UniversalDataAccessAnalyzer` emitted five rules across
+ *  three phase slices: `runDataAccessSlice` (sql-injection-risk, complex-query,
+ *  unfiltered-query), `runLoopQueriesSlice` (loop-query), and `runSecuritySlice`
+ *  (hardcoded-connection) — so the runner unions all three. Spec 70 R2 — the
+ *  SQL-content facts (`isWrite`/`isMassWrite`/`tables`) are AST-derived and
+ *  require a named dialect; without one they `cannot-fire` and the write/join
+ *  guards would read a surface that never emits. The near-miss samples are
+ *  D1/SQLite, so pin `sqlite` the same way the property-based generators do. */
 const runDataAccess: Runner = async (code) => {
-  const ast = parseFile('data-access-nearmiss.ts', code)!;
-  if (!ast) throw new Error('failed to parse data-access near-miss');
-  // Spec 70 R2 — the SQL-content facts (`isWrite`/`isMassWrite`/`tables`) are
-  // AST-derived and require a named dialect; without one they `cannot-fire` and
-  // the write/join guards would read a surface that never emits. The near-miss
-  // samples are D1/SQLite, so pin `sqlite` the same way the property-based
-  // generators do.
-  const vs = await (dataAccess as any).analyzeAST(
-    ast,
-    tsAdapter,
-    { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' },
-    code,
-  );
-  return ruleIds(vs);
+  const file = { path: 'data-access-nearmiss.ts', content: code };
+  const [data, loop, security] = await Promise.all([
+    runDataAccessSlice([file], undefined, 'sqlite'),
+    runLoopQueriesSlice([file], undefined, 'sqlite'),
+    runSecuritySlice([file]),
+  ]);
+  return [...data, ...loop, ...security].map((f) => f.ruleId);
 };
 
 /** Secrets — hardcoded-secret guard. Placeholder/env-var near-misses are

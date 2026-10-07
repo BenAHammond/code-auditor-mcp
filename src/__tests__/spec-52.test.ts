@@ -17,10 +17,8 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initParsers, initializeLanguages, LanguageRegistry } from '../languages/index.js';
-import { parseFile } from '../languages/adapterBridge.js';
-import type { LanguageAdapter } from '../languages/types.js';
-import { UniversalDataAccessAnalyzer } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { initParsers, initializeLanguages } from '../languages/index.js';
+import { runLoopQueriesSlice } from '../phase/runner.js';
 import { parseSqlTables, countQueries } from '../analyzers/universal/schema/codeAnalysis.js';
 import { WHOLE_PROGRAM_RULES, scopedWholeProgramApplicability } from '../analyzers/applicability.js';
 import { readFile } from 'fs/promises';
@@ -30,24 +28,17 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const fixture = (name: string) => join(__dirname, 'fixtures', 'spec-52', name);
 
-let tsAdapter: LanguageAdapter;
-
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
-  tsAdapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
-  if (!tsAdapter) throw new Error('TypeScript adapter not found');
 });
 
 async function loopQueryCount(fileName: string): Promise<number> {
   const sourceCode = await readFile(fixture(fileName), 'utf-8');
-  const ast = parseFile(fixture(fileName), sourceCode)!;
-  if (!ast) throw new Error(`Failed to parse ${fileName}`);
-  const analyzer = new UniversalDataAccessAnalyzer();
   // Spec 55 R3 excludes test files by default; these fixtures are positive
   // loop-query controls under __tests__, so re-enable analysis on them.
-  const violations = await (analyzer as any).analyzeAST(ast, tsAdapter, { skipTestFiles: false, dialect: 'sqlite' }, sourceCode);
-  return violations.filter((v: { rule: string }) => v.rule === 'loop-query').length;
+  const fresh = await runLoopQueriesSlice([{ path: fixture(fileName), content: sourceCode }], { skipTestFiles: false }, 'sqlite');
+  return fresh.filter((f) => f.ruleId === 'loop-query').length;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

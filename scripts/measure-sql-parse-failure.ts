@@ -32,7 +32,7 @@ import { LanguageRegistry } from '../src/languages/LanguageRegistry.js';
 import type { ASTNode, LanguageAdapter, AST } from '../src/languages/types.js';
 import type { Dialect } from '../src/mcp-tools/discoveryQueries.js';
 import { parseSql, parseSqlProgram } from '../src/languages/sql/sqlAst.js';
-import { extractStaticSql } from '../src/analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { extractStaticSql } from '../src/analyzers/sqlLiteral.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 

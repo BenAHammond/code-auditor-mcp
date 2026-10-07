@@ -18,20 +18,18 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initParsers, initializeLanguages, LanguageRegistry } from '../languages/index.js';
-import { parseFile } from '../languages/adapterBridge.js';
 import type { LanguageAdapter } from '../languages/types.js';
-import { UniversalDataAccessAnalyzer, DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { runDataAccessSlice } from '../phase/runner.js';
 import { extractTablesFromRegistry } from '../analyzers/universal/schema/discovery.js';
 import type { TableSourceEntry } from '../analyzers/universal/schema/types.js';
 import { scanFile } from '../componentScanner.js';
 import { checkRawElements, DEFAULT_REACT_CONFIG } from '../analyzers/reactAnalyzer.js';
 import { extractClassUsageFromCSSAst } from '../styles/cssAstExtractor.js';
-import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let tsAdapter: LanguageAdapter;
-let analyzer: UniversalDataAccessAnalyzer;
 let tmpDir: string;
 
 beforeAll(async () => {
@@ -39,17 +37,12 @@ beforeAll(async () => {
   await initParsers();
   tsAdapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
   if (!tsAdapter) throw new Error('TypeScript adapter not registered');
-  analyzer = new UniversalDataAccessAnalyzer();
   tmpDir = await mkdtemp(join(tmpdir(), 'ca-nearmiss-'));
 }, 30_000);
 
 async function analyzeDataAccess(code: string, name: string): Promise<any[]> {
   const filePath = join(tmpDir, `${name}.ts`);
-  await writeFile(filePath, code, 'utf-8');
-  const sourceCode = await readFile(filePath, 'utf-8');
-  const ast = parseFile(filePath, sourceCode)!;
-  if (!ast) throw new Error(`Failed to parse ${filePath}`);
-  return (analyzer as any).analyzeAST(ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode);
+  return runDataAccessSlice([{ path: filePath, content: code }], undefined, null);
 }
 
 // ══════════════════════════════════════════════════════════════════
@@ -98,7 +91,7 @@ export async function countById(userId: string) {
 }
 `;
     const violations = await analyzeDataAccess(code, 'count-where');
-    const sql = violations.filter((v: { rule: string }) => v.rule === 'sql-injection-risk');
+    const sql = violations.filter((v) => v.ruleId === 'sql-injection-risk');
     expect(sql).toHaveLength(1);
     // The message names the true method, not a SQL keyword picked out of the string.
     expect(sql[0].message ?? '').not.toContain('COUNT');
@@ -116,7 +109,7 @@ export async function countParameterized(userId: string) {
 }
 `;
     const violations = await analyzeDataAccess(code, 'count-where-parameterized');
-    const sql = violations.filter((v: { rule: string }) => v.rule === 'sql-injection-risk');
+    const sql = violations.filter((v) => v.ruleId === 'sql-injection-risk');
     expect(sql).toHaveLength(0);
   });
 });
@@ -245,7 +238,7 @@ export async function safeLookup(name: string) {
 }
 `;
     const violations = await analyzeDataAccess(code, 'escape-sql');
-    const sql = violations.filter((v: { rule: string }) => v.rule === 'sql-injection-risk');
+    const sql = violations.filter((v) => v.ruleId === 'sql-injection-risk');
     expect(sql).toHaveLength(0);
   });
 
@@ -260,7 +253,7 @@ export async function unsafeLookup(name: string) {
 }
 `;
     const violations = await analyzeDataAccess(code, 'escape-sql-control');
-    const sql = violations.filter((v: { rule: string }) => v.rule === 'sql-injection-risk');
+    const sql = violations.filter((v) => v.ruleId === 'sql-injection-risk');
     expect(sql.length).toBeGreaterThanOrEqual(1);
   });
 });

@@ -18,7 +18,7 @@ import { initParsers, initializeLanguages, LanguageRegistry } from '../../../lan
 import { parseFile } from '../../../languages/adapterBridge.js';
 import type { LanguageAdapter } from '../../../languages/types.js';
 import { UniversalSOLIDAnalyzer, DEFAULT_SOLID_CONFIG, type SOLIDAnalyzerConfig } from '../../../analyzers/universal/UniversalSOLIDAnalyzer.js';
-import { UniversalDataAccessAnalyzer, DEFAULT_DATA_ACCESS_CONFIG } from '../../../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { runLoopQueriesSlice, runDataAccessSlice } from '../../../phase/runner.js';
 import { UniversalDRYAnalyzer, DEFAULT_DRY_CONFIG, type DRYAnalyzerConfig } from '../../../analyzers/universal/UniversalDRYAnalyzer.js';
 import { readFile } from 'fs/promises';
 import { join, dirname } from 'path';
@@ -81,25 +81,22 @@ async function runSolidAnalyzer(filePath: string): Promise<{
 
 /** Data-access analyzer — returns violations grouped by rule. */
 async function runDataAccessAnalyzer(filePath: string): Promise<{
-  loopQuery: import('../../../types.js').Violation[];
-  sqlInjection: import('../../../types.js').Violation[];
-  all: import('../../../types.js').Violation[];
+  loopQuery: any[];
+  sqlInjection: any[];
+  all: any[];
 }> {
   const sourceCode = await readFile(filePath, 'utf-8');
-  const ast = parseFile(filePath, sourceCode)!;
-  if (!ast) throw new Error(`Failed to parse ${filePath}`);
-
-  const analyzer = new UniversalDataAccessAnalyzer();
   // Spec 55 R3 excludes test files by default; the oracle fixtures live under
   // __tests__ and are positive controls, so re-enable analysis on them.
-  const violations = await (analyzer as any).analyzeAST(
-    ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, skipTestFiles: false }, sourceCode,
-  );
+  const [loop, data] = await Promise.all([
+    runLoopQueriesSlice([{ path: filePath, content: sourceCode }], { skipTestFiles: false }, null),
+    runDataAccessSlice([{ path: filePath, content: sourceCode }], { skipTestFiles: false }, null),
+  ]);
 
   return {
-    loopQuery: violations.filter((v: any) => v.rule === 'loop-query'),
-    sqlInjection: violations.filter((v: any) => v.rule === 'sql-injection-risk'),
-    all: violations,
+    loopQuery: loop.filter((v: any) => v.ruleId === 'loop-query'),
+    sqlInjection: data.filter((v: any) => v.ruleId === 'sql-injection-risk'),
+    all: [...loop, ...data],
   };
 }
 

@@ -1,13 +1,14 @@
 /**
- * Spec 68 §3.2 — parity: the migrated `loop-query` rule reproduces the old
- * `UniversalDataAccessAnalyzer.checkLoopQueries` findings exactly.
+ * Spec 68 §3.2 — the migrated `loop-query` rule, pinned against the golden
+ * reference.
  *
  * `loop-query` is the one data-access rule that reads loop *structure* (N+1), not
  * a resolved-call fact — so it is served by the new `loop-queries` fact, not
- * `data-access-calls`. This test runs BOTH paths — the still-live
- * `analyzeWithFacts` (which still calls `checkLoopQueries`) and the new
- * `runLoopQueriesSlice` — and asserts the identity multiset (file, line, column,
- * rule, severity) is equal and non-empty.
+ * `data-access-calls`. This test originally ran BOTH paths — the still-live
+ * `analyzeWithFacts` (which then called `checkLoopQueries`) and the new
+ * `runLoopQueriesSlice` — and asserted the identity multiset (file, line,
+ * column, rule, severity) was equal and non-empty. The old path is now deleted
+ * (§15), so this test asserts the migrated slice directly.
  *
  * The load-bearing properties are the pre-computations the producer performs
  * where the AST lived, and which `analyze` must reproduce without a tree:
@@ -19,26 +20,13 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initializeLanguages, initParsers, LanguageRegistry } from '../languages/index.js';
-import { parseFile } from '../languages/adapterBridge.js';
-import type { LanguageAdapter } from '../languages/types.js';
-import {
-  UniversalDataAccessAnalyzer,
-  DEFAULT_DATA_ACCESS_CONFIG,
-} from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { initializeLanguages, initParsers } from '../languages/index.js';
 import { runLoopQueriesSlice } from '../phase/runner.js';
 import { loopQueryRules } from '../phase/rules/dataAccess.js';
-import type { Violation } from '../types.js';
-
-let adapter: LanguageAdapter;
-let analyzer: UniversalDataAccessAnalyzer;
 
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
-  adapter = LanguageRegistry.getInstance().getAdapterForFile('parity.ts')!;
-  if (!adapter) throw new Error('TypeScript adapter not registered');
-  analyzer = new UniversalDataAccessAnalyzer();
 }, 30_000);
 
 /** The identity tuple a parity test pins — file, line, column, rule, severity. */
@@ -46,28 +34,18 @@ function key(f: { file: string; line?: number; column?: number; rule: string; se
   return `${f.file}:${f.line ?? 0}:${f.column ?? 0}:${f.rule}:${f.severity}`;
 }
 
-/** Run the old `checkLoopQueries` (via `analyzeWithFacts`) and the new slice. */
-async function parity(source: string) {
-  const ast = parseFile('parity.ts', source);
-  expect(ast, 'fixture failed to parse').not.toBeNull();
-  const { violations } = await analyzer.analyzeWithFacts(
-    ast!, adapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, source,
-  );
-  const old = violations
-    .filter((v) => v.rule === 'loop-query')
-    .map((v) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
-    .sort();
-
+/** Run the migrated slice, returning the identity multiset and the raw findings. */
+async function slice(source: string) {
   const fresh = await runLoopQueriesSlice([{ path: 'parity.ts', content: source }], undefined, 'sqlite');
   const nu = fresh
     .filter((f) => f.ruleId === 'loop-query')
     .map((f) => key({ file: f.file, line: f.line, column: f.column, rule: f.ruleId, severity: f.severity }))
     .sort();
 
-  return { old, nu, fresh, violations };
+  return { nu, fresh };
 }
 
-describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)', () => {
+describe('Spec 68 loop-query parity (migrated analyze(ctx) === golden reference)', () => {
   it('covers exactly the one loop-query rule', () => {
     expect(loopQueryRules.map((r) => r.id)).toEqual(['loop-query']);
   });
@@ -82,8 +60,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
       '  }',
       '}',
     ].join('\n');
-    const { old, nu, fresh } = await parity(source);
-    expect(nu).toEqual(old);
+    const { nu, fresh } = await slice(source);
     expect(nu.length).toBe(1);
     const f = fresh.filter((x) => x.ruleId === 'loop-query')[0];
     expect(f).toMatchObject({
@@ -107,8 +84,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
       '  }',
       '}',
     ].join('\n');
-    const { old, nu } = await parity(source);
-    expect(nu).toEqual(old);
+    const { nu } = await slice(source);
     expect(nu.length).toBe(1);
   });
 
@@ -125,8 +101,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
       '  }',
       '}',
     ].join('\n');
-    const { old, nu } = await parity(source);
-    expect(nu).toEqual(old);
+    const { nu } = await slice(source);
     expect(nu.length).toBe(2);
   });
 
@@ -142,14 +117,13 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
       '  }',
       '}',
     ].join('\n');
-    const { old, nu, fresh } = await parity(source);
-    expect(nu).toEqual(old);
+    const { nu, fresh } = await slice(source);
     expect(nu.length).toBe(1);
     const f = fresh.filter((x) => x.ruleId === 'loop-query')[0];
     expect(f.message).toContain('(nested 2 levels deep)');
   });
 
-  it('a loop with no DB call does not fire (and neither path emits)', async () => {
+  it('a loop with no DB call does not fire', async () => {
     const source = [
       "const db: D1Database = getDb();",
       '',
@@ -161,8 +135,7 @@ describe('Spec 68 loop-query parity (new analyze(ctx) === old checkLoopQueries)'
       '  return total;',
       '}',
     ].join('\n');
-    const { old, nu } = await parity(source);
-    expect(nu).toEqual(old);
+    const { nu } = await slice(source);
     expect(nu).toEqual([]);
   });
 });

@@ -17,36 +17,17 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initParsers, initializeLanguages, LanguageRegistry } from '../languages/index.js';
-import { parseFile } from '../languages/adapterBridge.js';
-import type { LanguageAdapter } from '../languages/types.js';
-import { UniversalDataAccessAnalyzer, DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
-import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-let tsAdapter: LanguageAdapter;
-let analyzer: UniversalDataAccessAnalyzer;
-let tmpDir: string;
+import { initParsers, initializeLanguages } from '../languages/index.js';
+import { runDataAccessSlice } from '../phase/runner.js';
 
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
-  tsAdapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
-  if (!tsAdapter) throw new Error('TypeScript adapter not registered');
-  analyzer = new UniversalDataAccessAnalyzer();
-  tmpDir = await mkdtemp(join(tmpdir(), 'ca-await-provenance-'));
 }, 30_000);
 
 async function dataAccessViolations(code: string, name: string): Promise<any[]> {
-  const filePath = join(tmpDir, `${name}.ts`);
-  await writeFile(filePath, code, 'utf-8');
-  const sourceCode = await readFile(filePath, 'utf-8');
-  const ast = parseFile(filePath, sourceCode)!;
-  if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  return (await (analyzer as any).analyzeAST(
-    ast, tsAdapter, DEFAULT_DATA_ACCESS_CONFIG, sourceCode,
-  )) as any[];
+  const fresh = await runDataAccessSlice([{ path: `${name}.ts`, content: code }], undefined, null);
+  return fresh as any[];
 }
 
 describe('await-provenance — const x = await factory() keeps DB provenance', () => {
@@ -59,7 +40,7 @@ export async function getUserById(id: string): Promise<unknown> {
 }
 `;
     const vs = await dataAccessViolations(code, 'await-call');
-    const injection = vs.filter((v) => v.rule === 'sql-injection-risk');
+    const injection = vs.filter((v) => v.ruleId === 'sql-injection-risk');
     expect(injection.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -71,7 +52,7 @@ export function getUserById(id: string): unknown {
 }
 `;
     const vs = await dataAccessViolations(code, 'await-new');
-    const injection = vs.filter((v) => v.rule === 'sql-injection-risk');
+    const injection = vs.filter((v) => v.ruleId === 'sql-injection-risk');
     expect(injection.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -82,7 +63,7 @@ export function fetch(id: string) {
 }
 `;
     const vs = await dataAccessViolations(code, 'await-nondb');
-    const injection = vs.filter((v) => v.rule === 'sql-injection-risk');
+    const injection = vs.filter((v) => v.ruleId === 'sql-injection-risk');
     expect(injection).toHaveLength(0);
   });
 });

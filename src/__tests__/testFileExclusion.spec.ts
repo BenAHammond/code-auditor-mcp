@@ -16,14 +16,13 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { initParsers, initializeLanguages, LanguageRegistry } from '../languages/index.js';
 import { parseFile } from '../languages/adapterBridge.js';
 import type { LanguageAdapter } from '../languages/types.js';
-import { UniversalDataAccessAnalyzer, DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { runLoopQueriesSlice, runDataAccessSlice } from '../phase/runner.js';
 import { checkQueryPatterns } from '../analyzers/universal/schema/codeAnalysis.js';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let tsAdapter: LanguageAdapter;
-let analyzer: UniversalDataAccessAnalyzer;
 let tmpDir: string;
 
 beforeAll(async () => {
@@ -31,17 +30,18 @@ beforeAll(async () => {
   await initParsers();
   tsAdapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
   if (!tsAdapter) throw new Error('TypeScript adapter not registered');
-  analyzer = new UniversalDataAccessAnalyzer();
   tmpDir = await mkdtemp(join(tmpdir(), 'ca-testfile-excl-'));
 }, 30_000);
 
-/** Parse a snippet written to `filePath` and run the data-access analyzer. */
+/** Parse a snippet written to `filePath` and run the data-access slices. */
 async function dataAccessViolationsAt(code: string, filePath: string): Promise<any[]> {
   await writeFile(filePath, code, 'utf-8');
   const sourceCode = await readFile(filePath, 'utf-8');
-  const ast = parseFile(filePath, sourceCode)!;
-  if (!ast) throw new Error(`Failed to parse ${filePath}`);
-  return (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
+  const [loop, data] = await Promise.all([
+    runLoopQueriesSlice([{ path: filePath, content: sourceCode }], undefined, 'sqlite'),
+    runDataAccessSlice([{ path: filePath, content: sourceCode }], undefined, 'sqlite'),
+  ]);
+  return [...loop, ...data].map((f) => ({ ...f, rule: f.ruleId }));
 }
 
 /** A loop that eagerly queries on every iteration — a genuine N+1 in production code. */

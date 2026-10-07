@@ -18,35 +18,17 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initParsers, initializeLanguages, LanguageRegistry } from '../languages/index.js';
-import { parseFile } from '../languages/adapterBridge.js';
-import type { LanguageAdapter } from '../languages/types.js';
-import { UniversalDataAccessAnalyzer, DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
-import { mkdtemp, writeFile, readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-let tsAdapter: LanguageAdapter;
-let analyzer: UniversalDataAccessAnalyzer;
-let tmpDir: string;
+import { initParsers, initializeLanguages } from '../languages/index.js';
+import { runDataAccessSlice } from '../phase/runner.js';
 
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
-  tsAdapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
-  if (!tsAdapter) throw new Error('TypeScript adapter not registered');
-  analyzer = new UniversalDataAccessAnalyzer();
-  tmpDir = await mkdtemp(join(tmpdir(), 'ca-unfiltered-'));
 }, 30_000);
 
 async function unfilteredViolations(code: string, name: string): Promise<any[]> {
-  const filePath = join(tmpDir, `${name}.ts`);
-  await writeFile(filePath, code, 'utf-8');
-  const sourceCode = await readFile(filePath, 'utf-8');
-  const ast = parseFile(filePath, sourceCode)!;
-  if (!ast) throw new Error(`Failed to parse ${name}.ts`);
-  const vs = (await (analyzer as any).analyzeAST(ast, tsAdapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, sourceCode)) as any[];
-  return vs.filter((v) => v.rule === 'unfiltered-query');
+  const fresh = await runDataAccessSlice([{ path: `${name}.ts`, content: code }], undefined, 'sqlite');
+  return fresh.filter((f) => f.ruleId === 'unfiltered-query');
 }
 
 /** A bare DELETE — whole-table maintenance, exempt (Spec 68 disposition (a)). */

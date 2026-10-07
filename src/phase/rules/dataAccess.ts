@@ -532,7 +532,14 @@ const loopQuery: RuleDefinition<LoopQueryNeeds> = {
   samples: META['loop-query'].samples,
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
+    // Spec 55 R3 — loop-query is a query-shape rule and must never fire on test
+    // files. The legacy `analyzeWithFacts` skipped it via `skipTestRules`; the
+    // sibling data-access rules skip via `ctx.thresholds.skipTestFiles`, and this
+    // rule must too (else `runLoopQueriesSlice` fires on *.test.ts where legacy
+    // did not). `skipTestFiles: false` re-enables (spec-52 fixtures under __tests__).
+    const skipTest = ctx.thresholds.skipTestFiles !== false;
     for (const q of ctx.facts['loop-queries']) {
+      if (skipTest && isTestOrSpecPath(q.file)) continue;
       const depthMsg = q.depth > 1 ? ` (nested ${q.depth} levels deep)` : '';
       out.push({
         ruleId: 'loop-query',

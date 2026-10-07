@@ -26,7 +26,7 @@ import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { UniversalDocumentationAnalyzer } from '../universal/UniversalDocumentationAnalyzer.js';
 import { UniversalSchemaAnalyzer } from '../universal/UniversalSchemaAnalyzer.js';
 import { UniversalDRYAnalyzer } from '../universal/UniversalDRYAnalyzer.js';
-import { UniversalDataAccessAnalyzer } from '../universal/UniversalDataAccessAnalyzer.js';
+import { runDataAccessSlice, runLoopQueriesSlice, runSecuritySlice } from '../../phase/runner.js';
 import { UniversalSOLIDAnalyzer } from '../universal/UniversalSOLIDAnalyzer.js';
 import type { ASTNode } from '../../languages/types.js';
 
@@ -296,16 +296,23 @@ describe('Spec-17 R3 — DRY Analyzer', () => {
 });
 
 // ── R4: Data Access Analyzer ────────────────────────────────────────────────
+//
+// The loop-query rule moved to the `loop-queries` phase slice (§68 §3.2); the
+// class entry point `UniversalDataAccessAnalyzer` is deleted, so these fixtures
+// run through `runLoopQueriesSlice` directly.
 
 describe('Spec-17 R4 — Data Access Analyzer', () => {
-  const analyzer = new UniversalDataAccessAnalyzer();
+  /** Run the loop-queries slice over a fixture and return its loop-query findings.
+   *  `skipTestFiles: false` because the fixtures live under `__tests__/`. */
+  async function loopQueryFindings(filePath: string): Promise<any[]> {
+    const content = readFileSync(filePath, 'utf8');
+    const findings = await runLoopQueriesSlice([{ path: filePath, content }], { skipTestFiles: false }, 'sqlite');
+    return findings.filter((f) => f.ruleId === 'loop-query');
+  }
 
   it('R4.1 — query inside for loop → loop-query finding (fixture 15)', async () => {
     const file = join(FIXTURES, 'for-loop-query.ts');
-    const result = await analyzer.analyze([file], { skipTestFiles: false, dialect: 'sqlite' });
-    expect(result.errors).toHaveLength(0);
-
-    const loopViolations = result.violations.filter(v => v.rule === 'loop-query');
+    const loopViolations = await loopQueryFindings(file);
     expect(loopViolations.length).toBeGreaterThanOrEqual(1);
 
     // Location must be the query-call line, never line 1
@@ -319,10 +326,7 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
 
   it('R4.2 — nested loops → innermost loop cited with depth (fixture 16)', async () => {
     const file = join(FIXTURES, 'nested-loops-query.ts');
-    const result = await analyzer.analyze([file], { skipTestFiles: false, dialect: 'sqlite' });
-    expect(result.errors).toHaveLength(0);
-
-    const loopViolations = result.violations.filter(v => v.rule === 'loop-query');
+    const loopViolations = await loopQueryFindings(file);
     expect(loopViolations.length).toBeGreaterThanOrEqual(1);
 
     // Location never line 1
@@ -337,10 +341,7 @@ describe('Spec-17 R4 — Data Access Analyzer', () => {
 
   it('R4.1 — per-item .prepare().get() in a loop fires (§69 Fix 5)', async () => {
     const file = join(FIXTURES, 'get-eager-loop.ts');
-    const result = await analyzer.analyze([file], { skipTestFiles: false, dialect: 'sqlite' });
-    expect(result.errors).toHaveLength(0);
-
-    const loopViolations = result.violations.filter(v => v.rule === 'loop-query');
+    const loopViolations = await loopQueryFindings(file);
     expect(loopViolations.length).toBeGreaterThanOrEqual(1);
 
     for (const v of loopViolations) {
@@ -493,7 +494,6 @@ describe('Spec-17 R7 — critical only from the ledger-approved set', () => {
     { name: 'UniversalDocumentationAnalyzer', analyzer: new UniversalDocumentationAnalyzer() },
     { name: 'UniversalSchemaAnalyzer', analyzer: new UniversalSchemaAnalyzer() },
     { name: 'UniversalDRYAnalyzer', analyzer: new UniversalDRYAnalyzer() },
-    { name: 'UniversalDataAccessAnalyzer', analyzer: new UniversalDataAccessAnalyzer() },
     { name: 'UniversalSOLIDAnalyzer', analyzer: new UniversalSOLIDAnalyzer() },
   ];
 
@@ -522,6 +522,23 @@ describe('Spec-17 R7 — critical only from the ledger-approved set', () => {
         `${name} produced a critical from a non-approved rule: ${JSON.stringify(strays.slice(0, 3))}`
       ).toHaveLength(0);
     }
+
+    // Data-access criticals — the deleted `UniversalDataAccessAnalyzer` emitted
+    // `sql-injection-risk` and `hardcoded-connection` at critical; those now
+    // live in `runDataAccessSlice` / `runSecuritySlice`. Assert the same ledger
+    // gate over the migrated slices (dialect pinned so the SQL-content guards
+    // can fire at all).
+    const files = allFixtures.map((p) => ({ path: p, content: readFileSync(p, 'utf8') }));
+    const [dataAccess, security] = await Promise.all([
+      runDataAccessSlice(files, { skipTestFiles: false }, 'sqlite'),
+      runSecuritySlice(files),
+    ]);
+    const dataAccessCriticals = [...dataAccess, ...security].filter((f) => f.severity === 'critical');
+    const dataAccessStrays = dataAccessCriticals.filter((f) => !CRITICAL_RULES.has(f.ruleId));
+    expect(
+      dataAccessStrays,
+      `data-access slices produced a critical from a non-approved rule: ${JSON.stringify(dataAccessStrays.slice(0, 3))}`
+    ).toHaveLength(0);
   });
 
   it('cross-language analyzer source files contain zero hardcoded critical severity', async () => {

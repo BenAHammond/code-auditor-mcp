@@ -18,7 +18,7 @@ import {
   type ProvenanceEvidence,
   type DetectionMode,
 } from '../provenance.js';
-import { stripSqlQuotes } from '../sqlLiteral.js';
+import { extractStaticSql, extractGoStaticSql, isTemplateLiteral, isTaggedTemplateSqlCall } from '../sqlLiteral.js';
 import { isOrmMethod } from '../tsEcosystem.js';
 import { identifyHandle, type HandleVerdict } from '../handleIdentification.js';
 import {
@@ -333,54 +333,6 @@ function makeViolation(
   if (classification.symbol) v.symbol = classification.symbol;
   if (classification.resolution) v.resolution = classification.resolution;
   return v;
-}
-
-/**
- * Spec 68 — a tagged-template SQL call (`sql\`…\`` / `db\`…\``) is a data-access
- * candidate by *tag name*, independent of provenance resolution. Mirrors the
- * schema analyzer's `extractTaggedTemplateRefs` (keyed on `SQL_TAG_NAMES`), so a
- * Drizzle raw-SQL fragment is never invisible to the data-access rules even when
- * its receiver is an unresolved local wrapper (`appDb.getDb().execute(sql\`…\`)`)
- * or a bound instance member (`this.sql\`…\``) that provenance cannot resolve.
- */
-function isTaggedTemplateSqlCall(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  tagNames: readonly string[],
-): boolean {
-  if (node.type !== 'call_expression') return false;
-
-  // A tagged-template call carries the template string as a direct child (there
-  // is no `arguments` node), but accept both shapes for robustness.
-  const children = adapter.getChildren(node);
-  const hasTemplate =
-    children.some((c) => isTemplateLiteral(c, adapter)) ||
-    children.some(
-      (c) => adapter.getNodeType(c) === 'arguments' &&
-        adapter.getChildren(c).some((a) => isTemplateLiteral(a, adapter)),
-    );
-  if (!hasTemplate) return false;
-
-  const callee = getCallExpressionCallee(node, adapter);
-  if (!callee) return false;
-  const calleeType = adapter.getNodeType(callee);
-
-  // Bare tag: `sql\`…\`` / `db\`…\``.
-  if (calleeType === 'identifier') {
-    return tagNames.includes(adapter.getNodeText(callee, sourceCode));
-  }
-
-  // Member tag on `this`: `this.sql\`…\`` — a wrapper re-exposing the tag.
-  if (calleeType === 'member_expression') {
-    const parts = adapter.getChildren(callee);
-    const prop = parts.find((c) => adapter.getNodeType(c) === 'property_identifier');
-    if (!prop || !tagNames.includes(adapter.getNodeText(prop, sourceCode))) return false;
-    const receiver = parts.find((c) => adapter.getNodeType(c) !== 'property_identifier');
-    return !!receiver && adapter.getNodeText(receiver, sourceCode) === 'this';
-  }
-
-  return false;
 }
 
 /**
@@ -784,130 +736,6 @@ function dedupeCandidateNodes(nodes: ASTNode[], adapter: LanguageAdapter): ASTNo
   return uniqueNodes;
 }
 
-/**
- * The static SQL argument of a candidate node, or null when it carries none.
- *
- * Spec 70 R2 — the single extraction point for the SQL-content facts: a call's
- * string/template argument (unquoted), a tagged template's body, or a variable
- * assignment's RHS literal. A template carrying a `${…}` substitution is
- * dynamic and yields null (its shape is interpolated, not a parseable literal);
- * that is `cannot-fire`, not a negative verdict.
- */
-export function extractStaticSql(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-): string | null {
-  const type = adapter.getNodeType(node);
-
-  // Tagged template (sql`…`) or a template literal found as a call argument.
-  // Go's string literals are `interpreted_string_literal` / `raw_string_literal`.
-  if (isSqlStringLiteralType(type)) {
-    return staticLiteralText(node, adapter, sourceCode);
-  }
-  // Variable assignment: the static RHS literal, if one.
-  if (type === 'variable_declaration') {
-    const value = adapter.getChildren(node).find((c) => {
-      const t = adapter.getNodeType(c);
-      return isSqlStringLiteralType(t);
-    });
-    return value ? staticLiteralText(value, adapter, sourceCode) : null;
-  }
-  // Call/new expression: the first static string/template argument.
-  if (type === 'call_expression' || type === 'new_expression') {
-    const argListType = adapter.name === 'go' ? 'argument_list' : 'arguments';
-    const children = adapter.getChildren(node);
-    const args = children.find((c) => adapter.getNodeType(c) === argListType);
-    // A tagged template (`sql\`…\`` / `this.sql\`…\``) carries its template as a
-    // DIRECT child — there is no `arguments` node. Extract that body (or null when
-    // the template is interpolated, i.e. dynamic).
-    if (!args) {
-      const template = children.find((c) => isTemplateLiteral(c, adapter));
-      return template ? staticLiteralText(template, adapter, sourceCode) : null;
-    }
-    for (const arg of adapter.getChildren(args)) {
-      const t = adapter.getNodeType(arg);
-      if (t === '(' || t === ')' || t === ',') continue;
-      if (isSqlStringLiteralType(t)) return staticLiteralText(arg, adapter, sourceCode);
-      // A tagged-template first argument (`db.execute(sql\`…\`)`) — recurse into
-      // its body. Only a SQL tag (recognized by name) qualifies; a non-SQL tag is
-      // `cannot-fire`.
-      if (t === 'call_expression' && isTaggedTemplateSqlCall(arg, adapter, sourceCode, SQL_TAG_NAMES)) {
-        return extractStaticSql(arg, adapter, sourceCode);
-      }
-      // ctx-first methods (Go `Query(ctx, sql)`, pgx `Query(ctx, "SELECT…")`)
-      // carry a leading `context.Context`/options argument. Skip past it to the
-      // first static string: a non-literal argument is not itself `cannot-fire`,
-      // it may sit *ahead* of the SQL argument (Spec 70 R2, pgx/sqlc precision).
-      continue;
-    }
-    return null;
-  }
-  return null;
-}
-
-/** The static SQL argument of a Go call, resolving a sqlc-generated package-level
- *  const identifier (`q.db.QueryContext(ctx, getAllUsers)` where `getAllUsers` is
- *  `const getAllUsers = `-- name: GetAllUsers :many\nSELECT …``) to its literal.
- *  The literal path is {@link extractStaticSql} (already ctx-first); this adds the
- *  one Go-only step — an identifier argument resolved through the file's `const`
- *  bindings — so sqlc's SQL reaches the parser instead of surfacing `cannot-fire`.
- *  Returns null when the call carries no static SQL (a ctx/options-only argument
- *  list, or an identifier that is not a const literal). */
-function extractGoStaticSql(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  goEnv: GoResolutionEnv | undefined,
-): string | null {
-  const literal = extractStaticSql(node, adapter, sourceCode);
-  if (literal !== null) return literal;
-  if (!goEnv || adapter.name !== 'go') return null;
-  const children = adapter.getChildren(node);
-  const args = children.find((c) => adapter.getNodeType(c) === 'argument_list');
-  if (!args) return null;
-  for (const arg of adapter.getChildren(args)) {
-    const t = adapter.getNodeType(arg);
-    if (t === '(' || t === ')' || t === ',') continue;
-    if (t !== 'identifier') continue; // ctx/options/other — skip
-    const name = adapter.getNodeText(arg, sourceCode);
-    if (!name) continue;
-    const binding = goEnv.bindings.get(name);
-    if (binding?.kind !== 'const' || !binding.value) continue;
-    const v = binding.value;
-    if (v.type === 'interpreted_string_literal' || v.type === 'raw_string_literal') {
-      return stripSqlQuotes(v.text, { raw: v.type === 'raw_string_literal' });
-    }
-  }
-  return null;
-}
-
-/** The literal node types that carry static SQL text — TS/JS `string` /
- *  `template_string` and Go's `interpreted_string_literal` / `raw_string_literal`. */
-function isSqlStringLiteralType(type: string): boolean {
-  return type === 'string' ||
-    type === 'template_string' ||
-    type === 'interpreted_string_literal' ||
-    type === 'raw_string_literal';
-}
-
-/** Unquote a string/template literal node's text; null when the template is
- *  dynamic (carries a `${…}` substitution). Go `raw_string_literal`s are literal
- *  (no escapes) and pass `raw: true` so their backticks are not un-escaped. */
-function staticLiteralText(
-  node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-): string | null {
-  const nodeType = adapter.getNodeType(node);
-  if (nodeType === 'template_string') {
-    const children = adapter.getChildren(node) ?? [];
-    if (children.some((c) => adapter.getNodeType(c) === 'template_substitution')) return null;
-  }
-  const raw = adapter.getNodeText(node, sourceCode) ?? '';
-  return stripSqlQuotes(raw, { raw: nodeType === 'raw_string_literal' });
-}
-
 /** The explicit lowercased column list of a raw-SQL INSERT/REPLACE, or null for
  *  a positional INSERT (`INSERT INTO t VALUES (…)`, no column list). Mirrors
  *  sqlAst's `insertColumns` but preserves the null-vs-empty distinction the
@@ -1292,10 +1120,6 @@ function checkGeneralPatterns(
 function isFunctionCall(node: ASTNode, adapter: LanguageAdapter): boolean {
   return node.type === 'call_expression' ||
          node.type === 'new_expression';
-}
-
-function isTemplateLiteral(node: ASTNode, adapter: LanguageAdapter): boolean {
-  return node.type === 'template_string';
 }
 
 function isVariableAssignment(node: ASTNode, adapter: LanguageAdapter): boolean {
@@ -3396,108 +3220,6 @@ function isIteratorCallback(
  */
 const enclosingIdentity = (node: ASTNode, adapter: LanguageAdapter, filePath: string): string =>
   functionIdentityLabel(findEnclosingFunctionIdentity(node, adapter, filePath));
-
-/**
- * Universal data access analyzer.
- */
-export class UniversalDataAccessAnalyzer extends UniversalAnalyzer {
-  readonly name = 'data-access';
-  readonly description = 'Analyzes database access patterns and data layer interactions';
-  readonly category = 'security';
-
-  protected async analyzeAST(
-    ast: AST,
-    adapter: LanguageAdapter,
-    config: DataAccessAnalyzerConfig,
-    sourceCode: string
-  ): Promise<Violation[]> {
-    return (await this.analyzeWithFacts(ast, adapter, config, sourceCode)).violations;
-  }
-
-  /**
-   * Spec 62 Amendment B — run the full data-access scan and return BOTH the
-   * violations and the extracted query facts (`DatabaseCall[]`). The pipeline's
-   * data-access visitor emits the calls as facts for the Stage-4
-   * `missing-org-filter` derived reducer to join against the declared + DDL
-   * tenant tiers; the remaining rules (sql-injection, loop-query,
-   * unfiltered-query, hardcoded-connection, complex-query) fire here at Stage 2
-   * exactly as before. Emitting the calls as a by-product of this one scan
-   * avoids a second traversal or re-parse.
-   * @param ast The parsed file AST.
-   * @param adapter The language adapter for the file's syntax.
-   * @param config The data-access analyzer config.
-   * @param sourceCode The raw source text.
-   * @returns The violations plus the extracted database calls.
-   */
-  async analyzeWithFacts(
-    ast: AST,
-    adapter: LanguageAdapter,
-    config: DataAccessAnalyzerConfig,
-    sourceCode: string
-  ): Promise<{ violations: Violation[]; calls: DatabaseCall[] }> {
-    const violations: Violation[] = [];
-    const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
-
-    // Spec 21 R1: provenance-primary detection (names owned by THIS analyzer).
-    const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
-    const p0 = performance.now();
-    const seedProvenance = (config as any)?._receiverProvenance as
-      | Map<string, ProvenanceEvidence>
-      | undefined;
-    const provenanceContext = buildProvenanceContext(ast, adapter, sourceCode, {
-      mode: detectionMode,
-      dbBindingNames: finalConfig.dbBindingNames,
-      dbWrapperNames: finalConfig.dbWrapperNames,
-      seedProvenance,
-      // Spec 70 criterion 8 — thread the corpus's dialect so R3 proves a receiver
-      // whose (now-deleted) type annotation was its only signal, and so wrapper
-      // detection (detectDbWrappers) sees the proven receiver in helper bodies.
-      // This is the analyzeWithFacts path (the pipeline's real scan); the parallel
-      // buildDataAccessScan path threads the same dialect at its own call site.
-      sqlDialect: finalConfig.dialect ?? null,
-    });
-    const timingAcc: { totalMs: number } | undefined = (config as any)?._provenanceTiming;
-    if (timingAcc) timingAcc.totalMs += performance.now() - p0;
-
-    // Spec 34: bundle per-file context to stay under the 4-parameter gate.
-    const scan: DataAccessScanContext = {
-      adapter,
-      sourceCode,
-      config: finalConfig,
-      provenanceContext,
-      handleEnv: buildHandleEnv(ast, adapter, sourceCode, provenanceContext),
-      goEnv: buildGoEnv(ast, adapter, sourceCode, provenanceContext),
-    };
-
-    // Spec 55 R3 — test/spec files are excluded from the query-shape rules
-    // (loop-query, unfiltered-query). Security and org-filter rules still fire:
-    // a test with a hardcoded connection string or an injected query is as real
-    // a signal as in production code. `skipTestFiles: false` overrides (oracle
-    // fixtures assert positive loop-query detections on files under __tests__).
-    const skipTestRules = finalConfig.skipTestFiles !== false && isTestOrSpecPath(ast.filePath);
-
-    // Analyze each database call, tracking symbol ordinals for stable fingerprints.
-    const calls = extractDatabaseCalls(ast, scan);
-    const symbolOrdinals = new Map<string, number>();
-    for (const call of calls) {
-      const analysis = analyzeQuery(call, finalConfig);
-      violations.push(...checkViolations(call, analysis, {
-        filePath: ast.filePath,
-        config: finalConfig,
-        symbolOrdinals,
-        skipTestRules,
-      }));
-    }
-
-    // R4.1: loop-query (N+1) detection + general patterns.
-    if (!skipTestRules) {
-      violations.push(...checkLoopQueries(ast, scan));
-    }
-    violations.push(...checkGeneralPatterns(ast, adapter, sourceCode, finalConfig));
-
-    return { violations, calls };
-  }
-}
 
 /** Build the shared data-access scan context (config + provenance + imports). */
 /**

@@ -8,11 +8,9 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initParsers, initializeLanguages, LanguageRegistry } from '../../../languages/index.js';
-import { parseFile } from '../../../languages/adapterBridge.js';
-import type { LanguageAdapter } from '../../../languages/types.js';
-import { UniversalDataAccessAnalyzer } from '../../../analyzers/universal/UniversalDataAccessAnalyzer.js';
-import { mkdir, writeFile, readFile } from 'fs/promises';
+import { initParsers, initializeLanguages } from '../../../languages/index.js';
+import { runLoopQueriesSlice } from '../../../phase/runner.js';
+import { mkdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -123,31 +121,20 @@ const TEST_CASES: TestCase[] = [
 ];
 
 describe('Spec-19 R2: Shared DB-call detection gate', () => {
-  let analyzer: UniversalDataAccessAnalyzer;
-  let tsAdapter: LanguageAdapter;
-
   beforeAll(async () => {
     initializeLanguages();
     await initParsers();
     await mkdir(fixtureDir, { recursive: true });
-    tsAdapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
-    if (!tsAdapter) throw new Error('TypeScript adapter not found');
-    analyzer = new UniversalDataAccessAnalyzer();
   });
 
   for (const { name, code, expectedLoopQueryCount } of TEST_CASES) {
     it(name, async () => {
       const safeName = name.replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-');
       const filePath = join(fixtureDir, `${safeName}.ts`);
-      await writeFile(filePath, code, 'utf-8');
 
-      const sourceCode = await readFile(filePath, 'utf-8');
-      const ast = parseFile(filePath, sourceCode)!;
-      if (!ast) throw new Error(`Failed to parse ${filePath}`);
+      const violations = await runLoopQueriesSlice([{ path: filePath, content: code }], undefined, null);
 
-      const violations = await (analyzer as any).analyzeAST(ast, tsAdapter, {}, sourceCode);
-
-      const loopQueryViolations = violations.filter((v: { rule: string }) => v.rule === 'loop-query');
+      const loopQueryViolations = violations.filter((v) => v.ruleId === 'loop-query');
       expect(
         loopQueryViolations.length,
         `Expected ${expectedLoopQueryCount} loop-query violations for "${name}", got ${loopQueryViolations.length}`

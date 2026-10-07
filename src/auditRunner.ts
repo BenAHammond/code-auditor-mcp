@@ -64,29 +64,12 @@ import { writeAuditToLedger, detectRunInput } from './ledger.js';
 import { runPipeline, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
 import { getRuleTimingSortedDesc } from './analyzers/ruleTiming.js';
 import {
-  createSolidVisitor,
-  createDataAccessVisitor,
-  createOrgFilterReducer,
-  createDocumentationVisitor,
-  createSecretsVisitor,
-  createSecurityVisitor,
   createFunctionIndexVisitor,
   createStylesCssVisitor,
   createStylesSourceVisitor,
-  createReactVisitor,
   createStylesReducer,
-  createConventionsReducer,
-  createCrossDomainReducer,
   createInvariantsReducer,
-  createSchemaSqlVisitor,
   createSchemaCodeVisitor,
-  createSchemaPrismaVisitor,
-  createSchemaJsonVisitor,
-  createSchemaReducer,
-  createCrossLanguageEntityVisitor,
-  createSchemaValidatorReducer,
-  createAPIContractReducer,
-  createDependencyGraphReducer,
   type ReactVisitorBundle,
   type SolidVisitorBundle,
 } from './pipelineAdapters.js';
@@ -607,7 +590,6 @@ interface PipelineAdapterBundle {
   pipelineDerivedReducers: Stage4Reducer[];
   reactBundle: ReactVisitorBundle | undefined;
   solidBundle: SolidVisitorBundle | undefined;
-  allRulesMigrated: boolean;
 }
 
 /**
@@ -624,9 +606,6 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
 
   let reactBundle: ReactVisitorBundle | undefined;
   let solidBundle: SolidVisitorBundle | undefined;
-
-  const { legacy: legacyRuleSet } = splitRoutes();
-  const allRulesMigrated = legacyRuleSet.size === 0;
 
   // Always-on infrastructure: function-index visitor populates the
   // `functions` table so conventions + cross-domain reducers have data
@@ -660,58 +639,12 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
   // longer emits it.
   if (analyzers.includes('schema')) pipelineVisitors.push(createSchemaCodeVisitor());
 
-  // Everything below emits findings the phase model already serves. Once the
-  // migration is complete their legacy emission is stripped to zero, so they
-  // are skipped outright — their only job (re-deriving the same violations)
-  // is redundant. Registered only while `legacyRuleSet` is non-empty.
-  if (!allRulesMigrated) {
-    if (analyzers.includes('solid')) {
-      solidBundle = createSolidVisitor();
-      pipelineVisitors.push(solidBundle.visitor);
-    }
-    if (analyzers.includes('data-access')) {
-      pipelineVisitors.push(createDataAccessVisitor());
-      // Spec 62 Amendment B — the missing-org-filter rule is a Stage-4 derived
-      // reducer that joins the data-access query facts against the declared +
-      // DDL-discovered tenant tiers.
-      pipelineDerivedReducers.push(createOrgFilterReducer());
-    }
-    if (analyzers.includes('secrets')) pipelineVisitors.push(createSecretsVisitor());
-    if (analyzers.includes('security')) pipelineVisitors.push(createSecurityVisitor());
-    if (analyzers.includes('react')) {
-      reactBundle = createReactVisitor();
-      pipelineVisitors.push(reactBundle.visitor);
-    }
-    if (analyzers.includes('documentation')) pipelineVisitors.push(createDocumentationVisitor());
-    if (analyzers.includes('conventions')) pipelineReducers.push(createConventionsReducer());
-    if (analyzers.includes('cross-domain')) pipelineDerivedReducers.push(createCrossDomainReducer());
-    if (analyzers.includes('schema')) {
-      pipelineVisitors.push(createSchemaSqlVisitor());
-      pipelineVisitors.push(createSchemaPrismaVisitor());
-      pipelineVisitors.push(createSchemaJsonVisitor());
-      pipelineReducers.push(createSchemaReducer());
-    }
-
-    // Cross-language analyzers (SchemaValidator, APIContractAnalyzer,
-    // DependencyGraphBuilder) — three Stage-4 reducers fed by one shared
-    // entity-extraction visitor.
-    const crossLanguageEnabled = ['schema-validator', 'api-contract', 'dependency-graph']
-      .some((a) => analyzers.includes(a));
-    if (crossLanguageEnabled) {
-      pipelineVisitors.push(createCrossLanguageEntityVisitor());
-    }
-    if (analyzers.includes('schema-validator')) pipelineDerivedReducers.push(createSchemaValidatorReducer());
-    if (analyzers.includes('api-contract')) pipelineDerivedReducers.push(createAPIContractReducer());
-    if (analyzers.includes('dependency-graph')) pipelineDerivedReducers.push(createDependencyGraphReducer());
-  }
-
   return {
     pipelineVisitors,
     pipelineReducers,
     pipelineDerivedReducers,
     reactBundle,
     solidBundle,
-    allRulesMigrated,
   };
 }
 
@@ -837,7 +770,6 @@ function buildPipelineConfig(inputs: {
   styleConsumedFiles: string[];
   styleContributingFiles: string[] | undefined;
   analyzers: string[];
-  allRulesMigrated: boolean;
   auditIndex: CodeIndexDB | undefined;
   pipelineAnalyzerConfig: Record<string, Record<string, unknown>>;
   pipelineVisitors: Stage2Visitor[];
@@ -846,7 +778,7 @@ function buildPipelineConfig(inputs: {
 }): PipelineConfig {
   const {
     mergedOptions, root, files, isScoped, fileAccounting,
-    styleConsumedFiles, styleContributingFiles, analyzers, allRulesMigrated,
+    styleConsumedFiles, styleContributingFiles, analyzers,
     auditIndex, pipelineAnalyzerConfig, pipelineVisitors, pipelineReducers,
     pipelineDerivedReducers,
   } = inputs;
@@ -877,17 +809,6 @@ function buildPipelineConfig(inputs: {
           logMcpInfo('analysis', 'updateDependencyGraph failed (non-fatal)', {
             error: err instanceof Error ? err.message : String(err)
           });
-        }
-        // Convention mining writes the `conventions` table, read only by the
-        // legacy conventions reducer (migrated); redundant once fully migrated.
-        if (!allRulesMigrated) {
-          try {
-            auditIndex.conventions.mineAllConventions(root);
-          } catch (err) {
-            logMcpInfo('analysis', 'convention mining failed (non-fatal)', {
-              error: err instanceof Error ? err.message : String(err)
-            });
-          }
         }
       }
     },
@@ -1230,7 +1151,7 @@ async function runPipelineStage(inputs: {
 
   const {
     pipelineVisitors, pipelineReducers, pipelineDerivedReducers,
-    reactBundle, solidBundle, allRulesMigrated,
+    reactBundle, solidBundle,
   } = buildPipelineAdapters(analyzers);
 
   // ── Safeguard warnings ────────────────────────────────────────────────
@@ -1269,7 +1190,7 @@ async function runPipelineStage(inputs: {
     const pipelineAnalyzerConfig = buildPipelineAnalyzerConfig(analyzers, mergedOptions, root, files, corpusFiles, provenanceTiming);
     const pipelineConfig = buildPipelineConfig({
       mergedOptions, root, files, isScoped, fileAccounting,
-      styleConsumedFiles, styleContributingFiles, analyzers, allRulesMigrated,
+      styleConsumedFiles, styleContributingFiles, analyzers,
       auditIndex, pipelineAnalyzerConfig, pipelineVisitors, pipelineReducers,
       pipelineDerivedReducers,
     });

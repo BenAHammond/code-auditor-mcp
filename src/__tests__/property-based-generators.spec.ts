@@ -24,15 +24,11 @@ import { initializeLanguages, initParsers, LanguageRegistry } from '../languages
 import { parseFile } from '../languages/adapterBridge.js';
 import type { LanguageAdapter } from '../languages/types.js';
 import { UniversalSOLIDAnalyzer, DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
-import {
-  UniversalDataAccessAnalyzer,
-  DEFAULT_DATA_ACCESS_CONFIG,
-} from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+import { runLoopQueriesSlice } from '../phase/runner.js';
 import { createAuditRunner } from '../auditRunner.js';
 
 let adapter: LanguageAdapter;
 let solid: UniversalSOLIDAnalyzer;
-let dataAccess: UniversalDataAccessAnalyzer;
 
 beforeAll(async () => {
   initializeLanguages();
@@ -40,7 +36,6 @@ beforeAll(async () => {
   adapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
   if (!adapter) throw new Error('TypeScript adapter not registered');
   solid = new UniversalSOLIDAnalyzer();
-  dataAccess = new UniversalDataAccessAnalyzer();
 }, 30_000);
 
 /** Run the SOLID analyzer over `code` and return the named rule's violations. */
@@ -51,12 +46,10 @@ async function solidByRule(code: string, name: string, rule: string): Promise<an
   return vs.filter((v: any) => v.rule === rule);
 }
 
-/** Run the data-access analyzer over `code` and return the named rule's violations. */
+/** Run the loop-query slice over `code` and return the named rule's findings. */
 async function dataAccessByRule(code: string, name: string, rule: string): Promise<any[]> {
-  const ast = parseFile(`${name}.ts`, code)!;
-  if (!ast) throw new Error(`parse failed for ${name}`);
-  const vs = await (dataAccess as any).analyzeAST(ast, adapter, { ...DEFAULT_DATA_ACCESS_CONFIG, dialect: 'sqlite' }, code);
-  return vs.filter((v: any) => v.rule === rule);
+  const fresh = await runLoopQueriesSlice([{ path: `${name}.ts`, content: code }], undefined, 'sqlite');
+  return fresh.filter((f) => f.ruleId === rule);
 }
 
 // ---------------------------------------------------------------------------

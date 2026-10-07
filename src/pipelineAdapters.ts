@@ -193,47 +193,6 @@ export function createSolidVisitor(): SolidVisitorBundle {
   return { visitor, getSizeSamples: getAccumulated };
 }
 
-// ── Data-Access visitor ──────────────────────────────────────────────────────
-
-/**
- * Create the data-access stage-2 visitor, which analyzes database access
- * patterns and emits per-query facts for the org-filter reducer.
- *
- * @returns The data-access stage-2 visitor.
- */
-export function createDataAccessVisitor(): Stage2Visitor {
-  const getAnalyzer = lazySingleton<any>(() =>
-    import('./analyzers/universal/UniversalDataAccessAnalyzer.js').then(
-      (m) => new m.UniversalDataAccessAnalyzer(),
-    ),
-  );
-
-  return {
-    name: 'data-access',
-    stage: 'visitor',
-    getRuleIds: () => getRuleIdsFor('data-access'),
-    async visit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-      const a = await getAnalyzer();
-      // Spec 62 Amendment B — emit the extracted query facts (per-file) for the
-      // Stage-4 missing-org-filter reducer to join against the tenant tiers.
-      // The violations returned here exclude missing-org-filter (moved to the
-      // derived reducer); the calls carry resolved table + filter presence +
-      // DB provenance + the query-site location.
-      const { violations, calls } = await a.analyzeWithFacts(
-        ast as AST, adapter as LanguageAdapter, context.config, sourceCode,
-      );
-      const facts: Record<string, unknown> = {};
-      if (calls.length > 0) {
-        facts[context.filePath] = { calls };
-      }
-      return { violations, facts };
-    },
-    defaultConfig: {},
-    description: 'Analyzes database access patterns and data layer interactions',
-    category: 'security',
-  };
-}
-
 // ── Data-Access org-filter reducer (Spec 62 Amendment B) ─────────────────────
 
 /**

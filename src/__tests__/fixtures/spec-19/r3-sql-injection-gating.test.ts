@@ -11,11 +11,9 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { initParsers, initializeLanguages, LanguageRegistry } from '../../../languages/index.js';
-import { parseFile } from '../../../languages/adapterBridge.js';
-import type { LanguageAdapter } from '../../../languages/types.js';
-import { UniversalDataAccessAnalyzer, DEFAULT_DATA_ACCESS_CONFIG } from '../../../analyzers/universal/UniversalDataAccessAnalyzer.js';
-import { mkdir, writeFile, readFile } from 'fs/promises';
+import { initParsers, initializeLanguages } from '../../../languages/index.js';
+import { runDataAccessSlice } from '../../../phase/runner.js';
+import { mkdir } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
@@ -249,37 +247,21 @@ const TEST_CASES: TestCase[] = [
 ];
 
 describe('Spec-19 R3: SQL injection context gating', () => {
-  let analyzer: UniversalDataAccessAnalyzer;
-  let tsAdapter: LanguageAdapter;
-
   beforeAll(async () => {
     initializeLanguages();
     await initParsers();
     await mkdir(fixtureDir, { recursive: true });
-    tsAdapter = LanguageRegistry.getInstance().getAdapterForFile('test.ts')!;
-    if (!tsAdapter) throw new Error('TypeScript adapter not found');
-    analyzer = new UniversalDataAccessAnalyzer();
   });
 
   for (const { name, code, expectedCount, expectedSeverity } of TEST_CASES) {
     it(name, async () => {
       const safeName = name.replace(/[^a-z0-9]+/g, '-').replace(/-+/g, '-');
       const filePath = join(fixtureDir, `${safeName}.ts`);
-      await writeFile(filePath, code, 'utf-8');
 
-      const sourceCode = await readFile(filePath, 'utf-8');
-      const ast = parseFile(filePath, sourceCode)!;
-      if (!ast) throw new Error(`Failed to parse ${filePath}`);
-
-      const violations = await (analyzer as any).analyzeAST(
-        ast,
-        tsAdapter,
-        DEFAULT_DATA_ACCESS_CONFIG,
-        sourceCode
-      );
+      const violations = await runDataAccessSlice([{ path: filePath, content: code }], undefined, null);
 
       const sqlInjectionViolations = violations.filter(
-        (v: { rule: string }) => v.rule === 'sql-injection-risk'
+        (v) => v.ruleId === 'sql-injection-risk'
       );
 
       expect(

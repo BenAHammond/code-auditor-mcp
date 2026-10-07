@@ -17,6 +17,10 @@
  * `template_string` is escape-bearing.
  */
 
+import type { ASTNode, LanguageAdapter } from '../languages/types.js';
+import type { GoResolutionEnv } from '../languages/go/goResolution.js';
+import { SQL_TAG_NAMES } from './universal/schema/config.js';
+
 /**
  * Strip the surrounding quote delimiters of a string/template literal and
  * un-escape the inner escape sequences to the literal's runtime value.
@@ -116,4 +120,206 @@ function unescapeLiteralBody(body: string): string {
     }
   }
   return out;
+}
+
+// ── Static SQL extraction ─────────────────────────────────────────────────────
+//
+// `extractStaticSql` is the single production extraction point for a call's
+// static SQL text (Spec 70 R2): a call's string/template argument, a tagged
+// template's body, or a variable assignment's RHS literal. It was moved out of
+// `UniversalDataAccessAnalyzer.ts` into this neutral SQL-literal module so the
+// data-access analyzer's *class* could be deleted without orphaning the live
+// candidate extractors (`extractDataAccessCallCandidates` /
+// `extractLoopQueryRawCandidates`) that call it. `provenance.ts` keeps its own
+// R3-specific literal-argument slice (`extractStaticSqlArgument`) — that one is
+// not this function and does not move.
+
+/** True when a node type is a literal that can carry static SQL text — TS/JS
+ *  `string` / `template_string` and Go's `interpreted_string_literal` /
+ *  `raw_string_literal`. */
+function isSqlStringLiteralType(type: string): boolean {
+  return type === 'string' ||
+    type === 'template_string' ||
+    type === 'interpreted_string_literal' ||
+    type === 'raw_string_literal';
+}
+
+/** Unquote a string/template literal node's text; null when the template is
+ *  dynamic (carries a `${…}` substitution). Go `raw_string_literal`s are literal
+ *  (no escapes) and pass `raw: true` so their backticks are not un-escaped. */
+function staticLiteralText(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const nodeType = adapter.getNodeType(node);
+  if (nodeType === 'template_string') {
+    const children = adapter.getChildren(node) ?? [];
+    if (children.some((c) => adapter.getNodeType(c) === 'template_substitution')) return null;
+  }
+  const raw = adapter.getNodeText(node, sourceCode) ?? '';
+  return stripSqlQuotes(raw, { raw: nodeType === 'raw_string_literal' });
+}
+
+/** True when a node is a template literal (TS `template_string`). */
+export function isTemplateLiteral(node: ASTNode, _adapter: LanguageAdapter): boolean {
+  return node.type === 'template_string';
+}
+
+/** The callee of a call expression, limited to the identifier / member /
+ *  selector shapes a tagged-template tag can take. Inlined here (the shared
+ *  `getCallExpressionCallee` lives in `provenance.ts`, which imports this module
+ *  for `stripSqlQuotes` — importing it back would close an import cycle). */
+function taggedTemplateCallee(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  for (const child of adapter.getChildren(node)) {
+    if (child.type === 'arguments') break;
+    if (
+      child.type === 'identifier' ||
+      child.type === 'member_expression' ||
+      child.type === 'selector_expression'
+    ) {
+      return child;
+    }
+  }
+  return null;
+}
+
+/** True when a call is a SQL tagged template (`sql\`…\`` / `this.sql\`…\``) under
+ *  the given tag names. */
+export function isTaggedTemplateSqlCall(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  tagNames: readonly string[],
+): boolean {
+  if (node.type !== 'call_expression') return false;
+
+  // A tagged-template call carries the template string as a direct child (there
+  // is no `arguments` node), but accept both shapes for robustness.
+  const children = adapter.getChildren(node);
+  const hasTemplate =
+    children.some((c) => isTemplateLiteral(c, adapter)) ||
+    children.some(
+      (c) => adapter.getNodeType(c) === 'arguments' &&
+        adapter.getChildren(c).some((a) => isTemplateLiteral(a, adapter)),
+    );
+  if (!hasTemplate) return false;
+
+  const callee = taggedTemplateCallee(node, adapter);
+  if (!callee) return false;
+  const calleeType = adapter.getNodeType(callee);
+
+  // Bare tag: `sql\`…\`` / `db\`…\``.
+  if (calleeType === 'identifier') {
+    return tagNames.includes(adapter.getNodeText(callee, sourceCode));
+  }
+
+  // Member tag on `this`: `this.sql\`…\`` — a wrapper re-exposing the tag.
+  if (calleeType === 'member_expression') {
+    const parts = adapter.getChildren(callee);
+    const prop = parts.find((c) => adapter.getNodeType(c) === 'property_identifier');
+    if (!prop || !tagNames.includes(adapter.getNodeText(prop, sourceCode))) return false;
+    const receiver = parts.find((c) => adapter.getNodeType(c) !== 'property_identifier');
+    return !!receiver && adapter.getNodeText(receiver, sourceCode) === 'this';
+  }
+
+  return false;
+}
+
+/**
+ * The static SQL argument of a candidate node, or null when it carries none.
+ *
+ * Spec 70 R2 — the single extraction point for the SQL-content facts: a call's
+ * string/template argument (unquoted), a tagged template's body, or a variable
+ * assignment's RHS literal. A template carrying a `${…}` substitution is
+ * dynamic and yields null (its shape is interpolated, not a parseable literal);
+ * that is `cannot-fire`, not a negative verdict.
+ */
+export function extractStaticSql(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const type = adapter.getNodeType(node);
+
+  // Tagged template (sql`…`) or a template literal found as a call argument.
+  // Go's string literals are `interpreted_string_literal` / `raw_string_literal`.
+  if (isSqlStringLiteralType(type)) {
+    return staticLiteralText(node, adapter, sourceCode);
+  }
+  // Variable assignment: the static RHS literal, if one.
+  if (type === 'variable_declaration') {
+    const value = adapter.getChildren(node).find((c) => {
+      const t = adapter.getNodeType(c);
+      return isSqlStringLiteralType(t);
+    });
+    return value ? staticLiteralText(value, adapter, sourceCode) : null;
+  }
+  // Call/new expression: the first static string/template argument.
+  if (type === 'call_expression' || type === 'new_expression') {
+    const argListType = adapter.name === 'go' ? 'argument_list' : 'arguments';
+    const children = adapter.getChildren(node);
+    const args = children.find((c) => adapter.getNodeType(c) === argListType);
+    // A tagged template (`sql\`…\`` / `this.sql\`…\``) carries its template as a
+    // DIRECT child — there is no `arguments` node. Extract that body (or null when
+    // the template is interpolated, i.e. dynamic).
+    if (!args) {
+      const template = children.find((c) => isTemplateLiteral(c, adapter));
+      return template ? staticLiteralText(template, adapter, sourceCode) : null;
+    }
+    for (const arg of adapter.getChildren(args)) {
+      const t = adapter.getNodeType(arg);
+      if (t === '(' || t === ')' || t === ',') continue;
+      if (isSqlStringLiteralType(t)) return staticLiteralText(arg, adapter, sourceCode);
+      // A tagged-template first argument (`db.execute(sql\`…\`)`) — recurse into
+      // its body. Only a SQL tag (recognized by name) qualifies; a non-SQL tag is
+      // `cannot-fire`.
+      if (t === 'call_expression' && isTaggedTemplateSqlCall(arg, adapter, sourceCode, SQL_TAG_NAMES)) {
+        return extractStaticSql(arg, adapter, sourceCode);
+      }
+      // ctx-first methods (Go `Query(ctx, sql)`, pgx `Query(ctx, "SELECT…")`)
+      // carry a leading `context.Context`/options argument. Skip past it to the
+      // first static string: a non-literal argument is not itself `cannot-fire`,
+      // it may sit *ahead* of the SQL argument (Spec 70 R2, pgx/sqlc precision).
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
+/** The static SQL argument of a Go call, resolving a sqlc-generated package-level
+ *  const identifier (`q.db.QueryContext(ctx, getAllUsers)` where `getAllUsers` is
+ *  `const getAllUsers = `-- name: GetAllUsers :many\nSELECT …``) to its literal.
+ *  The literal path is {@link extractStaticSql} (already ctx-first); this adds the
+ *  one Go-only step — an identifier argument resolved through the file's `const`
+ *  bindings — so sqlc's SQL reaches the parser instead of surfacing `cannot-fire`.
+ *  Returns null when the call carries no static SQL (a ctx/options-only argument
+ *  list, or an identifier that is not a const literal). */
+export function extractGoStaticSql(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  goEnv: GoResolutionEnv | undefined,
+): string | null {
+  const literal = extractStaticSql(node, adapter, sourceCode);
+  if (literal !== null) return literal;
+  if (!goEnv || adapter.name !== 'go') return null;
+  const children = adapter.getChildren(node);
+  const args = children.find((c) => adapter.getNodeType(c) === 'argument_list');
+  if (!args) return null;
+  for (const arg of adapter.getChildren(args)) {
+    const t = adapter.getNodeType(arg);
+    if (t === '(' || t === ')' || t === ',') continue;
+    if (t !== 'identifier') continue; // ctx/options/other — skip
+    const name = adapter.getNodeText(arg, sourceCode);
+    if (!name) continue;
+    const binding = goEnv.bindings.get(name);
+    if (binding?.kind !== 'const' || !binding.value) continue;
+    const v = binding.value;
+    if (v.type === 'interpreted_string_literal' || v.type === 'raw_string_literal') {
+      return stripSqlQuotes(v.text, { raw: v.type === 'raw_string_literal' });
+    }
+  }
+  return null;
 }
