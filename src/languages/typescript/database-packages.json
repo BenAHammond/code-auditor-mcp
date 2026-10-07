@@ -1,18 +1,19 @@
-[
-  "better-sqlite3",
-  "drizzle-orm",
-  "@prisma/client",
-  "pg",
-  "mysql2",
-  "postgres",
-  "kysely",
-  "knex",
-  "mongodb",
-  "mongoose",
-  "@libsql/client",
-  "@planetscale/database",
-  "@neondatabase/serverless",
-  "@vercel/postgres",
-  "bun:sqlite",
-  "node:sqlite"
-]
+{
+  "better-sqlite3": ["Database"],
+  "drizzle-orm": ["drizzle", "sql"],
+  "@prisma/client": ["PrismaClient"],
+  "pg": ["Pool", "Client", "PoolClient"],
+  "mysql2": ["Pool", "Connection", "PoolConnection", "createPool", "createConnection"],
+  "postgres": ["Sql"],
+  "kysely": ["Kysely"],
+  "knex": ["Knex"],
+  "mongodb": ["MongoClient", "Db", "Collection"],
+  "mongoose": ["Connection", "connect"],
+  "@libsql/client": ["createClient", "Client"],
+  "@planetscale/database": ["connect", "Connection", "Client"],
+  "@neondatabase/serverless": ["neon", "Pool", "Client"],
+  "@vercel/postgres": ["sql", "db", "createClient", "createPool"],
+  "bun:sqlite": ["Database"],
+  "node:sqlite": ["DatabaseSync", "StatementSync"],
+  "@cloudflare/workers-types": ["D1Database", "D1PreparedStatement"]
+}

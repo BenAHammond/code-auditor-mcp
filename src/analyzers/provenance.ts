@@ -22,7 +22,7 @@
 import type { AST, LanguageAdapter, ASTNode } from '../languages/types.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { dialectForPackage } from '../languages/sql/dialectDetection.js';
-import { DB_PACKAGES } from './tsEcosystem.js';
+import { DB_PACKAGES, handleTypesForPackage } from './tsEcosystem.js';
 import {
   buildBindingEnv,
   classifyRootIdentifier,
@@ -158,15 +158,29 @@ function matchesValidatorPackage(specifier: string): boolean {
  * An import like `import Database from 'better-sqlite3'` produces `Database` as
  * provenanced with reason "package". Shared by the DB and validator variants,
  * which differ only in the package predicate.
+ *
+ * `handleTypesFor` is the Decision A type filter. It maps a matched specifier to
+ * the package's handle-name set, or `undefined` when the caller wants no type
+ * filter (the validator variant — a validator package's every export is a
+ * validator). When the set is present, a *named* import seeds only if its
+ * original export name (`spec.name`, not the local alias) is in the set; a
+ * default or namespace import seeds unconditionally, because a DB package's
+ * default/namespace *is* its handle and tree-sitter records no original export
+ * name for a default import to match. This is what stops
+ * `import { KVNamespace } from '@cloudflare/workers-types'` from seeding while
+ * `import { D1Database }` still does.
+ *
  * @param ast
  * @param adapter
  * @param matchesPackage
+ * @param handleTypesFor
  * @returns
  */
 function extractProvenancedImports(
   ast: AST,
   adapter: LanguageAdapter,
   matchesPackage: (specifier: string) => boolean,
+  handleTypesFor: (specifier: string) => ReadonlySet<string> | undefined = () => undefined,
 ): Map<string, ProvenanceEvidence> {
   const seedMap = new Map<string, ProvenanceEvidence>();
   const imports = adapter.extractImports(ast);
@@ -175,7 +189,13 @@ function extractProvenancedImports(
     const specifier = imp.source;
     if (!matchesPackage(specifier)) continue;
 
+    const handleTypes = handleTypesFor(specifier);
     for (const spec of imp.specifiers) {
+      // Decision A: a named import seeds only when the package's manifest lists
+      // the original export name as a handle. Default/namespace imports seed
+      // unconditionally (see the doc above).
+      if (handleTypes && !spec.isDefault && !spec.isNamespace && !handleTypes.has(spec.name)) continue;
+
       const localName = spec.alias ?? spec.name;
       const label = spec.isDefault
         ? `default import from ${specifier}`
@@ -210,7 +230,7 @@ export function extractDBProvenancedImports(
   ast: AST,
   adapter: LanguageAdapter,
 ): Map<string, ProvenanceEvidence> {
-  return extractProvenancedImports(ast, adapter, matchesDBPackage);
+  return extractProvenancedImports(ast, adapter, matchesDBPackage, handleTypesForPackage);
 }
 
 /**

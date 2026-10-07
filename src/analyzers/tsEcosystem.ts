@@ -26,12 +26,57 @@ import databasePackages from '../languages/typescript/database-packages.json' wi
  *
  * Spec 70 R4 / criterion 10: this set is loaded from the per-ecosystem manifest
  * (`src/languages/typescript/database-packages.json`, beside the format adapter),
- * a declarative data file holding package names only. Adding an ORM is a data
- * edit that turns `cannot-fire` into a verdict; failing to add it never produces
- * a wrong verdict. This is the ORM residual — the one irreducible fact R3 cannot
- * derive from the audited code (which packages are database clients).
+ * a declarative data file. Adding an ORM is a data edit that turns
+ * `cannot-fire` into a verdict; failing to add it never produces a wrong verdict.
+ * This is the ORM residual — the one irreducible fact R3 cannot derive from the
+ * audited code (which packages are database clients).
+ *
+ * Decision A (§ "manifest keys on package AND type") refines the shape: each
+ * manifest entry is a package *keyed to the exported names that are DB handles*,
+ * not a bare package name. `DB_PACKAGES` remains the coarse key set — the
+ * staleness report and the `is-this-a-DB-package` predicates read it — while
+ * `DB_HANDLE_TYPES` carries the per-package handle names the import-seed step
+ * (`extractProvenancedImports`) consults to decide whether a *named* import
+ * seeds handle provenance. The motivating case is `@cloudflare/workers-types`:
+ * it exports hundreds of type names, of which only `D1Database` /
+ * `D1PreparedStatement` are DB handles — `KVNamespace`, `R2Bucket` and
+ * `ExecutionContext` must stay `unproven`, so package-level granularity is not
+ * enough.
  */
-export const DB_PACKAGES: ReadonlySet<string> = new Set(databasePackages);
+export const DB_PACKAGES: ReadonlySet<string> = new Set(Object.keys(databasePackages));
+
+/**
+ * The per-package handle names (exported types/factories whose import seeds
+ * handle provenance), keyed by base package name. A named import
+ * (`import { Pool } from 'pg'`) seeds only when `Pool` is in the package's list;
+ * a default import (`import Database from 'better-sqlite3'`) or namespace import
+ * (`import * as pg from 'pg'`) seeds unconditionally — a DB package's default /
+ * namespace is its handle, and tree-sitter records no original export name for a
+ * default import to match against. A factory entry (`drizzle`, `neon`,
+ * `createClient`, `connect`, …) names the function whose *call* returns the
+ * handle, seeded so the call-return propagation rule reaches it.
+ */
+export const DB_HANDLE_TYPES: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  Object.entries(databasePackages).map(([pkg, types]) => [pkg, new Set(types as string[])]),
+);
+
+/**
+ * Resolve a module specifier to its DB-handle names, or `undefined` when the
+ * specifier does not name a DB package. Mirrors the exact-or-subpath match
+ * `provenance.ts` uses for `DB_PACKAGES` membership, so `pg/lib` and
+ * `mysql2/promise` resolve to their base package's handle names.
+ */
+export function handleTypesForPackage(specifier: string): ReadonlySet<string> | undefined {
+  if (!specifier) return undefined;
+  if (DB_HANDLE_TYPES.has(specifier)) return DB_HANDLE_TYPES.get(specifier);
+  const slash = specifier.indexOf('/');
+  if (slash > 0 && specifier.startsWith('@')) {
+    const scoped = specifier.slice(0, specifier.indexOf('/', slash + 1));
+    return DB_HANDLE_TYPES.get(scoped);
+  }
+  if (slash > 0) return DB_HANDLE_TYPES.get(specifier.slice(0, slash));
+  return undefined;
+}
 
 // ─── The package discriminant: Node builtins + JS globals ─────────────────────
 //
