@@ -1015,6 +1015,7 @@ export const CORPUS_PRODUCERS = {
         ctx?.declaredTypePackages,
         ctx?.projectRoot,
         ctx?.tsconfigAliases,
+        ctx?.handleVerdictCache,
       );
     },
   } satisfies CorpusProcessor<'data-access-calls', readonly ['data-access-calls-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
@@ -1039,6 +1040,7 @@ export const CORPUS_PRODUCERS = {
         ctx?.declaredTypePackages,
         ctx?.projectRoot,
         ctx?.tsconfigAliases,
+        ctx?.handleVerdictCache,
       );
     },
   } satisfies CorpusProcessor<'loop-queries', readonly ['loop-query-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,

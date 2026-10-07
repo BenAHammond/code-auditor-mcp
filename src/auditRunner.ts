@@ -1775,7 +1775,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // isolates the rule cost. Captured alongside the wall clock so both stay in
     // the same scope (everything from scope resolution through result creation).
     const startCpu = process.cpuUsage();
-
     const root = path.resolve(mergedOptions.projectRoot || process.cwd());
     // One-time notice for a legacy in-repo index location (`.code-index` /
     // `node_modules/.cache/code-auditor`) left by a pre-move build — reported once,

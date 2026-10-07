@@ -80,7 +80,22 @@ function makeSpecifierResolver(
 ): ((source: string, importerPath: string) => SpecifierResolution | null) | null {
   if (!projectRoot) return null;
   const filesByPath = new Set(withinFacts.map((f) => f.file));
-  return (source, importerPath) => resolveSpecifier(source, importerPath, filesByPath, projectRoot, tsconfig);
+  // Memoize the resolution keyed on (source, importerPath) so a specifier that
+  // resolved once in the run is never re-probed. `resolveSpecifier`'s vendor arm
+  // walks up from the importer's directory doing `readFileSync`/`existsSync`
+  // probes, and the same bare import is resolved once per candidate that
+  // references it; without the cache that filesystem work is repeated for every
+  // candidate across every file. The importer is part of the key because the
+  // relative arm (and a monorepo's nested `node_modules`) resolve per-directory.
+  const cache = new Map<string, SpecifierResolution | null>();
+  return (source, importerPath) => {
+    const key = `${source}\u0000${importerPath}`;
+    const hit = cache.get(key);
+    if (hit !== undefined) return hit;
+    const resolved = resolveSpecifier(source, importerPath, filesByPath, projectRoot, tsconfig);
+    cache.set(key, resolved);
+    return resolved;
+  };
 }
 
 // ── Rehydrators — fact → the corpus-side classify input, no translation ──────
@@ -658,7 +673,48 @@ function loopQueryIdentity(cand: LoopQueryRawCandidate): HandleIdentity {
  * the verdict itself. Returns the tri-state verdict, or null when the shape is
  * not query-shaped.
  */
+/** A stable string key for one candidate's handle identity, for the shared
+ *  verdict cache. `sqlArg` and `siteReceiver` are part of the key because both
+ *  feed `identifyHandle` (the SQL-argument parse and the site-dialect parse). */
+function handleIdentityKey(id: HandleIdentity): string {
+  return [
+    id.format,
+    id.calleeType ?? '',
+    id.name ?? '',
+    id.root ?? '',
+    id.receiver ?? '',
+    id.method ?? '',
+    id.thisField ? '1' : '0',
+    id.thisHeritage ?? '',
+    id.sqlArg ?? '',
+    id.siteReceiver ?? '',
+  ].join('\u0000');
+}
+
 function reFoldHandleVerdict(
+  id: HandleIdentity,
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
+  bindings: ReadonlyMap<string, Binding>,
+  goEnv: GoResolutionEnv | undefined,
+  sqlDialect: Dialect | null,
+  interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
+  declaredTypePackages: ReadonlySet<string> | undefined,
+  resolveImport: SpecifierResolver | undefined,
+  resolveHeritageField: HeritageFieldResolver | undefined,
+  file: string,
+  verdictCache: Map<string, HandleVerdict | null> | undefined,
+): HandleVerdict | null {
+  const key = verdictCache ? `${file}\u0000${handleIdentityKey(id)}` : null;
+  if (key !== null) {
+    const hit = verdictCache!.get(key);
+    if (hit !== undefined) return hit;
+  }
+  const result = foldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField);
+  if (key !== null) verdictCache!.set(key, result);
+  return result;
+}
+
+function foldHandleVerdict(
   id: HandleIdentity,
   dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
   bindings: ReadonlyMap<string, Binding>,
@@ -883,6 +939,7 @@ export function classifyDataAccessCalls(
   declaredTypePackages: ReadonlySet<string> | undefined,
   projectRoot?: string,
   tsconfig?: TsconfigPathMap,
+  verdictCache?: Map<string, HandleVerdict | null>,
 ): ResolvedQuery[] {
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const goExtracts = rehydrateWithinGoExtracts(withinFacts);
@@ -918,7 +975,7 @@ export function classifyDataAccessCalls(
     // 1. Discovery filter — `isDbCallCandidate`, re-folding the handle verdict.
     const discovered: { cand: DataAccessCallCandidate; verdict: HandleVerdict | null }[] = [];
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
+      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
       const handleAdmits = verdict !== null && verdict.kind !== 'not-handle';
       const isCandidate =
         handleAdmits || cand.isQueryBuilderShape || cand.isTaggedSqlCall || cand.isVariableAssignmentSql;
@@ -974,6 +1031,7 @@ export function classifyLoopQueries(
   declaredTypePackages: ReadonlySet<string> | undefined,
   projectRoot?: string,
   tsconfig?: TsconfigPathMap,
+  verdictCache?: Map<string, HandleVerdict | null>,
 ): LoopQueryFact[] {
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
@@ -1003,7 +1061,7 @@ export function classifyLoopQueries(
     const loopOrdinals = new Map<string, number>();
     const resolveImport = resolver ? (source: string) => resolver(source, file) : undefined;
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, undefined, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
+      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, undefined, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
       if (!verdict || verdict.kind !== 'handle') continue;
 
       const dedupKey = String(cand.loopStartOffset);
@@ -1054,6 +1112,7 @@ export function classifyUnprovenQueryReceivers(
   declaredTypePackages: ReadonlySet<string> | undefined,
   projectRoot?: string,
   tsconfig?: TsconfigPathMap,
+  verdictCache?: Map<string, HandleVerdict | null>,
 ): UnprovenQueryReceiver[] {
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const goExtracts = rehydrateWithinGoExtracts(withinFacts);
@@ -1099,7 +1158,7 @@ export function classifyUnprovenQueryReceivers(
       // `not-handle` root resolves to `not-handle` below.
       if (id.calleeType !== 'member') continue;
       if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
-      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
+      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
       if (!verdict || verdict.kind !== 'unproven') continue;
       admitted.push({ cand, verdict });
     }

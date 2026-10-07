@@ -2211,6 +2211,18 @@ export interface CorpusContext {
    *  gate abstains: an unbound `D1Database` without a declared dependency stays
    *  `unproven` rather than being credited `handle`. */
   declaredTypePackages?: ReadonlySet<string>;
+  /** Spec 70 — a shared memoization cache for the `identifyHandle` verdicts the
+   *  receiver consumers re-fold, keyed by the candidate's full handle identity
+   *  including the file (whose per-file provenance/env the verdict depends on).
+   *  `classifyDataAccessCalls` and `classifyUnprovenQueryReceivers` fold the same
+   *  `data-access-calls-candidates` through `identifyHandle`, and
+   *  `classifySchemaUsage` and `classifyUnresolvedQuerySites` fold the same
+   *  `schema-usage-candidates` dbCalls — without the cache each candidate is
+   *  folded twice, and `identifyHandle` is ~2 ms per fold. Threaded here so the
+   *  four consumers plus the two post-loop classifiers share one cache across a
+   *  single `buildFacts` pass (the verdict is a pure function of (file, identity)
+   *  within one pass, so the cache is byte-identical to re-folding). */
+  handleVerdictCache?: Map<string, HandleVerdict | null>;
 }
 
 /** A corpus processor: receives complete upstream facts, no AST, no format. */

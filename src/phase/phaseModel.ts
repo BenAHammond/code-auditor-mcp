@@ -53,6 +53,7 @@ import type {
 } from './types.js';
 import type { IndexHandle } from '../types.js';
 import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
+import type { HandleVerdict } from '../analyzers/handleIdentification.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites } from './receiverConsumers.js';
 import { withRuleTiming, withRuleTimingAsync } from '../analyzers/ruleTiming.js';
@@ -406,6 +407,14 @@ async function buildFacts(
     (k): k is keyof typeof CORPUS_PRODUCERS =>
       Object.prototype.hasOwnProperty.call(CORPUS_PRODUCERS, k),
   );
+  // Shared `identifyHandle` verdict cache (Spec 70) — one map per `buildFacts`
+  // pass, threaded through `corpusCtx` to the four receiver consumers and reused
+  // by the post-loop classifiers below. The verdict is a pure function of
+  // (file, handle identity) within a single pass, so a cache hit is byte-identical
+  // to a re-fold; it just avoids folding `data-access-calls-candidates` twice
+  // (once in `data-access-calls`, once in the cannot-fire reduction).
+  const handleVerdictCache = new Map<string, HandleVerdict | null>();
+
   const corpusCtx: CorpusContext = {
     projectRoot: infra?.projectRoot,
     corpusFiles: infra?.corpusFiles,
@@ -416,6 +425,7 @@ async function buildFacts(
     externalTables: infra?.externalTables,
     sqlDialect: infra?.sqlDialect,
     declaredTypePackages: infra?.declaredTypePackages,
+    handleVerdictCache,
   };
   // §5 DAG — topological sort. A corpus producer's `needs` may reference other
   // corpus kinds (e.g. the four receiver consumers depend on `receiver-provenance`,
@@ -464,6 +474,7 @@ async function buildFacts(
       infra?.declaredTypePackages,
       infra?.projectRoot,
       infra?.tsconfigAliases,
+      handleVerdictCache,
     );
     // Spec 70 1b — the `unresolved-query` half (a third coverage signal, alongside
     // the two above): re-derive the re-admitted unresolvable-SQL DB-calls from the
