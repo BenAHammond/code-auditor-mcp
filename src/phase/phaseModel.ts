@@ -462,6 +462,8 @@ async function buildFacts(
       (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
       infra?.sqlDialect ?? null,
       infra?.declaredTypePackages,
+      infra?.projectRoot,
+      infra?.tsconfigAliases,
     );
     // Spec 70 1b — the `unresolved-query` half (a third coverage signal, alongside
     // the two above): re-derive the re-admitted unresolvable-SQL DB-calls from the
@@ -476,6 +478,8 @@ async function buildFacts(
         (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
         infra?.sqlDialect ?? null,
         infra?.declaredTypePackages,
+        infra?.projectRoot,
+        infra?.tsconfigAliases,
       );
     }
   }

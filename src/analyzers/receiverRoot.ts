@@ -34,6 +34,20 @@ import { isNodeBuiltin, isDbHandleTypeName, dbHandlePackagesForName, handleTypes
 /** A receiver root's disposition (Spec 69 §10 S5e). */
 export type RootDisposition = 'handle' | 'not-handle' | 'unproven';
 
+/**
+ * Where an import specifier resolves — the one specifier-resolution seam (Spec 70
+ * B1): relative, tsconfig-`paths` alias, bare (tsconfig-`paths` → in-repo, else
+ * node_modules vendor `.d.ts`), and the `@/`/`~/` fallback all answer through one
+ * `resolveSpecifier`. `classifyImportSource` reads `in-repo` to abstain on an
+ * unwalked export chain; Item 1 reads `vendor` to resolve a base class to its
+ * declaration. `unresolved` means no in-repo file and no node_modules type
+ * declaration existed.
+ */
+export type SpecifierResolution =
+  | { readonly kind: 'in-repo'; readonly path: string }
+  | { readonly kind: 'vendor'; readonly path: string }
+  | { readonly kind: 'unresolved' };
+
 /** How a name is bound in the file's scope chain. */
 export type BindingKind =
   | 'import'
@@ -96,8 +110,16 @@ export interface RootResolutionEnv {
   provenance: ReadonlyMap<string, ProvenanceEvidence>;
   /** name → binding (import / declaration / parameter / field). */
   bindings: ReadonlyMap<string, Binding>;
-  /** Resolve an import specifier to an in-repo absolute path, or null. */
-  resolveImport?: (source: string) => string | null;
+  /**
+   * Resolve an import specifier through the one specifier-resolution seam (Spec
+   * 70 B1): relative, tsconfig-`paths` alias, bare (tsconfig-`paths` → in-repo,
+   * else node_modules vendor `.d.ts`), and the `@/`/`~/` fallback. Returns a
+   * tagged `SpecifierResolution`, or null when no resolver was threaded (the Go
+   * path and bare-root callers abstain). `classifyImportSource` reads `in-repo`
+   * to abstain on an unwalked export chain; the base-class heritage reader reads
+   * `vendor` to resolve a declaration (Spec 70 Q/B2).
+   */
+  resolveImport?: (source: string) => SpecifierResolution | null;
   /**
    * Interface / type-alias field types, keyed `interfaceName → fieldName → typeText`
    * (`interface Env { DB: D1Database }` → `Env → { DB: 'D1Database' }`). The
@@ -124,6 +146,14 @@ export interface RootResolutionEnv {
    * generic binding cause.
    */
   ambientRejectionReason?: string;
+  /**
+   * Out-param populated by `classifyImportSource` when an import resolved to an
+   * in-repo file whose export chain is not walked here (Spec 70 B1): the
+   * disposition is `unproven`, and `resolveRoot` reads this to give the
+   * cannot-fire reason "resolves to in-repo file … whose export chain is not
+   * walked here" instead of the generic binding cause.
+   */
+  importResolutionReason?: string;
   /** The adapter + source text for reading value/type node text. */
   adapter: LanguageAdapter;
   sourceCode: string;
@@ -684,30 +714,34 @@ function classifyImportSource(
   importKind: ImportKind | undefined,
   env: RootResolutionEnv,
 ): RootDisposition {
-  const isRelative = source.startsWith('./') || source.startsWith('../');
-  const isAlias = source.startsWith('@/') || source.startsWith('~/');
-  if (!isRelative && !isAlias) {
-    // Bare specifier → node_modules or a Node builtin. A Node builtin (`fs`,
-    // `node:path`, …) is provably not a DB client → `not-handle`. A manifest DB
-    // package resolves by import kind: a default/namespace import is the
-    // package's handle (its local name is arbitrary — `import mysql from
-    // 'mysql2/promise'`), while a *named* import is a handle only when the
-    // manifest lists its name — `import { eq } from 'drizzle-orm'` is provably
-    // NOT a handle, `import { Pool } from 'pg'` is. An unrecognized package
-    // reached by resolution reports cannot-fire (Spec 70 R4), never a guessed
-    // clean.
-    if (isNodeBuiltin(source)) return 'not-handle';
-    const handles = handleTypesForPackage(source);
-    if (handles) {
-      if (importKind === 'default' || importKind === 'namespace') return 'handle';
-      return handles.has(name) ? 'handle' : 'not-handle';
-    }
+  // One seam (Spec 70 B1): every specifier kind — relative, tsconfig-`paths`
+  // alias, bare (tsconfig-`paths` → in-repo, else node_modules vendor `.d.ts`),
+  // and the `@/`/`~/` fallback — answers through `resolveImport`. An in-repo
+  // resolution means the name's origin is a project file whose export chain is
+  // not walked here, so the name's DB-handle status is unknown → `unproven`
+  // (never the old `not-handle`, which claimed to have proven a re-exported
+  // handle is clean). Absent a resolver, relative/alias still abstain below.
+  const resolved = env.resolveImport?.(source);
+  if (resolved?.kind === 'in-repo') {
+    env.importResolutionReason = `resolves to in-repo file \`${resolved.path}\` whose export chain is not walked here`;
     return 'unproven';
   }
-  if (!env.resolveImport) return 'unproven';
-  const resolved = env.resolveImport(source);
-  if (resolved) return 'not-handle'; // in-repo file, name not a handle.
-  return 'unproven'; // the existing unresolved-import cannot-fire signal.
+  // A bare specifier that did not land in-repo → node_modules or a Node builtin.
+  // A Node builtin (`fs`, `node:path`, …) is provably not a DB client →
+  // `not-handle`. A manifest DB package resolves by import kind: a
+  // default/namespace import is the package's handle (its local name is
+  // arbitrary — `import mysql from 'mysql2/promise'`), while a *named* import is
+  // a handle only when the manifest lists its name — `import { eq } from
+  // 'drizzle-orm'` is provably NOT a handle, `import { Pool } from 'pg'` is. An
+  // unrecognized package reached by resolution reports cannot-fire (Spec 70 R4),
+  // never a guessed clean.
+  if (isNodeBuiltin(source)) return 'not-handle';
+  const handles = handleTypesForPackage(source);
+  if (handles) {
+    if (importKind === 'default' || importKind === 'namespace') return 'handle';
+    return handles.has(name) ? 'handle' : 'not-handle';
+  }
+  return 'unproven';
 }
 
 function classifyTypeText(typeText: string, env: RootResolutionEnv, depth: number): RootDisposition {

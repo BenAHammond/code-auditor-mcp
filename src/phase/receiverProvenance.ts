@@ -53,6 +53,7 @@ import {
   type FileProvenance,
   type FileExports,
   type UnresolvedImport,
+  type TsconfigPathMap,
 } from '../analyzers/receiverResolution.js';
 import type { GoBinding } from '../languages/go/goResolution.js';
 import { evidenceToFact } from './withinFileProvenance.js';
@@ -192,7 +193,10 @@ function exportedProvenancedNames(
  * @param importFacts the `import-specifiers` facts (one per import statement)
  * @param exportFacts the `export-symbols` facts (one per exported symbol)
  * @param goPackageFacts the `go-package-bindings` facts (one per Go file)
- * @param projectRoot the corpus root (for `@/`/`~/` alias specifiers), optional
+ * @param projectRoot the corpus root (for `@/`/`~/` alias + tsconfig-`paths`
+ *   + vendor specifiers), optional
+ * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier
+ *   alias resolution (Spec 70 B1), optional
  * @returns the fixed-point provenance maps + unresolved imports, in the legacy
  *   `FileProvenance`/`FileExports`/`UnresolvedImport` types (the parity assertion
  *   compares these directly against `resolveReceiverProvenance`)
@@ -203,6 +207,7 @@ export function computeReceiverProvenance(
   exportFacts: readonly ExportSymbolFact[],
   goPackageFacts: readonly GoPackageBindingFact[],
   projectRoot?: string,
+  tsconfig?: TsconfigPathMap,
 ): { fileProvenance: FileProvenance; fileExports: FileExports; unresolvedImports: UnresolvedImport[] } {
   const filesByPath = new Set(withinFacts.map((f) => f.file));
   const goBindings = goPackageBindingsByDir(goPackageFacts);
@@ -244,9 +249,9 @@ export function computeReceiverProvenance(
       const file = fact.file;
       const extraSeeds = new Map<string, ProvenanceEvidence>();
       for (const imp of importsByFile.get(file) ?? []) {
-        const target = resolveSpecifier(imp.source, file, filesByPath, projectRoot);
-        if (!target) continue;
-        const targetExports = fileExports.get(target);
+        const target = resolveSpecifier(imp.source, file, filesByPath, projectRoot, tsconfig);
+        if (target.kind !== 'in-repo') continue;
+        const targetExports = fileExports.get(target.path);
         if (!targetExports || targetExports.size === 0) continue;
         for (const spec of imp.specifiers) {
           const localName = spec.alias ?? spec.name;
@@ -287,8 +292,8 @@ export function computeReceiverProvenance(
   // Collect unresolved imports for the cannot-fire report.
   const unresolvedImports: UnresolvedImport[] = [];
   for (const imp of importFacts) {
-    const target = resolveSpecifier(imp.source, imp.file, filesByPath, projectRoot);
-    if (target) continue;
+    const target = resolveSpecifier(imp.source, imp.file, filesByPath, projectRoot, tsconfig);
+    if (target.kind === 'in-repo') continue;
     const names = imp.specifiers.map((s) => s.alias ?? s.name);
     // Only DB-looking imports matter: a bare package specifier is already
     // covered by DB_PACKAGES; an in-repo-looking specifier that fails to

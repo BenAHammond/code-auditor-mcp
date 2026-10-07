@@ -924,6 +924,7 @@ export const CORPUS_PRODUCERS = {
         facts['export-symbols'],
         facts['go-package-bindings'],
         ctx?.projectRoot,
+        ctx?.tsconfigAliases,
       );
       return {
         files: [...fileProvenance.entries()].map(([file, prov]) => ({
@@ -983,6 +984,8 @@ export const CORPUS_PRODUCERS = {
         facts['receiver-activity'],
         ctx?.sqlDialect ?? null,
         ctx?.declaredTypePackages,
+        ctx?.projectRoot,
+        ctx?.tsconfigAliases,
       );
     },
   } satisfies CorpusProcessor<'schema-usage', readonly ['schema-usage-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
@@ -1010,6 +1013,8 @@ export const CORPUS_PRODUCERS = {
         facts['receiver-activity'],
         ctx?.sqlDialect ?? null,
         ctx?.declaredTypePackages,
+        ctx?.projectRoot,
+        ctx?.tsconfigAliases,
       );
     },
   } satisfies CorpusProcessor<'data-access-calls', readonly ['data-access-calls-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
@@ -1032,6 +1037,8 @@ export const CORPUS_PRODUCERS = {
         facts['receiver-activity'],
         ctx?.sqlDialect ?? null,
         ctx?.declaredTypePackages,
+        ctx?.projectRoot,
+        ctx?.tsconfigAliases,
       );
     },
   } satisfies CorpusProcessor<'loop-queries', readonly ['loop-query-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,

@@ -37,8 +37,10 @@ import {
   buildBindingEnv,
   classifyRootIdentifier,
   type RootResolutionEnv,
+  type SpecifierResolution,
 } from './receiverRoot.js';
 import path from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
 
 /** Per-file DB-provenanced identifiers, keyed by absolute file path. */
 export type FileProvenance = Map<string, Map<string, ProvenanceEvidence>>;
@@ -190,25 +192,37 @@ export function collectExports(
   return out;
 }
 
+/** tsconfig `paths` mapping (pattern → target patterns) plus `baseUrl`. */
+export interface TsconfigPathMap {
+  baseUrl?: string;
+  paths?: Readonly<Record<string, readonly string[]>>;
+}
+
 /**
- * Resolve an import specifier to an in-repo file path, or null when it is a
- * bare/node_modules specifier or no candidate file exists.
+ * Resolve an import specifier through the one specifier-resolution seam (Spec 70
+ * B1). Four specifier kinds answer here:
+ *   • relative (`./x`, `../x`) — resolved against the importer's directory.
+ *   • `@/`/`~/` alias — mapped against `projectRoot`, then its `src`/`app`.
+ *   • bare — a bare specifier matching a tsconfig-`paths` pattern maps to an
+ *     in-repo file; otherwise it resolves to a node_modules vendor declaration
+ *     (`.d.ts` / `package.json` `types`) when one exists.
+ *   • nothing else resolves → `unresolved`.
  *
- * @param specifier the import source string to resolve
- * @param importerPath the absolute path of the importing file
- * @param filesByPath the set of known in-repo file paths
- * @param projectRoot the corpus root, for resolving `@/`/`~/` aliases
- * @returns the resolved in-repo file path, or `null`
+ * @returns a tagged `SpecifierResolution` — `in-repo` (an in-repo file whose
+ *   export chain is not walked here), `vendor` (a node_modules declaration), or
+ *   `unresolved` (neither).
  */
 export function resolveSpecifier(
   specifier: string,
   importerPath: string,
   filesByPath: ReadonlySet<string>,
   projectRoot?: string,
-): string | null {
+  tsconfig?: TsconfigPathMap,
+): SpecifierResolution {
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
     const base = path.resolve(path.dirname(importerPath), specifier);
-    return resolveFile(base, filesByPath);
+    const rel = resolveFile(base, filesByPath);
+    return rel ? { kind: 'in-repo', path: rel } : { kind: 'unresolved' };
   }
 
   // Alias specifiers (`@/x`, `~/x`) map to the project root, then its src/app.
@@ -217,12 +231,87 @@ export function resolveSpecifier(
     const roots = [projectRoot, projectRoot && path.join(projectRoot, 'src'), projectRoot && path.join(projectRoot, 'app')].filter(Boolean) as string[];
     for (const root of roots) {
       const resolved = resolveFile(path.join(root, rel), filesByPath);
-      if (resolved) return resolved;
+      if (resolved) return { kind: 'in-repo', path: resolved };
     }
-    return null;
+    return { kind: 'unresolved' };
   }
 
-  return null; // bare specifier → node_modules, handled by DB_PACKAGES not here
+  // Bare specifier → tsconfig-`paths` alias first, else node_modules vendor.
+  if (projectRoot && tsconfig?.paths) {
+    const viaTsconfig = resolveViaTsconfigPaths(specifier, projectRoot, tsconfig.paths, tsconfig.baseUrl, filesByPath);
+    if (viaTsconfig) return { kind: 'in-repo', path: viaTsconfig };
+  }
+  if (projectRoot) {
+    const vendor = resolveVendorSpecifier(specifier, importerPath, projectRoot);
+    if (vendor) return { kind: 'vendor', path: vendor };
+  }
+  return { kind: 'unresolved' };
+}
+
+/** Resolve a bare specifier through tsconfig `compilerOptions.paths` patterns. */
+function resolveViaTsconfigPaths(
+  specifier: string,
+  projectRoot: string,
+  paths: Readonly<Record<string, readonly string[]>>,
+  baseUrl: string | undefined,
+  filesByPath: ReadonlySet<string>,
+): string | null {
+  for (const [pattern, targets] of Object.entries(paths)) {
+    const star = pattern.indexOf('*');
+    if (star === -1) {
+      // Exact key (no wildcard): `"db": ["./db/index.ts"]`.
+      if (specifier !== pattern) continue;
+      for (const target of targets) {
+        const resolved = resolveFile(path.resolve(projectRoot, baseUrl ?? '.', target), filesByPath);
+        if (resolved) return resolved;
+      }
+      continue;
+    }
+    // Wildcard: `"@/*": ["src/*"]` — match `prefix` + capture + `suffix`.
+    const prefix = pattern.slice(0, star);
+    const suffix = pattern.slice(star + 1);
+    if (!specifier.startsWith(prefix) || !specifier.endsWith(suffix)) continue;
+    const matched = specifier.slice(prefix.length, specifier.length - suffix.length);
+    for (const target of targets) {
+      const replaced = target.replace('*', matched);
+      const resolved = resolveFile(path.resolve(projectRoot, baseUrl ?? '.', replaced), filesByPath);
+      if (resolved) return resolved;
+    }
+  }
+  return null;
+}
+
+/** Resolve a bare specifier to a node_modules vendor declaration, if one exists. */
+function resolveVendorSpecifier(specifier: string, importerPath: string, projectRoot: string): string | null {
+  if (specifier.startsWith('node:')) return null; // Node builtins have no vendor `.d.ts`
+  const root = path.resolve(projectRoot);
+  const segments = specifier.split('/');
+  let dir = path.dirname(importerPath);
+  for (;;) {
+    const pkgRoot = path.join(dir, 'node_modules', ...segments);
+    const decl = resolveVendorDeclaration(pkgRoot);
+    if (decl) return decl;
+    if (dir === root || path.dirname(dir) === dir) break;
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+/** The `.d.ts` entry for a node_modules package root: `types` field, else `index.d.ts`. */
+function resolveVendorDeclaration(pkgRoot: string): string | null {
+  const pkgJson = path.join(pkgRoot, 'package.json');
+  try {
+    const parsed = JSON.parse(readFileSync(pkgJson, 'utf-8')) as { types?: unknown; typings?: unknown };
+    const types = typeof parsed.types === 'string' ? parsed.types : typeof parsed.typings === 'string' ? parsed.typings : undefined;
+    if (types) {
+      const decl = path.join(pkgRoot, types);
+      if (existsSync(decl)) return decl;
+    }
+  } catch {
+    // no package.json (or unparseable) — fall through to `index.d.ts`.
+  }
+  const idx = path.join(pkgRoot, 'index.d.ts');
+  return existsSync(idx) ? idx : null;
 }
 
 /** Resolve a base path (with or without extension) to a known in-repo file. */
