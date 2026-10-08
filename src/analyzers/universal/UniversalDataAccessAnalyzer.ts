@@ -658,11 +658,27 @@ function goHandleVerdictForCall(
 
 /** Walk parents until an enclosing call/new expression, or null. */
 function enclosingCallOf(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  // A template literal is the SQL argument of a call only when it sits directly
+  // in that call's argument list (`db.prepare(\`…\`)`). A literal nested inside an
+  // arrow body, object literal, or array (`{ message: () => \`…is written (…)\` }`)
+  // is prose/config, not a query — walking past those boundaries attributes it to
+  // an unrelated enclosing call (`runUsageDirectionCheck(…, { message: … })`) and
+  // lets human-readable text reach the SQL parser. Only the immediate `arguments`
+  // admits the enclosing call; anything else is not a direct query argument.
   let cur = adapter.getParent(node);
   while (cur) {
     const t = adapter.getNodeType(cur);
-    if (t === 'call_expression' || t === 'new_expression') return cur;
-    cur = adapter.getParent(cur);
+    if (t === 'arguments') {
+      const call = adapter.getParent(cur);
+      return call && (adapter.getNodeType(call) === 'call_expression' || adapter.getNodeType(call) === 'new_expression')
+        ? call
+        : null;
+    }
+    // Tagged templates carry the literal as a direct child of the call (no
+    // `arguments`), but they are admitted separately by `isTaggedTemplateSqlCall`,
+    // never through this path — a literal not directly in `arguments` is not a
+    // positional SQL argument.
+    return null;
   }
   return null;
 }
@@ -3508,11 +3524,15 @@ interface HandleCallSiteIdentity {
   thisHeritage: string | null;
   sqlArg: string | null;
   siteReceiver: string | null;
+  /** The receiver reference's enclosing scope (start byte offset of the enclosing
+   *  function, `0` for top-level) — disambiguates same-named bindings in different
+   *  functions when the corpus-side classifier keys bindings on scope. */
+  scope: number;
 }
 
 const NULL_HANDLE_IDENTITY: HandleCallSiteIdentity = {
   calleeType: null, name: null, root: null, receiver: null, method: null,
-  thisField: false, thisHeritage: null, sqlArg: null, siteReceiver: null,
+  thisField: false, thisHeritage: null, sqlArg: null, siteReceiver: null, scope: 0,
 };
 
 /** Project `handleVerdictForCall`'s structural gates (without `identifyHandle`) into
@@ -3541,6 +3561,7 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
       thisHeritage: null,
       sqlArg,
       siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
+      scope: 0,
     };
   }
 
@@ -3559,6 +3580,7 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
       thisHeritage: null,
       sqlArg: extractStaticSql(callNode, adapter, sourceCode),
       siteReceiver: null,
+      scope: findEnclosingFunctionNode(callNode, adapter)?.range[0] ?? 0,
     };
   }
 
@@ -3589,6 +3611,7 @@ function handleCallSiteIdentity(node: ASTNode, scan: DataAccessScanContext): Han
     thisHeritage,
     sqlArg,
     siteReceiver: getMemberExpressionReceiver(callee, adapter, sourceCode),
+    scope: findEnclosingFunctionNode(callNode, adapter)?.range[0] ?? 0,
   };
 }
 
@@ -3682,6 +3705,7 @@ function buildDataAccessCallCandidate(
     handleThisHeritage: handle.thisHeritage,
     handleSqlArg: handle.sqlArg,
     handleSiteReceiver: handle.siteReceiver,
+    handleRootScope: handle.scope,
     skipCallForTemplateArg: shouldSkipCallForTemplateArg(node, adapter),
     siteCalleeType: site.calleeType,
     siteName: site.name,
@@ -3814,6 +3838,7 @@ export function extractLoopQueryRawCandidates(
       handleThisHeritage: handle.thisHeritage,
       handleSiteReceiver: handle.siteReceiver,
       sqlArg: handle.sqlArg,
+      handleRootScope: handle.scope,
     });
   }
 

@@ -24,8 +24,8 @@
  * no bindings/activity still yields a fragment so the corpus producer sees the file).
  */
 
-import type { AstFile, ReceiverActivityFact } from './types.js';
-import { buildBindingEnv } from '../analyzers/receiverRoot.js';
+import type { AstFile, ReceiverActivityFact, TsBindingFact } from './types.js';
+import { buildBindingScopeIndex } from '../analyzers/receiverRoot.js';
 import { collectDbActivity, extractR3Sites } from '../analyzers/provenance.js';
 import { bindingToFact } from './withinFileProvenance.js';
 
@@ -37,15 +37,25 @@ import { bindingToFact } from './withinFileProvenance.js';
  * @returns A one-element array carrying the file's TS receiver-resolution inputs.
  */
 export function extractReceiverActivity(file: AstFile): ReceiverActivityFact[] {
-  const bindings = buildBindingEnv(file.ast, file.adapter, file.source);
+  const bindingScopeIndex = buildBindingScopeIndex(file.ast, file.adapter, file.source);
   const r3Sites = extractR3Sites(file.ast, file.adapter, file.source);
   const dbActivity = collectDbActivity(file.ast, file.adapter, file.source);
+
+  // Serialize *every* binding (no name collapse) so the corpus-side rehydrator
+  // can rebuild both the flat first-wins map and the scope-keyed index — a name
+  // bound in two functions yields two facts, disambiguated by `scope`.
+  const bindingFacts: TsBindingFact[] = [];
+  for (const [name, byScope] of bindingScopeIndex) {
+    for (const binding of byScope.values()) {
+      bindingFacts.push(bindingToFact(name, binding));
+    }
+  }
 
   return [
     {
       file: file.file,
       format: file.format as 'typescript' | 'tsx' | 'javascript',
-      bindings: [...bindings.entries()].map(([name, b]) => bindingToFact(name, b)),
+      bindings: bindingFacts,
       r3Sites: r3Sites.map((s) => ({
         root: s.root,
         receiver: s.receiver,

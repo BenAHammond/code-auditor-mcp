@@ -63,6 +63,7 @@ export function bindingToFact(name: string, b: Binding): TsBindingFact {
     ...(b.importKind !== undefined ? { importKind: b.importKind } : {}),
     ...(b.typeText !== undefined ? { typeText: b.typeText } : {}),
     ...(b.value !== undefined ? { value: b.value } : {}),
+    ...(b.scope !== undefined ? { scope: b.scope } : {}),
   };
 }
 

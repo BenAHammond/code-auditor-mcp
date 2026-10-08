@@ -133,6 +133,11 @@ export interface CallSite {
    *  `resolveHeritageField` — the raw `extends` text is carried, not a pre-resolved
    *  type. Absent on older/foreign call sites. */
   readonly thisHeritage?: string | null;
+  /** The root identifier's binding scope (enclosing function start offset) — the
+   *  scope key that disambiguates two same-named bindings in different functions.
+   *  Absent on older/foreign call sites; the classifier falls back to the flat
+   *  first-wins map when unset (Spec 70 §6). */
+  readonly scope?: number;
 }
 
 // ─── Resolution facts ────────────────────────────────────────────────────────
@@ -425,6 +430,7 @@ const typescriptResolution: ResolutionImplementation = {
         ? deriveThisMemberPath(site.root, site.receiver)
         : deriveMemberPath(site.root, site.receiver, false),
       thisHeritage: site.thisHeritage,
+      scope: site.scope,
     });
     // The package discriminant (not the method name) decides the disposition: an
     // unrecognized root is `unproven` (cannot-fire), never downgraded by method

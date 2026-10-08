@@ -538,6 +538,10 @@ export type LoopQueryRawCandidate = {
   /** The static SQL argument (unquoted), or null — feeds the handle verdict's
    *  sql-argument source. */
   readonly sqlArg: string | null;
+  /** The handle verdict's binding scope (enclosing function start offset) — the
+   *  corpus-side fold resolves the handle root's binding name in this scope so two
+   *  same-named bindings in different functions disambiguate (Spec 70 §6). */
+  readonly handleRootScope?: number;
 };
 
 /**
@@ -1112,6 +1116,10 @@ export type DataAccessCallCandidate = {
    *  `handleReceiver` (`receiver ?? root`) because `resolveSiteDialect` reads the
    *  nullable raw (`this.db.prepare` → `db`, not `this.db`). */
   readonly handleSiteReceiver: string | null;
+  /** The handle verdict's binding scope (enclosing function start offset) — the
+   *  corpus-side fold resolves the handle root's binding name in this scope so two
+   *  same-named bindings in different functions disambiguate (Spec 70 §6). */
+  readonly handleRootScope?: number;
   /** `shouldSkipCallForTemplateArg` — drop a call rediscovered via its template
    *  argument (a multi-line template starts on a later line than its call, so the
    *  line dedup does not collapse them). */
@@ -1788,6 +1796,10 @@ export type TsBindingFact = {
   readonly importKind?: ImportKind;
   readonly typeText?: string;
   readonly value?: ValueDescriptor;
+  /** The binding's enclosing scope (start byte offset of the enclosing function,
+   *  `0` for top-level). Carried so the corpus-side classifier can key bindings
+   *  on scope rather than name alone. */
+  readonly scope?: number;
 };
 
 /** The serializable projection of `R3Site` (`provenance.ts`, an `interface`). */

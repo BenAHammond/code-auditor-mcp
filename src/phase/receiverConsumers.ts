@@ -107,12 +107,29 @@ function makeSpecifierResolver(
  * @returns The rehydrated bindings, R3 sites, and DB-activity set. */
 export function rehydrateReceiverActivity(fact: ReceiverActivityFact | undefined): {
   bindings: Map<string, Binding>;
+  bindingsByScope: Map<string, Map<number, Binding>>;
   r3Sites: R3Site[];
   dbActivity: Set<string>;
 } {
-  if (!fact) return { bindings: new Map(), r3Sites: [], dbActivity: new Set() };
+  if (!fact) return { bindings: new Map(), bindingsByScope: new Map(), r3Sites: [], dbActivity: new Set() };
+  const bindings = new Map<string, Binding>();
+  const bindingsByScope = new Map<string, Map<number, Binding>>();
+  for (const b of fact.bindings) {
+    const binding = bindingFromFact(b);
+    // First wins (fact order == declaration order) — the flat map matches the
+    // legacy `buildBindingEnv` collapse for scope-agnostic consumers.
+    if (!bindings.has(b.name)) bindings.set(b.name, binding);
+    const scope = binding.scope ?? 0;
+    let byScope = bindingsByScope.get(b.name);
+    if (!byScope) {
+      byScope = new Map();
+      bindingsByScope.set(b.name, byScope);
+    }
+    if (!byScope.has(scope)) byScope.set(scope, binding);
+  }
   return {
-    bindings: new Map(fact.bindings.map((b) => [b.name, bindingFromFact(b)])),
+    bindings,
+    bindingsByScope,
     r3Sites: fact.r3Sites.map((s) => ({
       root: s.root,
       receiver: s.receiver,
@@ -194,6 +211,7 @@ function foldReceiverEnvironment(opts: {
 }): {
   dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>;
   bindings: ReadonlyMap<string, Binding>;
+  bindingsByScope: ReadonlyMap<string, ReadonlyMap<number, Binding>>;
   goEnv: GoResolutionEnv | undefined;
   interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
 } {
@@ -204,6 +222,7 @@ function foldReceiverEnvironment(opts: {
     return {
       dbProvenanced: seed,
       bindings: new Map(),
+      bindingsByScope: new Map(),
       goEnv: {
         provenance: seed,
         bindings: goExtract?.bindings ?? new Map<string, GoBinding>(),
@@ -219,6 +238,7 @@ function foldReceiverEnvironment(opts: {
       ? classifyBuildProvenance(extract, seeds.get(file) ?? new Map(), activity.bindings, activity.r3Sites, sqlDialect)
       : new Map<string, ProvenanceEvidence>(),
     bindings: activity.bindings,
+    bindingsByScope: activity.bindingsByScope,
     goEnv: undefined,
     interfaceFields: extract?.interfaceFields,
   };
@@ -632,39 +652,54 @@ interface HandleIdentity {
   readonly thisHeritage: string | null;
   readonly sqlArg: string | null;
   readonly siteReceiver: string | null;
+  readonly scope: number;
+}
+
+/** The `handle*` identity fields shared by both receiver-consumer candidates.
+ *  `dataAccessCallCandidate` and `LoopQueryRawCandidate` carry the same
+ *  provenance-free handle identity; this structural type names the overlap so the
+ *  two projections below stay one function, not two near-identical copies. */
+type HandleIdentitySource = {
+  readonly handleCalleeType: 'identifier' | 'member' | null;
+  readonly handleName: string | null;
+  readonly handleRoot: string | null;
+  readonly handleReceiver: string | null;
+  readonly handleMethod: string | null;
+  readonly handleThisField: boolean;
+  readonly handleThisHeritage: string | null;
+  readonly handleSiteReceiver: string | null;
+  readonly handleRootScope?: number;
+};
+
+/** Project a candidate's `handle*` fields into the corpus-side `HandleIdentity`.
+ *  The two candidates differ only in `format` (data-access carries the raw
+ *  producer's format; loop-query is TS-only) and which field is the handle SQL
+ *  argument (`handleSqlArg` vs `sqlArg`) — everything else is the shared shape. */
+function handleIdentity(source: HandleIdentitySource, format: 'typescript' | 'go', sqlArg: string | null): HandleIdentity {
+  return {
+    format,
+    calleeType: source.handleCalleeType,
+    name: source.handleName,
+    root: source.handleRoot,
+    receiver: source.handleReceiver,
+    method: source.handleMethod,
+    thisField: source.handleThisField,
+    thisHeritage: source.handleThisHeritage,
+    sqlArg,
+    siteReceiver: source.handleSiteReceiver,
+    scope: source.handleRootScope ?? 0,
+  };
 }
 
 /** The identity of one data-access-call candidate (the `handle*` fields). */
 function dataAccessIdentity(cand: DataAccessCallCandidate): HandleIdentity {
-  return {
-    format: cand.format,
-    calleeType: cand.handleCalleeType,
-    name: cand.handleName,
-    root: cand.handleRoot,
-    receiver: cand.handleReceiver,
-    method: cand.handleMethod,
-    thisField: cand.handleThisField,
-    thisHeritage: cand.handleThisHeritage,
-    sqlArg: cand.handleSqlArg,
-    siteReceiver: cand.handleSiteReceiver,
-  };
+  return handleIdentity(cand, cand.format, cand.handleSqlArg);
 }
 
 /** The identity of one loop-query candidate (TS-only; `sqlArg` is the handle
  *  SQL-argument source, `handleSiteReceiver` the site-dialect receiver). */
 function loopQueryIdentity(cand: LoopQueryRawCandidate): HandleIdentity {
-  return {
-    format: 'typescript',
-    calleeType: cand.handleCalleeType,
-    name: cand.handleName,
-    root: cand.handleRoot,
-    receiver: cand.handleReceiver,
-    method: cand.handleMethod,
-    thisField: cand.handleThisField,
-    thisHeritage: cand.handleThisHeritage,
-    sqlArg: cand.sqlArg,
-    siteReceiver: cand.handleSiteReceiver,
-  };
+  return handleIdentity(cand, 'typescript', cand.sqlArg);
 }
 
 /**
@@ -693,6 +728,7 @@ function handleIdentityKey(id: HandleIdentity): string {
     id.thisHeritage ?? '',
     id.sqlArg ?? '',
     id.siteReceiver ?? '',
+    String(id.scope),
   ].join('\u0000');
 }
 
@@ -700,6 +736,7 @@ function reFoldHandleVerdict(
   id: HandleIdentity,
   dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
   bindings: ReadonlyMap<string, Binding>,
+  bindingsByScope: ReadonlyMap<string, ReadonlyMap<number, Binding>>,
   goEnv: GoResolutionEnv | undefined,
   sqlDialect: Dialect | null,
   interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
@@ -714,7 +751,7 @@ function reFoldHandleVerdict(
     const hit = verdictCache!.get(key);
     if (hit !== undefined) return hit;
   }
-  const result = foldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField);
+  const result = foldHandleVerdict(id, dbProvenanced, bindings, bindingsByScope, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField);
   if (key !== null) verdictCache!.set(key, result);
   return result;
 }
@@ -723,6 +760,7 @@ function foldHandleVerdict(
   id: HandleIdentity,
   dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
   bindings: ReadonlyMap<string, Binding>,
+  bindingsByScope: ReadonlyMap<string, ReadonlyMap<number, Binding>>,
   goEnv: GoResolutionEnv | undefined,
   sqlDialect: Dialect | null,
   interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
@@ -763,7 +801,7 @@ function foldHandleVerdict(
       !!binding.typeText;
     if (!isProvenanced && !isTypeAnnotated) return null;
     const dialect = dialectForEvidence(dbProvenanced.get(name)) ?? sqlDialect ?? null;
-    const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+    const env = { provenance: dbProvenanced, bindings, bindingsByScope, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
     return identifyHandle(
       {
         format: 'typescript',
@@ -772,6 +810,7 @@ function foldHandleVerdict(
         method: name,
         sqlArgument: id.sqlArg,
         thisField: false,
+        scope: id.scope,
       },
       {
         imports: new Map(),
@@ -787,7 +826,7 @@ function foldHandleVerdict(
   if (id.calleeType === 'member') {
     if (!id.root || !id.method) return null;
     const dialect = resolveSiteDialectFromReceiver(id.siteReceiver, dbProvenanced) ?? sqlDialect ?? null;
-    const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+    const env = { provenance: dbProvenanced, bindings, bindingsByScope, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
     return identifyHandle(
       {
         format: 'typescript',
@@ -797,6 +836,7 @@ function foldHandleVerdict(
         sqlArgument: id.sqlArg,
         thisField: id.thisField,
         thisHeritage: id.thisHeritage,
+        scope: id.scope,
       },
       {
         imports: new Map(),
@@ -971,7 +1011,7 @@ export function classifyDataAccessCalls(
   const out: ResolvedQuery[] = [];
   for (const [file, fileCands] of byFile) {
     const isGo = fileCands[0].format === 'go';
-    const { dbProvenanced, bindings, goEnv, interfaceFields } = foldReceiverEnvironment({
+    const { dbProvenanced, bindings, bindingsByScope, goEnv, interfaceFields } = foldReceiverEnvironment({
       file, isGo, tsExtracts, goExtracts, seeds, activityByFile, sqlDialect,
     });
 
@@ -984,7 +1024,7 @@ export function classifyDataAccessCalls(
     // 1. Discovery filter — `isDbCallCandidate`, re-folding the handle verdict.
     const discovered: { cand: DataAccessCallCandidate; verdict: HandleVerdict | null }[] = [];
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
+      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, bindingsByScope, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
       const handleAdmits = verdict !== null && verdict.kind !== 'not-handle';
       const isCandidate =
         handleAdmits || cand.isQueryBuilderShape || cand.isTaggedSqlCall || cand.isVariableAssignmentSql;
@@ -1074,7 +1114,7 @@ export function classifyLoopQueries(
     const loopOrdinals = new Map<string, number>();
     const resolveImport = resolver ? (source: string) => resolver(source, file) : undefined;
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, undefined, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
+      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, activity.bindingsByScope, undefined, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
       if (!verdict || verdict.kind !== 'handle') continue;
 
       const dedupKey = String(cand.loopStartOffset);
@@ -1151,7 +1191,7 @@ export function classifyUnprovenQueryReceivers(
   const out: UnprovenQueryReceiver[] = [];
   for (const [file, fileCands] of byFile) {
     const isGo = fileCands[0].format === 'go';
-    const { dbProvenanced, bindings, goEnv, interfaceFields } = foldReceiverEnvironment({
+    const { dbProvenanced, bindings, bindingsByScope, goEnv, interfaceFields } = foldReceiverEnvironment({
       file, isGo, tsExtracts, goExtracts, seeds, activityByFile, sqlDialect,
     });
 
@@ -1175,7 +1215,7 @@ export function classifyUnprovenQueryReceivers(
       // `not-handle` root resolves to `not-handle` below.
       if (id.calleeType !== 'member') continue;
       if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
-      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
+      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, bindingsByScope, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
       if (!verdict || verdict.kind !== 'unproven') continue;
       admitted.push({ cand, verdict });
     }

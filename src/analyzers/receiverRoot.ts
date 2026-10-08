@@ -117,6 +117,15 @@ export interface Binding {
   /** Initializer / value expression, as a serializable descriptor (variable /
    *  field). Never a live AST node — the binding may outlive its file's tree. */
   value?: ValueDescriptor;
+  /**
+   * The binding's enclosing scope — the start byte offset of the enclosing
+   * function (`range[0]`), `0` for top-level. Two same-named bindings in
+   * different functions are distinct bindings, not a collision; a flat
+   * name-keyed map collapses them, so the classifier keys on scope when a
+   * reference's scope is known. Absent on older/foreign bindings (read as
+   * scope-agnostic by the classifier — falls back to the flat lookup).
+   */
+  scope?: number;
 }
 
 /** Per-file resolution inputs the classifier reads. */
@@ -125,6 +134,15 @@ export interface RootResolutionEnv {
   provenance: ReadonlyMap<string, ProvenanceEvidence>;
   /** name → binding (import / declaration / parameter / field). */
   bindings: ReadonlyMap<string, Binding>;
+  /**
+   * name → (enclosing scope → binding), the scope-keyed index that disambiguates
+   * two same-named bindings in different functions. When a reference carries a
+   * `scope` (the classifier's `opts.scope`), the lookup prefers the binding with
+   * that exact scope and falls back to the flat `bindings` map (a same-name
+   * binding in an enclosing scope). Absent on the Go env and in callers that
+   * classify with no reference scope — the flat lookup then applies unchanged.
+   */
+  bindingsByScope?: ReadonlyMap<string, ReadonlyMap<number, Binding>>;
   /**
    * Resolve an import specifier through the one specifier-resolution seam (Spec
    * 70 B1): relative, tsconfig-`paths` alias, bare (tsconfig-`paths` → in-repo,
@@ -237,21 +255,58 @@ const TYPE_DECLARATION_TYPES = new Set([
  * @param sourceCode the file source text for reading node text
  * @returns a name → binding map for every name bound in the file
  */
-export function buildBindingEnv(
+/** Node types that open a function scope (the nearest enclosing function a
+ *  binding belongs to). Reused by `enclosingFunctionScope` below. */
+const FUNCTION_SCOPE_TYPES = new Set([
+  'function_declaration',
+  'function_expression',
+  'arrow_function',
+  'method_definition',
+]);
+
+/** The binding's enclosing scope: the start byte offset (`range[0]`) of the
+ *  enclosing function, or `0` for top-level. Two same-named bindings in
+ *  different functions are distinct bindings, not a collision — the classifier
+ *  keys on this when a reference's scope is known. A function/class/type
+ *  declaration introduces its name into the *enclosing* scope, so the walk
+ *  starts from its parent; a variable/parameter/field sits inside its scope
+ *  directly. */
+function enclosingFunctionScope(node: ASTNode, adapter: LanguageAdapter): number {
+  let current: ASTNode | null =
+    FUNCTION_NAME_TYPES.has(node.type) || CLASS_NAME_TYPES.has(node.type) || TYPE_DECLARATION_TYPES.has(node.type)
+      ? adapter.getParent(node)
+      : node;
+  while (current) {
+    if (FUNCTION_SCOPE_TYPES.has(current.type)) return current.range[0];
+    current = adapter.getParent(current);
+  }
+  return 0;
+}
+
+/** A binding plus its bound name, before any name-collapse. Every declaration
+ *  and import is emitted — a name bound in two scopes yields two entries. */
+interface CollectedBinding {
+  name: string;
+  binding: Binding;
+}
+
+/** Walk imports + value/type declarations and emit *every* binding with its
+ *  enclosing scope — no name dedup. `buildBindingEnv` and
+ *  `buildBindingScopeIndex` both reduce this list; it is the single source of
+ *  truth so the flat map and the scope index cannot drift apart. */
+function collectBindings(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
-): Map<string, Binding> {
-  const bindings = new Map<string, Binding>();
+): CollectedBinding[] {
+  const out: CollectedBinding[] = [];
 
   for (const imp of adapter.extractImports(ast)) {
     for (const spec of imp.specifiers) {
       const name = spec.alias ?? spec.name;
       if (!name || name === '*') continue;
-      if (!bindings.has(name)) {
-        const importKind: ImportKind = spec.isDefault ? 'default' : spec.isNamespace ? 'namespace' : 'named';
-        bindings.set(name, { kind: 'import', source: imp.source, importKind });
-      }
+      const importKind: ImportKind = spec.isDefault ? 'default' : spec.isNamespace ? 'namespace' : 'named';
+      out.push({ name, binding: { kind: 'import', source: imp.source, importKind, scope: 0 } });
     }
   }
 
@@ -260,21 +315,21 @@ export function buildBindingEnv(
   });
 
   for (const node of nodes) {
+    const scope = enclosingFunctionScope(node, adapter);
+
     if (node.type === 'variable_declarator') {
       for (const name of variableDeclaratorNames(node, adapter, sourceCode)) {
-        if (name && !bindings.has(name)) {
-          bindings.set(name, bindingFromDeclarator(node, adapter, sourceCode));
-        }
+        if (name) out.push({ name, binding: { ...bindingFromDeclarator(node, adapter, sourceCode), scope } });
       }
       continue;
     }
 
     if (node.type === 'required_parameter' || node.type === 'optional_parameter') {
       const name = parameterName(node, adapter, sourceCode);
-      if (name && !bindings.has(name)) {
-        bindings.set(name, {
-          kind: 'parameter',
-          typeText: childTypeAnnotationText(node, adapter, sourceCode),
+      if (name) {
+        out.push({
+          name,
+          binding: { kind: 'parameter', typeText: childTypeAnnotationText(node, adapter, sourceCode), scope },
         });
       }
       continue;
@@ -282,31 +337,90 @@ export function buildBindingEnv(
 
     if (node.type === 'public_field_definition' || node.type === 'field_definition') {
       const name = fieldName(node, adapter, sourceCode);
-      if (name && !bindings.has(name)) {
-        bindings.set(name, bindingFromField(node, adapter, sourceCode));
-      }
+      if (name) out.push({ name, binding: { ...bindingFromField(node, adapter, sourceCode), scope } });
       continue;
     }
 
     if (FUNCTION_NAME_TYPES.has(node.type)) {
       const name = adapter.getNodeName(node);
-      if (name && !bindings.has(name)) bindings.set(name, { kind: 'function' });
+      if (name) out.push({ name, binding: { kind: 'function', scope } });
       continue;
     }
 
     if (CLASS_NAME_TYPES.has(node.type)) {
       const name = adapter.getNodeName(node);
-      if (name && !bindings.has(name)) bindings.set(name, { kind: 'class' });
+      if (name) out.push({ name, binding: { kind: 'class', scope } });
       continue;
     }
 
     if (TYPE_DECLARATION_TYPES.has(node.type)) {
       const name = adapter.getNodeName(node);
-      if (name && !bindings.has(name)) bindings.set(name, { kind: 'type' });
+      if (name) out.push({ name, binding: { kind: 'type', scope } });
     }
   }
 
+  return out;
+}
+
+/** Collapse the full binding list into the flat name-keyed map — first wins
+ *  (declaration order). This is the legacy `buildBindingEnv` the classifier
+ *  reads when a reference's scope is unknown; the scope-aware `resolveBinding`
+ *  prefers `buildBindingScopeIndex` and falls back here for an enclosing scope.
+ *
+ * @param ast the parsed file AST
+ * @param adapter the language adapter (imports + declaration walk)
+ * @param sourceCode the file source text
+ * @returns the flat name → first-wins binding map */
+export function buildBindingEnv(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): Map<string, Binding> {
+  const bindings = new Map<string, Binding>();
+  for (const { name, binding } of collectBindings(ast, adapter, sourceCode)) {
+    if (!bindings.has(name)) bindings.set(name, binding);
+  }
   return bindings;
+}
+
+/** The scope-keyed binding index: name → (enclosing scope → binding), with *no*
+ *  name collapse. The classifier's scope-aware lookup reads this to resolve a
+ *  reference to the same-scoped binding when two same-named bindings live in
+ *  different functions; a scope with no entry for the name falls back to the
+ *  flat `buildBindingEnv` map (a same-name binding in an enclosing scope).
+ *
+ * @param ast the parsed file AST
+ * @param adapter the language adapter (imports + declaration walk)
+ * @param sourceCode the file source text
+ * @returns name → (enclosing scope → binding), no name collapse */
+export function buildBindingScopeIndex(
+  ast: AST,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): Map<string, Map<number, Binding>> {
+  const index = new Map<string, Map<number, Binding>>();
+  for (const { name, binding } of collectBindings(ast, adapter, sourceCode)) {
+    const scope = binding.scope ?? 0;
+    let byScope = index.get(name);
+    if (!byScope) {
+      byScope = new Map();
+      index.set(name, byScope);
+    }
+    if (!byScope.has(scope)) byScope.set(scope, binding);
+  }
+  return index;
+}
+
+/** Resolve a reference to the binding in its scope: prefer the scope-keyed
+ *  index's exact-scope entry, else fall back to the flat (name-keyed, first-wins)
+ *  map. A reference with no `scope` (the legacy/bare callers) uses the flat map
+ *  only — behavior unchanged. */
+function resolveBinding(name: string, env: RootResolutionEnv, scope?: number): Binding | undefined {
+  if (scope !== undefined && env.bindingsByScope) {
+    const scoped = env.bindingsByScope.get(name)?.get(scope);
+    if (scoped) return scoped;
+  }
+  return env.bindings.get(name);
 }
 
 function variableDeclaratorNames(
@@ -580,10 +694,18 @@ export function classifyRootIdentifier(
   name: string,
   env: RootResolutionEnv,
   depth = 0,
-  opts?: { thisField?: boolean; memberPath?: readonly string[]; thisHeritage?: string | null },
+  opts?: { thisField?: boolean; memberPath?: readonly string[]; thisHeritage?: string | null; scope?: number },
 ): RootDisposition {
   if (!name) return 'unproven';
-  if (env.provenance.has(name)) return 'handle';
+  // A provenanced name is a DB handle — except a `this.<name>` reference to a
+  // *wrapper* (a function/method whose body does DB work). Wrapper evidence
+  // describes the method's own body, not the receiver `this.<method>`: a method
+  // name is not evidence (the method-name proof this path removed lists for).
+  // A package-import / sql-argument / binding seed still proves a `this.<field>`
+  // handle (`this.env`, `this.db`), and those reasons are not `wrapper`, so they
+  // keep short-circuiting here. This must stay *before* the binding lookup.
+  const evidence = env.provenance.get(name);
+  if (evidence && !(opts?.thisField && evidence.reason === 'wrapper')) return 'handle';
   if (depth > 8) return 'unproven';
 
   // Form-3 heritage (Spec 70 Q3, Item 1): a `this.<field>` reference resolves to
@@ -604,7 +726,7 @@ export function classifyRootIdentifier(
     }
   }
 
-  const binding = env.bindings.get(name);
+  const binding = resolveBinding(name, env, opts?.scope);
   if (!binding) {
     // A bare unbound name is an ambient global → not-handle. An undeclared
     // `this.<field>` is a dynamic/unseen field → unproven (the caller passes
@@ -899,6 +1021,9 @@ function classifyValue(value: ValueDescriptor, env: RootResolutionEnv, depth: nu
     case 'call':
       if (value.calleeKind === 'identifier') {
         const name = value.calleeName ?? '';
+        // A provenanced factory name yields a handle when called: the provenance
+        // already established the name as a handle-shaped value, and calling it
+        // produces a handle (`resolveHero`, a wrapper that queries in a loop).
         if (env.provenance.has(name)) return 'handle';
         // A *declared* factory name that resolves non-handle (an import from a
         // non-DB package, a variable typed as a non-handle) proves the return is
