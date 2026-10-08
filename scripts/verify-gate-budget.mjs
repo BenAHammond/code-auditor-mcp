@@ -38,30 +38,51 @@ import { resolve } from 'node:path';
 
 const CLI = resolve(process.cwd(), 'dist/cli.js');
 const REPRESENTATIVE_FILE = 'src/analyzers/universal/UniversalSOLIDAnalyzer.ts';
-// The budget is a CPU-time budget, and the number is MEASURED, not carried over
-// from Spec 38 R3's 300 ms wall-clock figure. The metric moved from wall clock
-// to `process.cpuUsage()` (user+system), which sums across threads and so runs
-// above wall clock for this audit: on the representative file, warm wall clock
-// is ~295 ms but warm CPU time is 305–317 ms, and 325 ms when measured in the
-// verify:close chain right after the bench. Re-measured with:
-//   CODE_AUDIT_RULE_TIMING=1 node dist/cli.js changed \
-//     src/analyzers/universal/UniversalSOLIDAnalyzer.ts --json 2>&1 >/dev/null
-// (9 warm runs: 305.5–317.1 ms, median ~312 ms; the 325 ms figure is the same
-// file measured warm inside verify:close after the bench + integration suite).
+// The budget is a CPU-time budget (process.cpuUsage user+system, summed across
+// threads — runs above wall clock for this audit), MEASURED against the
+// representative file, never carried over. It has been re-baselined twice, each
+// time with the architectural reason the baseline moved recorded here so the
+// widening is attributed, not quiet:
 //
-// BUDGET_MS = 400: ~23% headroom over the loaded 325 ms baseline. That is a
-// real margin. The wall-clock 300 ms budget sat 5 ms under a ~295 ms run —
-// 1.7%, the knife-edge that machine load tripped; the 350 ms re-baseline left
-// only 7% over the same baseline, the same knife-edge under a different
-// metric. 400 ms preserves Spec 38 R3's intent (a genuinely slow rule adds
-// hundreds of ms: baseline + ~100 ms → >400 ms and trips the gate) while
-// normal CPU-time jitter (±6 ms across the 9 runs) cannot reach it. The metric
-// switch was authorized; this re-baseline is the consequence of that switch,
-// not a silent widening. Still overridable via env so the gate-liveness test
-// can force a violation (`VERIFY_GATE_BUDGET_MS=0` → fail) without waiting on a
-// genuinely slow rule — the same env-knob pattern as verify-disk-space's
-// `VERIFY_MIN_FREE_BYTES`.
-const BUDGET_MS = Number(process.env.VERIFY_GATE_BUDGET_MS ?? 400);
+//   First (wall clock → CPU time): 300 ms wall → 400 ms CPU, ~23% headroom over
+//   the loaded 325 ms baseline.
+//
+//   Second (this re-baseline, Spec 70 receiver resolution): Spec 70 (commits
+//   8d49273..a2111a1) moved the data-access-calls work into the phase pipeline's
+//   `data-access-calls` collapse, which re-derives each file's `dbProvenanced`
+//   (`classifyBuildProvenance`) and re-folds `identifyHandle` over every
+//   query-shaped candidate + R3 site. `identifyHandle` now does heritage
+//   resolution (`this.<field>` from the base class / declared deps' .d.ts),
+//   tsconfig-path bare-specifier resolution, and import-kind resolution on top
+//   of the node-sql-parser SQL-argument parse it always did. Two perf fixes
+//   already landed and are not re-done here: the B1 specifier-resolution
+//   memoization (21aaaa8: 1374 ms → ~700 ms) and the identifyHandle-verdict
+//   memoization across the five receiver consumers (5601ce3: only the first
+//   consumer pays the SQL parse for a given candidate). The remaining cost is
+//   genuine receiver resolution — a SQL parse + declaration resolution per
+//   distinct query-shaped candidate/R3 site — on the representative file, a
+//   681-line file with *no* DB calls (the cost is the resolution machinery
+//   itself, not DB findings: `producer:data-access-calls` dominates the warm
+//   breakdown at ~190 ms CPU). Re-measured with:
+//     CODE_AUDIT_RULE_TIMING=1 node dist/cli.js changed \
+//       src/analyzers/universal/UniversalSOLIDAnalyzer.ts --json 2>&1 >/dev/null
+//   (10 warm runs: 642–712 ms CPU, median ~705 ms, mean ~688 ms).
+//
+// BUDGET_MS = 900: ~23% headroom over the ~735 ms loaded figure (the ~705 ms
+// median plus the same ~4% the verify:close chain adds after the bench +
+// integration suite — the 325 ms-vs-312 ms ratio from the first re-baseline).
+// That is the same proportional margin the 400 ms budget held over its 325 ms
+// loaded baseline. The per-run jitter is wider than the old ±6 ms (~±35 ms,
+// because receiver resolution touches node_modules/.d.ts through the page
+// cache), so the budget needs the full 23% to stay off a knife-edge; a
+// genuinely slow rule still trips it (baseline + ~195 ms → > 900 ms). The next
+// lever for shrinking the receiver-resolution cost itself — ts.resolveModuleName
+// / go list instead of the hand-rolled specifier + heritage walk — is recorded
+// as future work, not this release. Still overridable via env so the
+// gate-liveness test can force a violation (`VERIFY_GATE_BUDGET_MS=0` → fail)
+// without waiting on a genuinely slow rule — the same env-knob pattern as
+// verify-disk-space's `VERIFY_MIN_FREE_BYTES`.
+const BUDGET_MS = Number(process.env.VERIFY_GATE_BUDGET_MS ?? 900);
 
 if (!existsSync(CLI)) {
   console.error('verify:gate-budget: dist/cli.js not found — run `npm run build` first.');
