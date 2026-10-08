@@ -25,9 +25,10 @@ import { initializeLanguages, initParsers } from '../../languages/index.js';
 import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { UniversalSchemaAnalyzer } from '../universal/UniversalSchemaAnalyzer.js';
 import { UniversalDRYAnalyzer } from '../universal/UniversalDRYAnalyzer.js';
-import { runDataAccessSlice, runLoopQueriesSlice, runSecuritySlice } from '../../phase/runner.js';
+import { runDataAccessSlice, runLoopQueriesSlice, runSecuritySlice, runDocumentationSlice, runFileHeadersSlice } from '../../phase/runner.js';
 import { UniversalSOLIDAnalyzer } from '../universal/UniversalSOLIDAnalyzer.js';
 import type { ASTNode } from '../../languages/types.js';
+import type { Finding } from '../../phase/types.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const FIXTURES = join(__dirname, 'fixtures', 'spec-17');
@@ -37,6 +38,104 @@ const FIXTURES = join(__dirname, 'fixtures', 'spec-17');
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
+});
+
+// ── R1: Documentation — re-pointed at the live phase slices ─────────────────
+//
+// The legacy `UniversalDocumentationAnalyzer` was deleted in §15; its six
+// Spec-17 documentation fixtures (1–5, 19) ran documentation *end-to-end
+// through the audit*, which the per-rule unit specs (spec-49 substance,
+// spec-68 §3.2 file-documentation) do not cover — those assert the rule, not
+// the wiring. They are re-pointed at the live `runDocumentationSlice` /
+// `runFileHeadersSlice` so the parse → fact → rule → Finding path stays under
+// test. (The four `UniversalDocumentationAnalyzer.spec.ts` cases that asserted
+// `.ts`/`.tsx`/route-handler/class-method behavior are genuinely the same
+// assertions in a different file and stay dropped.)
+//
+// `exemptPatterns: []` because the fixtures live under `__tests__/fixtures/`
+// (the default exempt list skips them before any rule runs); `docsMinLines: 1`
+// so the short fixtures exercise the substance/scope/visibility checks rather
+// than the size floor.
+
+const DOC_THRESHOLDS = { exemptPatterns: [], docsMinLines: 1 };
+
+describe('Spec-17 R1 — Documentation (live slices)', () => {
+  /** Run the documentation slice over a fixture and return its findings. */
+  async function docFindings(filePath: string, thresholds = DOC_THRESHOLDS): Promise<Finding[]> {
+    const content = readFileSync(filePath, 'utf8');
+    return runDocumentationSlice([{ path: filePath, content }], thresholds);
+  }
+
+  it('R1.1 — skips anonymous callback in .map() (fixture 1)', async () => {
+    const findings = await docFindings(join(FIXTURES, 'anonymous-callback-map.ts'));
+    // No findings — every function in the fixture is an anonymous callback.
+    expect(findings.filter((f) => f.ruleId === 'function-documentation')).toHaveLength(0);
+  });
+
+  it('R1.1 — skips JSX event handler arrows (fixture 2)', async () => {
+    const findings = await docFindings(join(FIXTURES, 'jsx-event-handler.tsx'));
+    // Exported functions (Button, List) without JSDoc ARE flagged — that's
+    // correct. The anonymous callbacks (onClick, onFocus, .map item) must NOT
+    // appear in findings.
+    const funcViolations = findings.filter((f) => f.ruleId === 'function-documentation');
+    expect(funcViolations.length).toBeGreaterThanOrEqual(2);
+    for (const f of funcViolations) {
+      expect(f.message).not.toMatch(/\bonClick\b|\bonFocus\b|\bitem\b/i);
+    }
+  });
+
+  it('R1.2 — exported function without JSDoc flagged (fixture 3)', async () => {
+    const findings = await docFindings(join(FIXTURES, 'exported-undocumented.ts'));
+    const funcViolations = findings.filter((f) => f.ruleId === 'function-documentation');
+    expect(funcViolations.length).toBeGreaterThanOrEqual(1);
+    // R1.6: message should cite "exported" (the audience reason)
+    expect(funcViolations.map((f) => f.message).join(' ')).toMatch(/exported/i);
+    // R7: severity is high (documentation is a maintainability convention)
+    funcViolations.forEach((f) => expect(f.severity).toBe('high'));
+  });
+
+  it('R1.2 — private/protected/#/_ methods skipped (fixture 4)', async () => {
+    const findings = await docFindings(join(FIXTURES, 'private-methods.ts'));
+    const methodViolations = findings.filter(
+      (f) => f.ruleId === 'method-documentation' || f.ruleId === 'function-documentation',
+    );
+    // No finding for private methods (privateMethod, _helperMethod, #privateField);
+    // the exported utility surface may still be flagged.
+    for (const f of methodViolations) {
+      expect(f.message).not.toMatch(/privateMethod|_helperMethod|#privateField/);
+    }
+  });
+
+  it('R1.5 — barrel/test/migration files skipped for header (fixture 5)', async () => {
+    const file = join(FIXTURES, 'barrel-test-migration.ts');
+    const content = readFileSync(file, 'utf8');
+    // fileHeaders: true with the default headerSkipGlobs — the fixture lives
+    // under `__tests__/`, so `**/__tests__/**` skips it before the header check.
+    const findings = await runFileHeadersSlice([{ path: file, content }], {
+      fileHeaders: true,
+      exemptPatterns: [],
+    });
+    expect(findings.filter((f) => f.ruleId === 'file-documentation')).toHaveLength(0);
+  });
+
+  it('R1.4 — scope: "all" flags named internal functions, skips callbacks (fixture 19)', async () => {
+    const findings = await docFindings(join(FIXTURES, 'scope-all-config.ts'), {
+      scope: 'all',
+      exemptPatterns: [],
+      docsMinLines: 1,
+    });
+    // Named internal functions (internalFunction, helper) should be flagged;
+    // getFormattedAge is exported and also flagged.
+    const funcViolations = findings.filter((f) => f.ruleId === 'function-documentation');
+    expect(funcViolations.length).toBeGreaterThanOrEqual(2);
+    // Callback arrows (.map((x) => x * 2)) must NOT produce findings — they
+    // have no name, so they cannot appear in function-documentation.
+    for (const f of funcViolations) {
+      expect(f.message).not.toMatch(/\barrow\b/i);
+    }
+    // R7: severity is high
+    funcViolations.forEach((f) => expect(f.severity).toBe('high'));
+  });
 });
 
 // ── R2: Schema Analyzer ─────────────────────────────────────────────────────
