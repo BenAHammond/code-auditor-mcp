@@ -103,6 +103,14 @@ function statementKind(type: unknown): SqlStatementKind {
 /** node-sql-parser's `astify` return — a single statement, a list, or nothing. */
 type AstifyResult = AST[] | AST;
 
+/** DDL statement kinds — schema definition (CREATE/ALTER/DROP/USE), not a
+ *  row-level data-access query. Schema is extracted separately by the `.sql`
+ *  visitor and Durable Object DDL (`pipelineAdapters.ts`); a data-access call is
+ *  a DML query or an ORM operation, and a DDL literal must not surface as one. */
+export function isDdlStatementKind(kind: SqlStatementKind): boolean {
+  return kind === 'create' || kind === 'alter' || kind === 'drop' || kind === 'use';
+}
+
 // ─── Declared input normalization ─────────────────────────────────────────────
 //
 // These are *input rewrites*, not a regex fallback. Each one changes a spelling

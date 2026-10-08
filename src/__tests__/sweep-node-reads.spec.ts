@@ -130,11 +130,17 @@ describe('sweep — node reads (red)', () => {
   });
 
   it('#4 — extractTopLevelIdentifiers skips `await` to the root identifier', () => {
-    expect(extractTopLevelIdentifiers('await db.connect()')).toEqual(['db']);
+    const src = 'const q = await db.connect();';
+    const { adapter } = parseSrc('/f.ts', src);
+    const node = firstOfType('/f.ts', src, 'await_expression');
+    expect(extractTopLevelIdentifiers(node, adapter, src)).toEqual(['db']);
   });
 
   it('#4 — extractTopLevelIdentifiers skips parentheses to the root identifier', () => {
-    expect(extractTopLevelIdentifiers('(db.prepare(sql))')).toEqual(['db']);
+    const src = 'const q = (db.prepare(sql));';
+    const { adapter } = parseSrc('/f.ts', src);
+    const node = firstOfType('/f.ts', src, 'parenthesized_expression');
+    expect(extractTopLevelIdentifiers(node, adapter, src)).toEqual(['db']);
   });
 
   // ── Tier 2 ────────────────────────────────────────────────────────────────

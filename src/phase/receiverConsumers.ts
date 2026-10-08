@@ -53,6 +53,7 @@ import {
   isMassWriteStatement,
   isUpsertStatement,
   whereColumnRefs,
+  isDdlStatementKind,
 } from '../languages/sql/sqlAst.js';
 import { rawInsertColumnsFromAst } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import type { GoResolutionEnv, GoBinding } from '../languages/go/goResolution.js';
@@ -1007,6 +1008,13 @@ function buildDataAccessCall(
   const dialect = siteDialect ?? sqlDialect ?? null;
   const parsed = sqlArg !== null ? parseSql(sqlArg, dialect ?? DEFAULT_SQL_DIALECT) : null;
   const sqlOk = parsed && parsed.ok ? parsed : null;
+
+  // DDL statements (CREATE/ALTER/DROP/USE) are schema definition, not a
+  // row-level data-access query: they carry no rows to filter and no tenant
+  // predicate to check. A variable assignment holding a migration body
+  // (`const up = \`CREATE TABLE …\``) must not surface as a data-access call —
+  // schema is read separately by the `.sql` visitor and Durable Object DDL.
+  if (sqlOk && isDdlStatementKind(sqlOk.kind)) return null;
 
   const isOrmCall = cand.isOrmCall;
   const isTaggedSqlCall = cand.isTaggedSqlCall;

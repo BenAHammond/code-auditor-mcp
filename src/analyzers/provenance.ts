@@ -1784,12 +1784,37 @@ function collectOwnCallExpressions(fn: ASTNode, adapter: LanguageAdapter): ASTNo
  * is conclusive evidence the surrounding function is a D1 wrapper.
  */
 export function isD1RestCall(call: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+  if (adapter.getNodeType(call) !== 'call_expression') return false;
   const callee = getCallExpressionCallee(call, adapter);
   if (!callee) return false;
-  const calleeText = adapter.getNodeText(callee, sourceCode) ?? '';
-  if (calleeText !== 'fetch' && !calleeText.endsWith('.fetch')) return false;
-  const callText = adapter.getNodeText(call, sourceCode) ?? '';
-  return callText.includes('/d1/database/');
+
+  // The callee must *name* fetch: a bare `fetch(…)` identifier, or a member
+  // `….fetch(…)` whose property node is `fetch`. Reading the property node (not
+  // the callee's whole text) keeps a string inside a subscript/argument from
+  // being read as the method name.
+  const calleeType = adapter.getNodeType(callee);
+  if (calleeType === 'identifier') {
+    if (adapter.getNodeText(callee, sourceCode) !== 'fetch') return false;
+  } else if (calleeType === 'member_expression' || calleeType === 'selector_expression') {
+    if (extractMemberExpressionProperty(callee, adapter, sourceCode) !== 'fetch') return false;
+  } else {
+    return false;
+  }
+
+  // The URL is the first string/template-literal argument. A non-literal first
+  // argument (`fetch(makeUrl(…))`) abstains — the value fetch receives is the
+  // *result* of that call, not a literal, so there is no URL to read.
+  const args = adapter.getChildren(call).find((c) => adapter.getNodeType(c) === 'arguments');
+  if (!args) return false;
+  for (const arg of adapter.getChildren(args)) {
+    const t = adapter.getNodeType(arg);
+    if (t === '(' || t === ')' || t === ',') continue;
+    if (t === 'string' || t === 'template_string') {
+      return (adapter.getNodeText(arg, sourceCode) ?? '').includes('/d1/database/');
+    }
+    break; // first argument is not a literal — abstain
+  }
+  return false;
 }
 
 /**
@@ -1959,7 +1984,7 @@ interface InferReceiverContext {
   adapter: LanguageAdapter;
   sourceCode: string;
   provenancedSet: Map<string, ProvenanceEvidence>;
-  assignmentGraph: Map<string, string>;
+  assignmentGraph: Map<string, ASTNode>;
   seen: Set<string>;
   inferred: InferredReceiverSet;
 }
@@ -1982,7 +2007,7 @@ function inferReceiverFromCall(node: ASTNode, ctx: InferReceiverContext): void {
   if (provenancedSet.has(receiver) || seen.has(receiver)) return;
 
   // Step 3: Trace receiver through assignment chain to a provenanced source
-  const traced = traceAssignmentChain(receiver, assignmentGraph, provenancedSet);
+  const traced = traceAssignmentChain(receiver, assignmentGraph, provenancedSet, adapter, sourceCode);
 
   if (traced.found) {
     seen.add(receiver);
@@ -1996,23 +2021,24 @@ function inferReceiverFromCall(node: ASTNode, ctx: InferReceiverContext): void {
 
 /** Bundled state for the reverse assignment-graph builders. */
 interface AssignmentGraphContext {
-  graph: Map<string, string>;
+  graph: Map<string, ASTNode>;
   adapter: LanguageAdapter;
   sourceCode: string;
 }
 
 /**
  * Build a reverse assignment graph from the AST.
- * Maps variable name → the text of its initializer expression.
+ * Maps variable name → the *node* of its initializer expression (not its text,
+ * so the trace can walk it structurally rather than regex over a string).
  * Handles: const/let/var declarations, parameter defaults, class fields.
  */
 function buildAssignmentGraph(
   ast: AST,
   adapter: LanguageAdapter,
   sourceCode: string,
-): Map<string, string> {
+): Map<string, ASTNode> {
   const ctx: AssignmentGraphContext = {
-    graph: new Map<string, string>(),
+    graph: new Map<string, ASTNode>(),
     adapter,
     sourceCode,
   };
@@ -2035,9 +2061,8 @@ function recordVariableDeclarator(
   const { nameNode, valueNode } = splitVariableDeclarator(node, ctx.adapter);
   if (!nameNode || !valueNode) return;
   const names = extractPatternNames(nameNode, ctx.adapter, ctx.sourceCode);
-  const valueText = ctx.adapter.getNodeText(valueNode, ctx.sourceCode);
   for (const name of names) {
-    if (!ctx.graph.has(name)) ctx.graph.set(name, valueText);
+    if (!ctx.graph.has(name)) ctx.graph.set(name, valueNode);
   }
 }
 
@@ -2056,8 +2081,7 @@ function recordParameterDefault(
   const rightNode = children[1];
   if (leftNode.type !== 'identifier') return;
   const paramName = ctx.adapter.getNodeText(leftNode, ctx.sourceCode);
-  const valueText = ctx.adapter.getNodeText(rightNode, ctx.sourceCode);
-  if (!ctx.graph.has(paramName)) ctx.graph.set(paramName, valueText);
+  if (!ctx.graph.has(paramName)) ctx.graph.set(paramName, rightNode);
 }
 
 /** Record class-field initializers (`fieldName = <expr>`) into the graph. */
@@ -2087,8 +2111,7 @@ function recordClassField(
   );
   if (!nameChild || !valueChild) return;
   const fieldName = ctx.adapter.getNodeText(nameChild, ctx.sourceCode);
-  const valueText = ctx.adapter.getNodeText(valueChild, ctx.sourceCode);
-  if (!ctx.graph.has(fieldName)) ctx.graph.set(fieldName, valueText);
+  if (!ctx.graph.has(fieldName)) ctx.graph.set(fieldName, valueChild);
 }
 
 /**
@@ -2097,10 +2120,12 @@ function recordClassField(
  */
 function traceAssignmentChain(
   receiver: string,
-  assignmentGraph: Map<string, string>,
+  assignmentGraph: Map<string, ASTNode>,
   provenancedSet: Map<string, ProvenanceEvidence>,
+  adapter: LanguageAdapter,
+  sourceCode: string,
 ): { found: boolean; chains: string[]; reason: string } {
-  const visited = new Set<string>();
+  const visited = new Set<ASTNode>();
   const chain: string[] = [receiver];
   let current = receiver;
   let depth = 0;
@@ -2116,9 +2141,9 @@ function traceAssignmentChain(
       };
     }
 
-    const initText = assignmentGraph.get(current);
-    if (initText) {
-      const idents = extractTopLevelIdentifiers(initText);
+    const initNode = assignmentGraph.get(current);
+    if (initNode) {
+      const idents = extractTopLevelIdentifiers(initNode, adapter, sourceCode);
       for (const ident of idents) {
         if (provenancedSet.has(ident)) {
           chain.push(current);
@@ -2131,10 +2156,10 @@ function traceAssignmentChain(
       }
     }
 
-    if (!initText || visited.has(initText)) break;
-    visited.add(initText);
+    if (!initNode || visited.has(initNode)) break;
+    visited.add(initNode);
 
-    const next = findNextTraceIdentifier(initText, assignmentGraph, visited);
+    const next = findNextTraceIdentifier(initNode, assignmentGraph, visited, adapter, sourceCode);
     if (!next) break;
     chain.push(next);
     current = next;
@@ -2146,13 +2171,16 @@ function traceAssignmentChain(
 
 /** Find the next assignment-graph identifier to trace, if any. */
 function findNextTraceIdentifier(
-  initText: string,
-  assignmentGraph: Map<string, string>,
-  visited: Set<string>,
+  initNode: ASTNode,
+  assignmentGraph: Map<string, ASTNode>,
+  visited: Set<ASTNode>,
+  adapter: LanguageAdapter,
+  sourceCode: string,
 ): string | null {
-  const idents = extractTopLevelIdentifiers(initText);
+  const idents = extractTopLevelIdentifiers(initNode, adapter, sourceCode);
   for (const ident of idents) {
-    if (assignmentGraph.has(ident) && !visited.has(ident)) {
+    const nextNode = assignmentGraph.get(ident);
+    if (nextNode && !visited.has(nextNode)) {
       return ident;
     }
   }
@@ -2160,17 +2188,63 @@ function findNextTraceIdentifier(
 }
 
 /**
- * Extract top-level identifier names from an expression text.
- * E.g., "db.prepare(sql)" → ["db"], "getConnection()" → ["getConnection"]
+ * Extract the top-level identifier name from an initializer-expression node.
+ * Walks the node structurally to its root identifier — through `await`,
+ * parentheses, calls, member access, and subscripts — so `await db.connect()`
+ * yields `db` rather than `await`, and `(db.prepare(sql))` yields `db`.
+ * E.g., `db.prepare(sql)` → ["db"], `getConnection()` → ["getConnection"].
  */
-export function extractTopLevelIdentifiers(text: string): string[] {
-  // Strip member access and arguments to get the root identifier
-  // Match the first identifier before any '.' or '('
-  const match = text.match(/^[\p{L}_$][\p{L}\p{N}_$]*/u);
-  if (match && match[0]) {
-    return [match[0]];
+export function extractTopLevelIdentifiers(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string[] {
+  const root = rootIdentifierNode(node, adapter);
+  if (!root) return [];
+  const name = adapter.getNodeText(root, sourceCode);
+  return name ? [name] : [];
+}
+
+/**
+ * The root identifier a value node resolves to, or null when the value is not a
+ * bare identifier chain (e.g. a binary expression or literal). Descends through
+ * `await_expression`, `parenthesized_expression`, `call_expression`/
+ * `new_expression` (via their callee), `member_expression`/`selector_expression`
+ * (via their receiver), and `subscript_expression` (via their object).
+ */
+function rootIdentifierNode(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  let current = node;
+  for (let depth = 0; depth < 64; depth++) {
+    const t = adapter.getNodeType(current);
+    if (t === 'identifier') return current;
+    const children = adapter.getChildren(current) ?? [];
+    let next: ASTNode | null = null;
+    if (t === 'await_expression') {
+      next = children.find((c) => adapter.getNodeType(c) !== 'await') ?? null;
+    } else if (t === 'parenthesized_expression') {
+      next = children.find((c) => {
+        const ct = adapter.getNodeType(c);
+        return ct !== '(' && ct !== ')';
+      }) ?? null;
+    } else if (t === 'call_expression' || t === 'new_expression') {
+      next = getCallExpressionCallee(current, adapter);
+    } else if (t === 'member_expression' || t === 'selector_expression') {
+      next = children.find((c) => {
+        const ct = adapter.getNodeType(c);
+        return ct !== '.' && ct !== 'property_identifier' && ct !== 'field_identifier';
+      }) ?? null;
+    } else if (t === 'subscript_expression') {
+      next = children.find((c) => {
+        const ct = adapter.getNodeType(c);
+        return ct !== '[' && ct !== ']';
+      }) ?? null;
+    } else {
+      break;
+    }
+    if (!next) break;
+    current = next;
   }
-  return [];
+  return adapter.getNodeType(current) === 'identifier' ? current : null;
 }
 
 /**

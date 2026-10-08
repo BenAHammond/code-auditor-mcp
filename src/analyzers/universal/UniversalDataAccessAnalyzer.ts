@@ -61,6 +61,7 @@ import {
   isMassWriteStatement,
   isUpsertStatement,
   whereColumnRefs,
+  isDdlStatementKind,
 } from '../../languages/sql/sqlAst.js';
 
 /**
@@ -369,12 +370,48 @@ const QUERY_BUILDER_COMPANIONS: ReadonlyArray<{ verb: RegExp; companions: RegExp
  * `cookies.delete(n)` and `stripe.customers.update(id, data)` all lack the
  * companion and fail.
  */
-function hasChainCompanion(calleeText: string): boolean {
+/**
+ * Collect the method names of a callee's member chain, left-to-right (base
+ * first), reading each property_identifier node. String arguments and
+ * subscripts are structural — a `.from(…)` inside a string argument is NOT a
+ * chain member, so it is not collected.
+ */
+function collectChainMethods(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  out: string[] = [],
+): string[] {
+  const t = adapter.getNodeType(node);
+  if (t === 'member_expression' || t === 'selector_expression') {
+    const children = adapter.getChildren(node);
+    const object = children.find((c) => {
+      const ct = adapter.getNodeType(c);
+      return ct !== '.' && ct !== 'property_identifier' && ct !== 'field_identifier';
+    });
+    if (object) collectChainMethods(object, adapter, sourceCode, out);
+    const prop = extractMemberExpressionProperty(node, adapter, sourceCode);
+    if (prop) out.push(prop);
+  } else if (t === 'call_expression') {
+    const callee = getCallExpressionCallee(node, adapter);
+    if (callee) collectChainMethods(callee, adapter, sourceCode, out);
+  } else if (t === 'subscript_expression') {
+    const children = adapter.getChildren(node);
+    const object = children.find((c) => {
+      const ct = adapter.getNodeType(c);
+      return ct !== '[' && ct !== ']';
+    });
+    if (object) collectChainMethods(object, adapter, sourceCode, out);
+  }
+  return out;
+}
+
+function hasChainCompanion(methods: readonly string[]): boolean {
   for (const { verb, companions } of QUERY_BUILDER_COMPANIONS) {
-    const verbIdx = calleeText.search(verb);
+    const verbIdx = methods.findIndex((m) => verb.test('.' + m));
     if (verbIdx < 0) continue;
-    const rest = calleeText.slice(verbIdx + 1);
-    if (companions.some((companion) => companion.test(rest))) return true;
+    const rest = methods.slice(verbIdx + 1);
+    if (rest.some((m) => companions.some((companion) => companion.test('.' + m)))) return true;
   }
   return false;
 }
@@ -420,10 +457,13 @@ function isPrismaObjectForm(
 ): boolean {
   const callee = getCallExpressionCallee(node, adapter);
   if (!callee || adapter.getNodeType(callee) !== 'member_expression') return false;
-  const calleeText = stripComments(adapter.getNodeText(callee, sourceCode) ?? '').trim();
-  const parts = calleeText.split('.');
-  if (parts.length < 3) return false;
-  if (!PRISMA_VERBS.has(parts[parts.length - 1])) return false;
+  // The chain must be `<recv>.<Model>.<verb>` — at least two member segments
+  // (the Model and the verb) read from their property nodes. A subscript like
+  // `obj["a.b"]` is not a Model segment, so `obj["a.b"].update(…)` has only one
+  // segment and fails.
+  const methods = collectChainMethods(callee, adapter, sourceCode);
+  if (methods.length < 2) return false;
+  if (!PRISMA_VERBS.has(methods[methods.length - 1])) return false;
 
   const args = adapter.getChildren(node).find((c) => adapter.getNodeType(c) === 'arguments');
   if (!args) return false;
@@ -472,8 +512,8 @@ export function isQueryBuilderShape(
   if (node.type !== 'call_expression') return false;
   const callee = getCallExpressionCallee(node, adapter);
   if (!callee) return false;
-  const calleeText = stripComments(adapter.getNodeText(callee, sourceCode) ?? '');
-  return hasChainCompanion(calleeText) || isPrismaObjectForm(node, adapter, sourceCode);
+  const methods = collectChainMethods(callee, adapter, sourceCode);
+  return hasChainCompanion(methods) || isPrismaObjectForm(node, adapter, sourceCode);
 }
 
 /**
@@ -835,6 +875,15 @@ function buildDatabaseCall(
   const dialect = siteDialect ?? config.dialect ?? null;
   const parsed = sqlArg !== null ? parseSql(sqlArg, dialect ?? DEFAULT_SQL_DIALECT) : null;
   const sqlOk = parsed && parsed.ok ? parsed : null;
+
+  // DDL statements (CREATE/ALTER/DROP/USE) are schema definition, not a
+  // row-level data-access query: they carry no rows to filter and no tenant
+  // predicate to check. A variable assignment holding a migration body
+  // (`const up = \`CREATE TABLE …\``) must not surface as a data-access call —
+  // schema is read separately by the `.sql` visitor and Durable Object DDL.
+  // Interpolated DDL still parses to null here, so this guard only excludes
+  // *static* schema definitions and leaves the injection surface untouched.
+  if (sqlOk && isDdlStatementKind(sqlOk.kind)) return null;
 
   const isOrmCall = isOrmPattern(nodeText);
   const tagNames = config.sqlTagNames ?? SQL_TAG_NAMES;
