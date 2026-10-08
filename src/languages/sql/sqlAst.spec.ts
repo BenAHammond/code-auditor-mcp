@@ -16,6 +16,9 @@ import {
   truncateConflictClause,
   normalizePositionalParams,
   normalizeSqliteTextLength,
+  normalizeEscapeClause,
+  normalizeLimitOffsetPlaceholders,
+  normalizeVirtualTable,
   splitSqlStatements,
   extractTableNames,
   cteNames,
@@ -122,6 +125,114 @@ describe('declared input normalization (Spec 70 R1 step 2)', () => {
     }
   });
 
+  it('rewrites a lone-backslash string literal to a doubled backslash', () => {
+    expect(normalizeEscapeClause("SELECT * FROM t WHERE c LIKE 'a%' ESCAPE '\\'")).toBe(
+      "SELECT * FROM t WHERE c LIKE 'a%' ESCAPE '\\\\'",
+    );
+  });
+
+  it('does not rewrite a backslash inside a longer string or an escaped quote', () => {
+    // `'it\\'s'` is a string with an escaped quote, not a lone-backslash string.
+    expect(normalizeEscapeClause("SELECT 'it\\'s'")).toBe("SELECT 'it\\'s'");
+    // A double-quoted identifier carrying `'\'` is left intact.
+    expect(normalizeEscapeClause(`SELECT "a'\\'b"`)).toBe(`SELECT "a'\\'b"`);
+  });
+
+  it('parses an ESCAPE \'\\\' clause once normalized', () => {
+    const r = sql("SELECT * FROM t WHERE name LIKE 'x%' ESCAPE '\\'");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.kind).toBe('select');
+  });
+
+  it('rewrites LIMIT ? and OFFSET ? to concrete literals', () => {
+    expect(normalizeLimitOffsetPlaceholders('SELECT * FROM t LIMIT ?')).toBe('SELECT * FROM t LIMIT 1');
+    expect(normalizeLimitOffsetPlaceholders('SELECT * FROM t LIMIT ? OFFSET ?')).toBe(
+      'SELECT * FROM t LIMIT 1 OFFSET 0',
+    );
+    expect(normalizeLimitOffsetPlaceholders('SELECT * FROM t OFFSET ?')).toBe('SELECT * FROM t OFFSET 0');
+  });
+
+  it('does not rewrite a bare ? outside a LIMIT/OFFSET clause', () => {
+    expect(normalizeLimitOffsetPlaceholders('SELECT * FROM t WHERE id = ?')).toBe(
+      'SELECT * FROM t WHERE id = ?',
+    );
+  });
+
+  it('parses a LIMIT ? OFFSET ? query once normalized', () => {
+    const r = sql('SELECT * FROM t LIMIT ? OFFSET ?');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(whereFacts(r.ast)).toHaveProperty('hasLimit', true);
+  });
+
+  it('rewrites CREATE VIRTUAL TABLE … USING fts5(…) to a CREATE TABLE the grammar parses', () => {
+    const r = sql(
+      "CREATE VIRTUAL TABLE strategies_fts USING fts5(strategy_id UNINDEXED, hero_slug UNINDEXED, body, grounding_quote, tokenize = 'porter unicode61')",
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(extractTableNames(r.ast)).toEqual(['strategies_fts']);
+      expect(ddlColumnDefinitions(r.ast).map((c) => c.column)).toEqual([
+        'strategy_id',
+        'hero_slug',
+        'body',
+        'grounding_quote',
+      ]);
+    }
+  });
+
+  it('leaves a CREATE VIRTUAL TABLE with no bare columns untouched', () => {
+    // An FTS5 declaration that pulls columns from an external table (no bare
+    // column names) is not rewritten — the honest parse failure, not a fabricated
+    // empty table.
+    expect(normalizeVirtualTable("CREATE VIRTUAL TABLE t USING fts5(content = 'x')")).toBe(
+      "CREATE VIRTUAL TABLE t USING fts5(content = 'x')",
+    );
+  });
+
+  it('normalizes a text(N) column after a comment with an apostrophe (comment-quote bug)', () => {
+    // A `don't` in the header block comment must not open a quote that disables
+    // the text(N) → varchar(N) rewrite for the CREATE TABLE that follows.
+    const r = sql("/* we don't do this manually */\nCREATE TABLE t (`c` text(3) DEFAULT 'x')");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(ddlColumnDefinitions(r.ast)).toHaveLength(1);
+  });
+
+  it('recognizes PRAGMA / DROP INDEX / DROP VIEW / DROP TRIGGER / CREATE VIEW / CREATE TRIGGER as no-fact SQL in the DDL path', () => {
+    for (const stmt of [
+      'PRAGMA foreign_keys = OFF',
+      'PRAGMA foreign_keys=OFF',
+      'DROP INDEX IF EXISTS idx_x',
+      'DROP INDEX foo',
+      'DROP VIEW IF EXISTS v_x',
+      'DROP TRIGGER tr_x',
+      'CREATE VIEW v AS SELECT 1 AS a UNION ALL SELECT 2 AS a',
+      'CREATE TRIGGER tr AFTER INSERT ON t FOR EACH ROW BEGIN UPDATE s SET c = c + 1; END',
+    ]) {
+      const program = parseSqlProgramTolerant(stmt, 'sqlite');
+      expect(program.failures).toEqual([]);
+      expect(program.statements).toHaveLength(1);
+      expect(extractTableNames(program.statements[0])).toEqual([]);
+      expect(isWriteStatement(program.statements[0])).toBe(false);
+    }
+  });
+
+  it('does NOT recognize PRAGMA / DROP INDEX / DROP TRIGGER as no-fact on the per-call-site path', () => {
+    for (const stmt of [
+      'PRAGMA table_info(x)',
+      'PRAGMA foreign_keys=OFF',
+      'DROP INDEX foo',
+      'DROP TRIGGER tr_x',
+    ]) {
+      expect(sql(stmt).ok).toBe(false);
+    }
+  });
+
+  it('still parses DROP TABLE (it names a stored table) rather than recognizing it away', () => {
+    const r = sql('DROP TABLE IF EXISTS foo');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(extractTableNames(r.ast)).toEqual(['foo']);
+  });
+
   it('fails cleanly on a literal with only a statement separator, not a crash', () => {
     // A `.raw(';')` site: the semicolon is a separator, so nothing survives to
     // parse. `splitSqlStatements` returns [] and the seam must report a failure,
@@ -226,6 +337,36 @@ describe('splitSqlStatements', () => {
     expect(splitSqlStatements('/* drop it; keep it */ DROP TABLE a; DROP TABLE b;')).toEqual([
       'DROP TABLE a',
       'DROP TABLE b',
+    ]);
+  });
+
+  it('keeps a CREATE TRIGGER body (its internal ;) as one statement', () => {
+    expect(
+      splitSqlStatements(
+        'CREATE TRIGGER tr AFTER INSERT ON t FOR EACH ROW BEGIN UPDATE s SET c = c + 1 WHERE id = NEW.id; END; CREATE TABLE z (id int);',
+      ),
+    ).toEqual([
+      'CREATE TRIGGER tr AFTER INSERT ON t FOR EACH ROW BEGIN UPDATE s SET c = c + 1 WHERE id = NEW.id; END',
+      'CREATE TABLE z (id int)',
+    ]);
+  });
+
+  it('keeps a multi-statement trigger body with a nested CASE … END intact', () => {
+    expect(
+      splitSqlStatements(
+        'CREATE TRIGGER tr AFTER INSERT ON t FOR EACH ROW BEGIN UPDATE s SET a = CASE WHEN x THEN 1 ELSE 0 END WHERE id = NEW.id; UPDATE s SET b = 2; END; SELECT 1;',
+      ),
+    ).toEqual([
+      'CREATE TRIGGER tr AFTER INSERT ON t FOR EACH ROW BEGIN UPDATE s SET a = CASE WHEN x THEN 1 ELSE 0 END WHERE id = NEW.id; UPDATE s SET b = 2; END',
+      'SELECT 1',
+    ]);
+  });
+
+  it('does not treat a transaction BEGIN; as a trigger body', () => {
+    expect(splitSqlStatements('BEGIN; INSERT INTO t (a) VALUES (1); COMMIT;')).toEqual([
+      'BEGIN',
+      'INSERT INTO t (a) VALUES (1)',
+      'COMMIT',
     ]);
   });
 });

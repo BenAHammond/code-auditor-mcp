@@ -616,7 +616,7 @@ export function parseSqlTables(
   const trimmed = sqlText.trim();
   if (trimmed.length === 0) return { references, unparseable };
 
-  const program = parseSqlProgramTolerant(sqlText, dialect ?? DEFAULT_SQL_DIALECT);
+  const program = parseSqlProgramTolerant(sqlText, dialect ?? DEFAULT_SQL_DIALECT, false);
   for (const failure of program.failures) {
     unparseable.push({
       sqlText,

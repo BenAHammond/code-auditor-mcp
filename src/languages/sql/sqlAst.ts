@@ -156,6 +156,42 @@ function isStandaloneTransactionControl(trimmed: string): boolean {
 }
 
 /**
+ * Migration-file statements that name no *stored* table — recognized, not parsed,
+ * as SQL. A `PRAGMA` / `DROP INDEX` / `DROP VIEW` / `DROP TRIGGER` / `CREATE VIEW`
+ * / `CREATE TRIGGER` declares no table the rules track (an index/view/trigger is
+ * not a stored table, and a PRAGMA is a connection setting), so a migration's
+ * `PRAGMA foreign_keys=OFF` contributes nothing to any table/filter fact — the
+ * same "recognized, no facts" move as transaction control. Recognition is
+ * DDL-path only (in {@link parseSqlProgramTolerant}), never in {@link parseSql}:
+ * the per-call-site path must NOT recognize a `PRAGMA`, because
+ * `PRAGMA table_info(x)` names `x` and a caller reading "no tables" would take
+ * that as clean (an unknown/stale-table miss). Of these, some the sqlite grammar
+ * *rejects* (`PRAGMA`, `DROP INDEX`, `DROP TRIGGER`, a compound
+ * `CREATE VIEW … UNION ALL`) and recognition avoids a spurious `cannot-fire`; the
+ * rest (`DROP VIEW`, a simple `CREATE VIEW`, `CREATE TRIGGER`) actually parse,
+ * and are recognized anyway so the DDL table walker never reads a view/trigger
+ * name as a stored table. `DROP TABLE` is deliberately absent: it *does* name a
+ * stored table the lifecycle rules track, and the grammar parses it. Recognized
+ * via a closed keyword set, case-insensitively, with an optional trailing `;`.
+ */
+const NO_FACTS_DDL_PREFIXES = ['pragma', 'drop index', 'drop view', 'drop trigger', 'create view', 'create trigger'] as const;
+
+/** A synthetic statement for recognized no-fact DDL. The AST walkers treat an
+ *  unknown statement type as "no relations / no where / not a write", which is
+ *  exactly the facts a PRAGMA / DROP INDEX / DROP VIEW / DROP TRIGGER has. */
+const NO_FACTS_MARKER: AST = { type: 'no-facts' } as unknown as AST;
+
+function isNoTableFactsDdl(trimmed: string): boolean {
+  const t = trimmed.replace(/;\s*$/, '').trim().toLowerCase();
+  for (const p of NO_FACTS_DDL_PREFIXES) {
+    if (!t.startsWith(p)) continue;
+    const after = t[p.length] ?? '';
+    if (t.length === p.length || /\s/.test(after)) return true;
+  }
+  return false;
+}
+
+/**
  * Rewrite D1-style numbered positional parameters (`?1`, `?2`, …) to the bare
  * `?` the sqlite grammar accepts. Parameter numbering is an ordering hint, not a
  * fact: it does not affect which tables are read or whether a tenant predicate
@@ -319,13 +355,246 @@ export function normalizeSqliteTextLength(sql: string): string {
 }
 
 /**
+ * Rewrite a string literal whose entire content is one backslash (`'\'`) to the
+ * doubled spelling (`'\\'`). SQLite spells "the escape character is a single
+ * backslash" as `'\'`, but node-sql-parser's lexer reads the bare `'\'` as an
+ * unterminated escaped-quote (`\'` with no closing quote) and rejects the whole
+ * statement — so a `LIKE … ESCAPE '\'` clause (recall-protocol's FTS-escape
+ * spelling) fails to parse. Doubling the backslash is the same value spelled the
+ * way the grammar accepts (`'\\'` is one literal backslash), so the rewrite is
+ * lossless: the escape character is still one backslash, and no fact a rule
+ * reads (relations, filters, statement kind) changes. Only the exact three-char
+ * sequence `'\'` is rewritten, and only where it opens a string literal (never
+ * inside a quoted identifier or a longer string), so a `'\''` (backslash then
+ * escaped quote) or a double-quoted identifier containing `'\'` is left intact.
+ * @param sql The SQL text to rewrite.
+ * @returns The SQL with a lone-backslash string literal rewritten to `'\\'`.
+ */
+export function normalizeEscapeClause(sql: string): string {
+  let out = '';
+  let i = 0;
+  let quote: QuoteChar | null = null;
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (quote !== null) {
+      if (ch === quote) {
+        if (sql[i + 1] === quote) { out += ch + ch; i += 2; continue; }
+        quote = null;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      if (ch === "'" && sql[i + 1] === '\\' && sql[i + 2] === "'" && sql[i + 3] !== "'") {
+        out += "'\\\\'";
+        i += 3;
+        continue;
+      }
+      quote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * Rewrite a bare `?` placeholder in a `LIMIT`/`OFFSET` clause to a literal
+ * (`LIMIT 1` / `OFFSET 0`). node-sql-parser's sqlite grammar accepts `LIMIT 5`
+ * but rejects `LIMIT ?` (a bound-parameter limit) even though sqlite itself
+ * accepts it — so a parameterized `SELECT … LIMIT ? OFFSET ?` (recall-protocol's
+ * paging spelling) fails to parse. The fact a rule reads from a LIMIT/OFFSET
+ * clause is *presence*, not the value (see `whereFacts`), so substituting a
+ * concrete literal is lossless: `LIMIT ?` still reports "has a limit". The
+ * rewrite fires only on a bare `?` immediately after the keyword (whitespace
+ * optional), and skips string literals and quoted identifiers.
+ * @param sql The SQL text to rewrite.
+ * @returns The SQL with `LIMIT ?` → `LIMIT 1` and `OFFSET ?` → `OFFSET 0`.
+ */
+export function normalizeLimitOffsetPlaceholders(sql: string): string {
+  let out = '';
+  let i = 0;
+  let quote: QuoteChar | null = null;
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (quote !== null) {
+      if (ch === quote) {
+        if (sql[i + 1] === quote) { out += ch + ch; i += 2; continue; }
+        quote = null;
+      }
+      out += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; out += ch; i++; continue; }
+    let keyword: string | null = null;
+    let value: string | null = null;
+    const lower6 = sql.slice(i, i + 6).toLowerCase();
+    if (lower6.startsWith('limit')) { keyword = sql.slice(i, i + 5); value = '1'; }
+    else if (lower6.startsWith('offset')) { keyword = sql.slice(i, i + 6); value = '0'; }
+    if (keyword !== null && value !== null) {
+      const prev = i === 0 ? '' : sql[i - 1];
+      const after = sql[i + keyword.length] ?? '';
+      if (!/[a-zA-Z0-9_$]/.test(prev) && !/[a-zA-Z0-9_$]/.test(after)) {
+        let j = i + keyword.length;
+        while (j < sql.length && /\s/.test(sql[j])) j++;
+        if (sql[j] === '?') {
+          out += keyword + ' ' + value;
+          i = j + 1;
+          continue;
+        }
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
+}
+
+/**
+ * Rewrite a `CREATE VIRTUAL TABLE name USING fts5(cols…)` declaration to the
+ * `CREATE TABLE name (cols…)` the sqlite grammar accepts. node-sql-parser's
+ * sqlite grammar has no `CREATE VIRTUAL TABLE`, so a full-text-search table
+ * (recall-protocol's `strategies_fts`, declared `USING fts5(...)`) fails to parse
+ * and blanks the table — even though a virtual table is a first-class queryable
+ * relation the lifecycle rules track exactly like a stored table. The facts a
+ * rule reads from the declaration are the table name and its column names; the
+ * FTS5 module wrapper (`USING fts5`, a column's `UNINDEXED`, the trailing
+ * `tokenize = '…'` option) is module configuration, not a table fact. So the
+ * rewrite drops the module syntax and keeps the columns, recovering the same
+ * table/column facts a `CREATE TABLE` would carry. Only a `CREATE VIRTUAL TABLE`
+ * (word-boundary matched, case-insensitive) whose module argument list parses to
+ * at least one bare column is rewritten; anything else — a module option list
+ * with no columns, an unexpected shape — is left untouched and reports an honest
+ * parse failure rather than a fabricated table.
+ * @param sql The SQL text to rewrite.
+ * @returns The SQL with `CREATE VIRTUAL TABLE … USING <module>(cols)` rewritten to `CREATE TABLE … (cols)`.
+ */
+export function normalizeVirtualTable(sql: string): string {
+  let out = '';
+  let i = 0;
+  let quote: QuoteChar | null = null;
+  const HEADER = 'create virtual table';
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (quote !== null) {
+      if (ch === quote) {
+        if (sql[i + 1] === quote) { out += ch + ch; i += 2; continue; }
+        quote = null;
+      }
+      out += ch; i++; continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; out += ch; i++; continue; }
+    const beforeOk = i === 0 || !/[a-zA-Z0-9_$]/.test(sql[i - 1]);
+    const afterHeader = sql[i + HEADER.length] ?? '';
+    const afterOk = !/[a-zA-Z0-9_$]/.test(afterHeader);
+    if (beforeOk && afterOk && sql.slice(i, i + HEADER.length).toLowerCase() === HEADER) {
+      // `CREATE VIRTUAL TABLE <name> USING <module>( <args> )`
+      let j = i + HEADER.length;
+      while (j < sql.length && /\s/.test(sql[j])) j++;
+      const nameStart = j;
+      while (j < sql.length && !/\s/.test(sql[j]) && sql[j] !== '(') j++;
+      const name = sql.slice(nameStart, j);
+      while (j < sql.length && /\s/.test(sql[j])) j++;
+      if (sql.slice(j, j + 5).toLowerCase() === 'using') {
+        let k = j + 5;
+        while (k < sql.length && /\s/.test(sql[k])) k++;
+        while (k < sql.length && /[a-zA-Z0-9_$]/.test(sql[k])) k++; // module name
+        while (k < sql.length && /\s/.test(sql[k])) k++;
+        if (sql[k] === '(') {
+          // find the module argument list's matching `)` (nested parens + quotes)
+          let m = k + 1;
+          let depth = 1;
+          let q: QuoteChar | null = null;
+          while (m < sql.length && depth > 0) {
+            const c = sql[m];
+            if (q !== null) {
+              if (c === q) {
+                if (sql[m + 1] === q) { m += 2; continue; }
+                q = null;
+              }
+              m++; continue;
+            }
+            if (c === '"' || c === "'" || c === '`') { q = c; m++; continue; }
+            if (c === '(') depth++;
+            else if (c === ')') depth--;
+            m++;
+          }
+          const cols = extractFtsColumnNames(sql.slice(k + 1, m - 1));
+          if (cols.length > 0 && name.length > 0) {
+            out += `CREATE TABLE ${name} (${cols.join(', ')})`;
+            i = m;
+            continue;
+          }
+        }
+      }
+      out += ch; i++; continue;
+    }
+    out += ch; i++;
+  }
+  return out;
+}
+
+/** Split an FTS5 module argument list into its bare column names, dropping
+ *  `UNINDEXED`/`NOT INDEXED` modifiers and `name = '…'` option entries. */
+function extractFtsColumnNames(args: string): string[] {
+  const parts: string[] = [];
+  let i = 0;
+  let start = 0;
+  let depth = 0;
+  let quote: QuoteChar | null = null;
+  while (i < args.length) {
+    const ch = args[i];
+    if (quote !== null) {
+      if (ch === quote) {
+        if (args[i + 1] === quote) { i += 2; continue; }
+        quote = null;
+      }
+      i++; continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; i++; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    else if (ch === ',' && depth === 0) { parts.push(args.slice(start, i).trim()); start = i + 1; }
+    i++;
+  }
+  parts.push(args.slice(start).trim());
+  const cols: string[] = [];
+  for (const part of parts) {
+    if (part === '') continue;
+    if (part.includes('=')) continue; // `tokenize = '…'`, `prefix = '…'`, `content = …`
+    const name = part.split(/\s+/)[0];
+    if (name) cols.push(name);
+  }
+  return cols;
+}
+
+/**
  * Apply the declared input normalizations for a dialect: D1 numbered parameters
- * `?n` → `?`, template substitutions `${…}` → `?`, and — sqlite only, since it is
- * a sqlite-specific spelling — length-qualified `text(N)` → `varchar(N)`.
+ * `?n` → `?`, template substitutions `${…}` → `?`, `LIMIT ?`/`OFFSET ?` → a
+ * concrete literal, `'\'` → `'\\'`, `CREATE VIRTUAL TABLE … USING fts5(…)` →
+ * `CREATE TABLE …`, and — sqlite only, since it is a sqlite-specific spelling —
+ * length-qualified `text(N)` → `varchar(N)`.
  */
 function applyDeclaredNormalizations(trimmed: string, dialect: Dialect): string {
-  const normalized = normalizeTemplateSubstitutions(normalizePositionalParams(trimmed));
-  return dialect === 'sqlite' ? normalizeSqliteTextLength(normalized) : normalized;
+  // Strip comments first. Every normalizer below tracks quoted strings to avoid
+  // rewriting inside them, but none of them models `--` / `/* … */` comments. An
+  // apostrophe in a comment — `don't` in a migration's header block — opens a
+  // quote that swallows the rest of the file and silently disables every rewrite
+  // after it (`text(N)` → `varchar(N)` and the rest). Comments are semantically
+  // inert, so dropping them before the quote-tracking rewrites is lossless and
+  // keeps the normalizers' quote state honest.
+  const uncommented = stripComments(trimmed);
+  const positional = normalizePositionalParams(uncommented);
+  const templated = normalizeTemplateSubstitutions(positional);
+  const limited = normalizeLimitOffsetPlaceholders(templated);
+  const escaped = normalizeEscapeClause(limited);
+  const tabled = normalizeVirtualTable(escaped);
+  return dialect === 'sqlite' ? normalizeSqliteTextLength(tabled) : tabled;
 }
 
 /**
@@ -334,6 +603,15 @@ function applyDeclaredNormalizations(trimmed: string, dialect: Dialect): string 
  * boundaries, and empty fragments (a trailing `;`) are dropped. A single string
  * literal carrying several DDL statements (`DROP TABLE a; DROP TABLE b;`) parses
  * as its statements instead of failing "expected a single statement".
+ *
+ * A `CREATE TRIGGER … BEGIN … END` body carries `;` between its own statements
+ * that are not statement boundaries, so the trigger's `BEGIN … END` block is
+ * tracked and its internal `;` kept inside the statement — otherwise a trigger
+ * would be mid-body-split into a dangling header and a bare `END`. The tracking
+ * is scoped to a statement whose leading text is `CREATE TRIGGER`, so a
+ * transaction's `BEGIN;` or a stray `CASE`/`END` in ordinary SQL is split exactly
+ * as before. A `CASE … END` inside the body is tracked so its `END` is not
+ * mistaken for the trigger's closing `END`.
  * @param sql The SQL text to split.
  * @returns The top-level statements, in order, with empty fragments dropped.
  */
@@ -342,6 +620,10 @@ export function splitSqlStatements(sql: string): string[] {
   let current = '';
   let i = 0;
   let quote: QuoteChar | null = null;
+  let beginDepth = 0;
+  let caseDepth = 0;
+  const wordBoundary = (c: string | undefined) => c === undefined || !/[a-zA-Z0-9_$]/.test(c);
+
   while (i < sql.length) {
     const ch = sql[i];
     if (quote !== null) {
@@ -378,10 +660,34 @@ export function splitSqlStatements(sql: string): string[] {
       i++;
       continue;
     }
+    if (/[a-zA-Z]/.test(ch)) {
+      let j = i;
+      while (j < sql.length && /[a-zA-Z0-9_$]/.test(sql[j])) j++;
+      const word = sql.slice(i, j).toLowerCase();
+      const prev = i === 0 ? undefined : sql[i - 1];
+      const after = sql[j];
+      if (wordBoundary(prev) && wordBoundary(after)) {
+        if (word === 'begin') {
+          if (current.trimStart().toLowerCase().startsWith('create trigger')) beginDepth++;
+        } else if (word === 'case') {
+          if (beginDepth > 0) caseDepth++;
+        } else if (word === 'end') {
+          if (caseDepth > 0) caseDepth--;
+          else if (beginDepth > 0) beginDepth--;
+        }
+      }
+      current += sql.slice(i, j);
+      i = j;
+      continue;
+    }
     if (ch === ';') {
-      const part = current.trim();
-      if (part.length > 0) parts.push(part);
-      current = '';
+      if (beginDepth === 0 && caseDepth === 0) {
+        const part = current.trim();
+        if (part.length > 0) parts.push(part);
+        current = '';
+      } else {
+        current += ch;
+      }
       i++;
       continue;
     }
@@ -641,18 +947,26 @@ export interface TolerantSqlProgram {
  * `parseSqlProgram` all-or-nothing contract is right for a single call-site
  * query string (a query either parses or it is `cannot-fire`), but a migration
  * file is a *sequence* of DDL statements, and one statement the grammar rejects
- * (a `PRAGMA`, an FTS5 `CREATE VIRTUAL TABLE`, a `CREATE TRIGGER`, a
- * `DROP INDEX`) must not discard the well-formed `CREATE TABLE` beside it. Each
- * statement is split on a top-level `;` and parsed individually; the successes
- * are walked for DDL facts, the failures are reported so the caller can account
- * for what it did not read. This is the honest successor to the regex scanners,
- * which silently skipped whatever they did not match.
+ * (an `UPDATE … FROM`, a Drizzle `ALTER COLUMN "a" TO "a" <type>`) must not
+ * discard the well-formed `CREATE TABLE` beside it. Each statement is split on a
+ * top-level `;` and parsed individually; a `PRAGMA` / `DROP INDEX` / `DROP VIEW`
+ * / `DROP TRIGGER` / `CREATE VIEW` / `CREATE TRIGGER` is *recognized* as no-fact
+ * DDL (not parsed, not a failure), the successes are walked for DDL facts, and
+ * the remaining failures are reported so the caller can account for what it did
+ * not read. This is the honest successor to the regex scanners, which silently
+ * skipped whatever they did not match.
  *
  * @param text The `.sql` file's full text.
  * @param dialect The corpus's named dialect.
+ * @param recognizeNoFactsDdl When true (a migration file), a `PRAGMA` /
+ *   `DROP INDEX` / `DROP VIEW` / `DROP TRIGGER` / `CREATE VIEW` / `CREATE TRIGGER`
+ *   is recognized as no-fact DDL rather than a parse failure. When false (a code
+ *   SQL argument — see {@link parseSqlTables}), it is left to the grammar, so a
+ *   `PRAGMA table_info(x)` surfaces as a parse failure (it names `x`) rather than
+ *   reading "no tables" as clean.
  * @returns The statements that parsed, the failures with reasons, and the indices of statements whose `ON CONFLICT` clause was truncated.
  */
-export function parseSqlProgramTolerant(text: string, dialect: Dialect): TolerantSqlProgram {
+export function parseSqlProgramTolerant(text: string, dialect: Dialect, recognizeNoFactsDdl: boolean = true): TolerantSqlProgram {
   const trimmed = text.trim();
   if (trimmed.length === 0) return { statements: [], failures: [], truncatedConflictIndices: [] };
   if (TEMPLATE_PLACEHOLDER.test(stripComments(trimmed))) {
@@ -664,6 +978,10 @@ export function parseSqlProgramTolerant(text: string, dialect: Dialect): Toleran
   const failures: SqlStatementFailure[] = [];
   const truncatedConflictIndices: number[] = [];
   parts.forEach((part, index) => {
+    if (recognizeNoFactsDdl && isNoTableFactsDdl(part)) {
+      statements.push(NO_FACTS_MARKER);
+      return;
+    }
     const result = parseSingleStatement(part, dialect);
     if (result.ok) {
       if (result.conflictClauseTruncated) truncatedConflictIndices.push(statements.length);
