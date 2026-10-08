@@ -237,9 +237,7 @@ succeeded; the honest `cannot-fire` was correct for an unparseable statement,
 but the fix is input normalization, not a regex fallback:
 `normalizeSqliteTextLength` rewrites `text(N)` → `varchar(N)` before the parse —
 lossless for fact extraction, and it never re-introduces the hand-rolled parser
-this release removed. The grammar residue normalization cannot cover (`UPDATE …
-FROM`, Drizzle `ALTER COLUMN … TO`) is costed in
-`specs/spec70-sql-parser-residual.md`.
+this release removed.
 
 ## [Unreleased]
 
