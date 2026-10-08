@@ -18,7 +18,7 @@ import {
   type ProvenanceEvidence,
   type DetectionMode,
 } from '../provenance.js';
-import { extractStaticSql, extractGoStaticSql, isTemplateLiteral, isTaggedTemplateSqlCall } from '../sqlLiteral.js';
+import { extractStaticSql, extractGoStaticSql, isTemplateLiteral, isTaggedTemplateSqlCall, stripSqlQuotes } from '../sqlLiteral.js';
 import { isOrmMethod, handleTypesForPackage } from '../tsEcosystem.js';
 import { identifyHandle, type HandleVerdict } from '../handleIdentification.js';
 import {
@@ -175,14 +175,13 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   orgFilterColumns: ['org_id', 'tenant_id', 'organization_id', 'workspace_id'],  // Tier 2
   schemas: [],           // Tier 2: schema definitions for column-based inference
   tablePatterns: {
+    // Only the non-structural `table: 'users'` / `table = "users"` shape remains
+    // here as a user-tunable text pattern. The `.from(x)` / join / Kysely-verb
+    // shapes are read structurally by `collectOrmTableReferences`, so they are
+    // NOT duplicated as regexes — a `.from(…)` inside a string argument must not
+    // read as a table.
     orm: [
-      /from\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu,
-      /table\s*[:=]\s*["'`]?([\p{L}\p{N}_]+)["'`]?/giu,
-      /\.from\s*\(\s*([\p{L}\p{N}_]+)\s*\)/giu,  // Handle .from(users) where users is a variable
-      /join\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,      // Handle joins
-      /leftJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,
-      /rightJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu,
-      /innerJoin\s*\(\s*([\p{L}\p{N}_]+)\s*,/giu
+      /table\s*[:=]\s*["'`]?([\p{L}\p{N}_]+)["'`]?/giu
     ],
     queryBuilder: [/\.from\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu]
   },
@@ -826,19 +825,34 @@ export function rawInsertColumnsFromAst(sqlAst: SqlAst): string[] | null {
 }
 
 /** The Kysely builder write verb carried as a camelCase method name — a
- *  host-language chain shape, not SQL.  `selectFrom`/`selectAll` are reads. */
-export function builderWriteVerb(text: string): 'insert' | 'update' | 'delete' | null {
-  if (/\.insertInto\s*\(/.test(text)) return 'insert';
-  if (/\.updateTable\s*\(/.test(text)) return 'update';
-  if (/\.deleteFrom\s*\(/.test(text)) return 'delete';
+ *  host-language chain shape, not SQL.  `selectFrom`/`selectAll` are reads.
+ *  Read from the callee's member chain, not the source text: a `.insertInto(…)`
+ *  inside a string argument (`db.raw(".insertInto(x)")`) is not a chain member. */
+export function builderWriteVerb(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): 'insert' | 'update' | 'delete' | null {
+  const methods = collectChainMethods(node, adapter, sourceCode);
+  if (methods.includes('insertInto')) return 'insert';
+  if (methods.includes('updateTable')) return 'update';
+  if (methods.includes('deleteFrom')) return 'delete';
   return null;
 }
 
 /** True when an ORM chain carries a row-limiting shape (`.where(...)`, `.having(...)`,
  *  `.limit(...)`, `.andWhere(...)`, `.orWhere(...)`) — the host-language analog of
- *  SQL's WHERE/HAVING/LIMIT that the AST walk cannot see because there is no SQL. */
-export function hasOrmFilterShape(text: string): boolean {
-  return /\.(?:where|andWhere|orWhere|having|limit)\s*\(/.test(text);
+ *  SQL's WHERE/HAVING/LIMIT that the AST walk cannot see because there is no SQL.
+ *  Read from the member chain, not the source text: a `.where(…)` inside a string
+ *  argument is a string, not a chain member. */
+export function hasOrmFilterShape(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): boolean {
+  const methods = collectChainMethods(node, adapter, sourceCode);
+  return methods.some((m) =>
+    m === 'where' || m === 'andWhere' || m === 'orWhere' || m === 'having' || m === 'limit');
 }
 
 /**
@@ -915,11 +929,11 @@ function buildDatabaseCall(
   if (!isSqlQuery && !isOrmCall) return null;
 
   const sqlAstNode = sqlOk ? sqlOk.ast : null;
-  const builderVerb = sqlAstNode ? null : builderWriteVerb(nodeText);
+  const builderVerb = sqlAstNode ? null : builderWriteVerb(node, adapter, sourceCode);
 
-  // Tables: SQL relations from the AST ∪ ORM-shaped references from the text.
+  // Tables: SQL relations from the AST ∪ ORM-shaped references from the node.
   const sqlTables = sqlAstNode ? extractTableNames(sqlAstNode) : [];
-  const ormTables = isOrmCall ? extractOrmTables(nodeText, config) : [];
+  const ormTables = isOrmCall ? extractOrmTables(node, adapter, sourceCode, config) : [];
   const tables = [...new Set([...sqlTables, ...ormTables])];
 
   // Row-limiting filter: SQL WHERE/HAVING/LIMIT from the AST, or the ORM chain
@@ -928,7 +942,7 @@ function buildDatabaseCall(
   const hasFilter = (facts
     ? (facts.hasWhere && !facts.whereIsTautology) || facts.hasHaving || facts.hasLimit
     : false)
-    || (isOrmCall && hasOrmFilterShape(nodeText));
+    || (isOrmCall && hasOrmFilterShape(node, adapter, sourceCode));
 
   const hasOrgFilter = hasOrganizationFilter(nodeText, config);
 
@@ -1391,8 +1405,10 @@ export function isPromiseAllMember(memberExpr: ASTNode, adapter: LanguageAdapter
     c => adapter.getNodeType(c) !== 'property_identifier',
   );
   if (!objectNode) return false;
-  const text = adapter.getNodeText(objectNode, sourceCode);
-  return text === 'Promise' || text.endsWith('.Promise');
+  // The object must be the bare `Promise` global identifier. `foo.Promise` is a
+  // different binding, so a `.Promise` text suffix must not read as `Promise.all`.
+  if (adapter.getNodeType(objectNode) !== 'identifier') return false;
+  return adapter.getNodeText(objectNode, sourceCode) === 'Promise';
 }
 
 /**
@@ -1749,18 +1765,29 @@ export function isPrepareAssignedToVariable(
 
   if (!varName) return false;
 
-  // Scan the enclosing function scope for `.bind()` on this variable.
+  // Scan the enclosing function scope for a `<varName>.bind(…)` member call.
+  // Walk the subtree structurally: a `.bind(` inside a comment or string is text,
+  // not a member expression, so it is not seen (the old regex over the function
+  // text matched `// stmt.bind(x)` comments).
   const fnNode = findEnclosingFunctionNode(prepareCall, adapter);
   if (!fnNode) return false;
 
-  const fnText = adapter.getNodeText(fnNode, sourceCode);
-  const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const bindPattern = new RegExp(
-    String.raw`\b${escaped}\.bind\s*\(`,
-    'u',
-  );
-
-  return bindPattern.test(fnText);
+  const stack: ASTNode[] = [fnNode];
+  while (stack.length) {
+    const n = stack.pop()!;
+    const t = adapter.getNodeType(n);
+    if (t === 'member_expression' || t === 'selector_expression') {
+      if (extractMemberExpressionProperty(n, adapter, sourceCode) === 'bind') {
+        const receiver = memberObjectNode(n, adapter);
+        if (receiver && adapter.getNodeType(receiver) === 'identifier'
+            && adapter.getNodeText(receiver, sourceCode) === varName) {
+          return true;
+        }
+      }
+    }
+    for (const c of adapter.getChildren(n) ?? []) stack.push(c);
+  }
+  return false;
 }
 
 /**
@@ -1868,48 +1895,164 @@ function collectPatternTables(
   });
 }
 
+/** The immediate object (receiver) child of a member/selector expression —
+ *  the child that is neither `.` nor the property identifier. */
+function memberObjectNode(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  const children = adapter.getChildren(node);
+  return children.find((c) => {
+    const ct = adapter.getNodeType(c);
+    return ct !== '.' && ct !== 'property_identifier' && ct !== 'field_identifier';
+  }) ?? null;
+}
+
+/** The first real (non-punctuation) argument node of an `arguments` node. */
+function firstArgumentNode(argsNode: ASTNode, adapter: LanguageAdapter): ASTNode | null {
+  for (const c of adapter.getChildren(argsNode)) {
+    const ct = adapter.getNodeType(c);
+    if (ct === '(' || ct === ')' || ct === ',') continue;
+    return c;
+  }
+  return null;
+}
+
+/** The unquoted body of a string/template literal node, or null. */
+function stringLiteralValue(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  const t = adapter.getNodeType(node);
+  if (t === 'template_string') {
+    const children = adapter.getChildren(node) ?? [];
+    if (children.some((c) => adapter.getNodeType(c) === 'template_substitution')) return null;
+  }
+  if (t === 'string' || t === 'template_string' ||
+      t === 'interpreted_string_literal' || t === 'raw_string_literal') {
+    const raw = adapter.getNodeText(node, sourceCode);
+    if (raw == null) return null;
+    return stripSqlQuotes(raw, { raw: t === 'raw_string_literal' });
+  }
+  return null;
+}
+
+/** The table name an ORM table-taking verb's first argument carries: a bare
+ *  identifier's name or an unquoted string literal. Null for anything else (a
+ *  dynamic expression, a template with substitutions, a number, …). */
+function ormTableNameFromArgument(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
+  if (adapter.getNodeType(node) === 'identifier') {
+    const text = adapter.getNodeText(node, sourceCode);
+    return text ? text : null;
+  }
+  const literal = stringLiteralValue(node, adapter, sourceCode);
+  return literal && literal.length > 0 ? literal : null;
+}
+
+/** Kysely builder verbs whose first argument is the table name. */
+const ORM_TABLE_VERBS = new Set(['selectFrom', 'deleteFrom', 'insertInto', 'updateTable']);
+/** ORM join verbs whose first argument is the joined table. */
+const ORM_JOIN_VERBS = new Set(['join', 'leftJoin', 'rightJoin', 'innerJoin']);
+
 /**
- * Extract the set of table names referenced by the ORM chain shapes — the
- * configured `orm` table patterns plus the `.from(...)` /
- * `db.<table>.<method>()` / Kysely builder-verb shapes. This is the
- * host-language shape detector only; SQL relations are derived structurally by
- * sqlAst's `extractTableNames`, not here (Spec 70 R2 site #1).
- * @param text The ORM/query-builder fragment to scan.
+ * Walk the callee chain of an ORM candidate, reading table references from the
+ * *structure* (member names + argument nodes) rather than the source text. A
+ * `.from(…)` / verb / `db.<table>.<method>()` shape inside a string argument is
+ * not a chain member, so it is never read as a table.
+ *
+ * Three shapes are read:
+ *   - `.from(table)` / `.from('table')` (except JS `Array.from`/`Buffer.from`/
+ *     `String.from`/`*Array.from` construction),
+ *   - a Kysely/join verb carrying the table as its first argument,
+ *   - Drizzle's `db.<table>.<method>()` table-access idiom.
+ */
+function collectOrmTableReferences(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  tables: Set<string>,
+): void {
+  const t = adapter.getNodeType(node);
+
+  if (t === 'call_expression') {
+    const callee = getCallExpressionCallee(node, adapter);
+    if (callee) {
+      const calleeType = adapter.getNodeType(callee);
+      if (calleeType === 'member_expression' || calleeType === 'selector_expression') {
+        const method = extractMemberExpressionProperty(callee, adapter, sourceCode);
+        const receiverNode = memberObjectNode(callee, adapter);
+        const receiverName = receiverNode && adapter.getNodeType(receiverNode) === 'identifier'
+          ? adapter.getNodeText(receiverNode, sourceCode)
+          : null;
+        const args = adapter.getChildren(node).find((c) => adapter.getNodeType(c) === 'arguments');
+        const firstArg = args ? firstArgumentNode(args, adapter) : null;
+
+        if (method && firstArg) {
+          const isFrom = method === 'from'
+            && !(receiverName && (receiverName === 'Buffer' || receiverName === 'String'
+              || receiverName.endsWith('Array')));
+          const isVerb = ORM_TABLE_VERBS.has(method);
+          const isJoin = ORM_JOIN_VERBS.has(method) && receiverName !== 'sql';
+          if (isFrom || isVerb || isJoin) {
+            const name = ormTableNameFromArgument(firstArg, adapter, sourceCode);
+            if (name) tables.add(name);
+          }
+        }
+      }
+      collectOrmTableReferences(callee, adapter, sourceCode, tables);
+    }
+  } else if (t === 'member_expression' || t === 'selector_expression') {
+    // db.<table>.<method>() — Drizzle's table-access idiom. The receiver is the
+    // member `db.<table>`, whose property names the table; the root must be the
+    // bare `db` identifier (not `appDb`/`foo`), mirroring the old `db\.…` regex.
+    const object = memberObjectNode(node, adapter);
+    if (object && (adapter.getNodeType(object) === 'member_expression'
+        || adapter.getNodeType(object) === 'selector_expression')) {
+      const innerProp = extractMemberExpressionProperty(object, adapter, sourceCode);
+      const innerObject = memberObjectNode(object, adapter);
+      if (innerProp && innerObject && adapter.getNodeType(innerObject) === 'identifier'
+          && adapter.getNodeText(innerObject, sourceCode) === 'db') {
+        tables.add(innerProp);
+      }
+    }
+    if (object) collectOrmTableReferences(object, adapter, sourceCode, tables);
+  } else if (t === 'subscript_expression') {
+    const object = memberObjectNode(node, adapter);
+    if (object) collectOrmTableReferences(object, adapter, sourceCode, tables);
+  }
+}
+
+/**
+ * Extract the set of table names referenced by the ORM chain shapes — read
+ * structurally from the callee chain ({@link collectOrmTableReferences}) plus
+ * the user-configured `orm` table patterns. This is the host-language shape
+ * detector only; SQL relations are derived structurally by sqlAst's
+ * `extractTableNames`, not here (Spec 70 R2 site #1). The default `orm` patterns
+ * carry only the non-structural `table: 'users'` / `table = "users"` shape; the
+ * `.from(x)` / join / Kysely-verb shapes that used to live there as regexes are
+ * now read structurally, so a `.from(…)` inside a string argument is not a table.
+ * @param node The ORM/query-builder candidate node.
+ * @param adapter The language adapter (drives node traversal).
+ * @param sourceCode The file source text.
  * @param config The data-access analyzer config holding table patterns.
  * @returns The set of table names referenced by ORM shapes.
  */
-export function extractOrmTables(text: string, config: DataAccessAnalyzerConfig): string[] {
-  // JS `.from(...)` construction (Array.from / Buffer.from / Uint8Array.from)
-  // and Drizzle `sql.join(...)` are not SQL table references; blank them out
-  // first so their arguments aren't read as tables.
-  const scrubbed = scrubNonTableCalls(text);
+export function extractOrmTables(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  config: DataAccessAnalyzerConfig,
+): string[] {
   const tables = new Set<string>();
+  collectOrmTableReferences(node, adapter, sourceCode, tables);
 
+  // User-configured `orm` patterns are arbitrary text shapes with no node to
+  // read (e.g. `table: 'users'`), so they still run over the source text.
+  const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
+  const scrubbed = scrubNonTableCalls(nodeText);
   collectPatternTables(scrubbed, config.tablePatterns?.orm, tables);
-
-  // Handle patterns like db.select().from(users) where 'users' is a variable
-  const ormVariablePattern = /\.from\s*\(\s*([\p{L}_][\p{L}\p{N}_]*)\s*\)/gu;
-  for (const match of scrubbed.matchAll(ormVariablePattern)) {
-    if (match[1] && !match[1].includes('"') && !match[1].includes("'")) {
-      tables.add(match[1]);
-    }
-  }
-
-  // Kysely builder verbs carry the table as their first string arg:
-  // selectFrom('users') / deleteFrom('users') / insertInto('users') /
-  // updateTable('users'). The SQL-keyword path can't see camelCase verbs.
-  const kyselyTablePattern = /\.(?:selectFrom|deleteFrom|insertInto|updateTable)\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu;
-  for (const match of scrubbed.matchAll(kyselyTablePattern)) {
-    if (match[1]) tables.add(match[1]);
-  }
-
-  // Handle patterns like db.users.find() or db.orders.findOne()
-  const dbTablePattern = /db\.([\p{L}_][\p{L}\p{N}_]*)\.\p{L}[\p{L}\p{N}_]*\s*\(/gu;
-  for (const match of scrubbed.matchAll(dbTablePattern)) {
-    if (match[1]) {
-      tables.add(match[1]);
-    }
-  }
 
   return Array.from(tables);
 }
@@ -1997,11 +2140,17 @@ export function isSafeDynamicPart(
   // Config-driven sanitizer allowlist (escapeSql(x), …) applies to
   // non-identifier expressions — an interpolation wrapped in a known
   // sanitizer isn't raw (same pattern as dbWrapperNames for provenance).
+  // The sanitizer name is read from the part's call node, not from a text
+  // prefix: `mySanitizer  (x)` (two spaces) still names `mySanitizer`, but
+  // `startsWith(name + '(')` would not see it through the extra space.
   if (!part.isIdentifier) {
-    const normalized = part.text.trim();
-    const sanitized = (config.sanitizerNames ?? []).some(name =>
-      normalized.startsWith(name + '(') || normalized.startsWith(name + ' ('),
-    );
+    const callee = part.node && adapter.getNodeType(part.node) === 'call_expression'
+      ? getCallExpressionCallee(part.node, adapter)
+      : null;
+    const calleeName = callee && adapter.getNodeType(callee) === 'identifier'
+      ? adapter.getNodeText(callee, sourceCode)
+      : null;
+    const sanitized = calleeName != null && (config.sanitizerNames ?? []).includes(calleeName);
     if (sanitized) return true;
   }
 
@@ -2724,16 +2873,20 @@ export function parameterBoundToStatementType(
   for (const p of adapter.getChildren(params)) {
     const t = adapter.getNodeType(p);
     if (t !== 'required_parameter' && t !== 'optional_parameter') continue;
-    const text = adapter.getNodeText(p, sourceCode);
-    if (!text) continue;
-    // `stmts: StyleStatements` → name `stmts`, type `StyleStatements`. Ignore a
-    // default-value tail (`stmts: StyleStatements = …`); a statement bundle has
-    // no default.
-    const m = text.match(/^([A-Za-z_$][\w$]*)\s*:\s*([^=]+)/);
-    if (!m) continue;
-    // Match `Statement`, `StyleStatements` (plural), `SqliteStatement`, etc.
-    // No `\b` prefix: `StyleStatements` embeds "Statement" after a word char.
-    if (m[1] === name && /Statement\w*/.test(m[2])) return true;
+    // The parameter name is the `identifier` child; the type is the
+    // `type_annotation` child's text, read structurally (not by regex over the
+    // whole parameter text, which split `x: StatementFactory` into a name/type
+    // pair but then matched any `Statement…` prefix).
+    const nameNode = adapter.getChildren(p).find((c) => adapter.getNodeType(c) === 'identifier');
+    if (!nameNode) continue;
+    if (adapter.getNodeText(nameNode, sourceCode) !== name) continue;
+    const typeAnn = adapter.getChildren(p).find((c) => adapter.getNodeType(c) === 'type_annotation');
+    if (!typeAnn) continue;
+    const typeText = adapter.getNodeText(typeAnn, sourceCode)?.trim() ?? '';
+    // A statement type *ends* in `Statement`/`Statements` (`SqliteStatement`,
+    // `StyleStatements`). `StatementFactory` embeds "Statement" but is a factory,
+    // not a statement type, so it does not qualify.
+    if (/Statement(s)?$/.test(typeText)) return true;
   }
   return false;
 }
@@ -3188,39 +3341,29 @@ function isLlmCallNode(
 
 /**
  * R4.1: Determine if a node is a database call expression.
- * Spec 21: When provenance context is available, uses provenance-based detection
- * (conjunctive guard — never name alone). In names mode or without context,
- * falls back to the legacy dbPatterns text match.
+ * Spec 21: provenance-based detection (conjunctive guard — never name alone).
  *
  * Spec 70 R3/R4: handle-ness is decided once, by `identifyHandle` (via
  * `handleVerdictForCall`); only a proven `handle` — a parsed SQL argument (R3)
  * or a package in the manifest (R4) — is a DB node for the loop walk. `unproven`
  * is `cannot-fire` (visible, never a finding), so a `map.delete()` / `set.join()`
  * on an unresolved receiver does not read as a DB call inside a loop.
+ *
+ * The legacy `dbPatterns` substring fallback (a call whose *text* contained
+ * `select`/`insert`/`delete`/…) is deleted, not fixed: `buildDataAccessScan`
+ * always provides a provenance context (`mode` defaults to `'hybrid'`), so the
+ * no-context / `names`-mode arm was unreachable in a default run. Without
+ * provenance there is no honest handle verdict, so the node is not a DB call.
  */
 export function isDbCallNode(
   node: ASTNode,
   scan: DataAccessScanContext,
 ): boolean {
-  const { adapter, sourceCode, provenanceContext } = scan;
+  const { provenanceContext } = scan;
 
-  // Spec 21: Provenance-first detection when context is available
   if (provenanceContext && provenanceContext.mode !== 'names') {
     const verdict = handleVerdictForCall(node, scan);
     return verdict !== null && verdict.kind === 'handle';
-  }
-
-  // Legacy fallback: name-based matching for names mode / no context.
-  // Template-literal content scanning is removed (Spec 17 R2) — without
-  // provenance context, we can't determine if a template literal is SQL;
-  // function-call-based SQL detection still works via dbPatterns match.
-  const nodeText = adapter.getNodeText(node, sourceCode);
-
-  if (isFunctionCall(node, adapter)) {
-    const dbPatterns = ['select', 'insert', 'update', 'delete', 'from', 'where', 'execute', 'query', 'find', 'aggregate', 'count', 'distinct'];
-    if (dbPatterns.some(pattern => nodeText.toLowerCase().includes(pattern))) {
-      return true;
-    }
   }
 
   return false;
@@ -3788,9 +3931,9 @@ function buildDataAccessCallCandidate(
     hasOrganizationFilter: hasOrganizationFilter(nodeText, config),
     enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
     resolvedWhere: resolveWhereBinding(node, sourceCode, adapter),
-    ormTables: isOrmCall ? extractOrmTables(nodeText, config) : [],
-    builderVerb: builderWriteVerb(nodeText),
-    ormHasFilter: hasOrmFilterShape(nodeText),
+    ormTables: isOrmCall ? extractOrmTables(node, adapter, sourceCode, config) : [],
+    builderVerb: builderWriteVerb(node, adapter, sourceCode),
+    ormHasFilter: hasOrmFilterShape(node, adapter, sourceCode),
     staticParameterized: security.parameterized,
     staticInjectionRisk: security.injectionRisk,
     staticEscaped: security.escaped,

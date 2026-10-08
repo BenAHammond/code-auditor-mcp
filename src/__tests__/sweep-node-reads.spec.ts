@@ -146,15 +146,24 @@ describe('sweep — node reads (red)', () => {
   // ── Tier 2 ────────────────────────────────────────────────────────────────
 
   it('#5 — builderWriteVerb reads the member chain, not a string argument', () => {
-    expect(builderWriteVerb('db.raw(".insertInto(x)")')).toBeNull();
+    const src = 'db.raw(".insertInto(x)")';
+    const { adapter } = parseSrc('/f.ts', src);
+    const node = outermostOfType('/f.ts', src, 'call_expression');
+    expect(builderWriteVerb(node, adapter, src)).toBeNull();
   });
 
   it('#6 — hasOrmFilterShape reads the member chain, not a string argument', () => {
-    expect(hasOrmFilterShape('db.raw(".where(x)")')).toBe(false);
+    const src = 'db.raw(".where(x)")';
+    const { adapter } = parseSrc('/f.ts', src);
+    const node = outermostOfType('/f.ts', src, 'call_expression');
+    expect(hasOrmFilterShape(node, adapter, src)).toBe(false);
   });
 
   it('#7 — extractOrmTables does not read a `.from(…)` inside a string', () => {
-    expect(extractOrmTables('db.raw("a.b.from(x)")', DEFAULT_DATA_ACCESS_CONFIG)).toEqual([]);
+    const src = 'db.raw("a.b.from(x)")';
+    const { adapter } = parseSrc('/f.ts', src);
+    const node = outermostOfType('/f.ts', src, 'call_expression');
+    expect(extractOrmTables(node, adapter, src, DEFAULT_DATA_ACCESS_CONFIG)).toEqual([]);
   });
 
   it('#8 — isPrepareAssignedToVariable walks the subtree, not function text', () => {
