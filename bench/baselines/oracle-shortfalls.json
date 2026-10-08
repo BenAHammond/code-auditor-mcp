@@ -76,27 +76,27 @@
       }
     },
     "data-access-calls-candidates": {
-      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one raw, provenance-free candidate per query-shaped call (the extract half of the `data-access-calls` collapse — the handle verdict, injection gate, and per-site SQL parse are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = the large majority of calls/templates that are not DB/ORM-shaped.",
+      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one raw, provenance-free candidate per query-shaped call (the extract half of the `data-access-calls` collapse — the handle verdict, injection gate, and per-site SQL parse are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = the large majority of calls/templates that are not DB/ORM-shaped. Re-pinned 2026-10-08 after the Spec-70 receiver-resolution work (heritage resolution, tsconfig-path bare-specifier resolution, import-kind resolution) admitted more DB-provenanced query-shaped calls: actual rose (openstatus 36262→53297, recall-protocol 31074→52302) and the residual shrank accordingly. No corpus drift — all four corpora sit at their pinned SHAs (openstatus has no commits since the prior pin).",
       "corpora": {
         "hhra-org": {
-          "files": 488,
-          "expected": 16854,
-          "actual": 5397
+          "files": 431,
+          "expected": 16104,
+          "actual": 9600
         },
         "blitz": {
-          "files": 408,
-          "expected": 9123,
-          "actual": 3602
+          "files": 324,
+          "expected": 8115,
+          "actual": 5769
         },
         "openstatus": {
-          "files": 1648,
-          "expected": 74463,
-          "actual": 36262
+          "files": 1388,
+          "expected": 67924,
+          "actual": 53297
         },
         "recall-protocol": {
-          "files": 1373,
-          "expected": 95597,
-          "actual": 31074
+          "files": 1338,
+          "expected": 92246,
+          "actual": 52302
         }
       }
     },
@@ -276,27 +276,27 @@
       }
     },
     "loop-query-candidates": {
-      "composition": "Oracle counts loop nodes (for/for-in/while/do); the producer emits one raw candidate per loop whose body holds a DB-shaped call (the extract half of the `loop-queries` collapse — the strict-handle filter, per-loop dedup, and stable symbol are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = loops whose body holds no DB-shaped call.",
+      "composition": "Oracle counts loop nodes (for/for-in/while/do); the producer emits one raw candidate per loop whose body holds a DB-shaped call (the extract half of the `loop-queries` collapse — the strict-handle filter, per-loop dedup, and stable symbol are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = loops whose body holds no DB-shaped call. Re-pinned 2026-10-08 after 64991c0 cleared the loop-query N+1 false positives: a method call on a handle root (`db.prepare()`, `db.transaction()`, `stmt.all()`) is no longer itself a handle, so statement/result member callees abstain to `unproven` instead of re-flagging inside loops. Both oracle and producer shrank (the oracle shares the receiver-classification seed), which is the intended precision gain, not a defect.",
       "corpora": {
         "hhra-org": {
-          "files": 19,
-          "expected": 52,
-          "actual": 14
+          "files": 10,
+          "expected": 14,
+          "actual": 1
         },
         "blitz": {
-          "files": 10,
-          "expected": 29,
-          "actual": 16
+          "files": 4,
+          "expected": 9,
+          "actual": 4
         },
         "openstatus": {
-          "files": 90,
-          "expected": 191,
-          "actual": 46
+          "files": 65,
+          "expected": 130,
+          "actual": 32
         },
         "recall-protocol": {
-          "files": 289,
-          "expected": 1145,
-          "actual": 442
+          "files": 193,
+          "expected": 793,
+          "actual": 401
         }
       }
     },
@@ -351,27 +351,27 @@
       }
     },
     "schema-usage-candidates": {
-      "composition": "Oracle counts `call_expression` + `string` + `template_string` nodes; the producer emits one candidate per provenance-free table reference (ORM / query-builder / collection-adapter), tagged-template candidate, or DB-call candidate — the extract half of the `schema-usage` collapse (the two provenance-dependent strategies are re-admitted corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = strings/calls/templates naming no table reference.",
+      "composition": "Oracle counts `call_expression` + `string` + `template_string` nodes; the producer emits one candidate per provenance-free table reference (ORM / query-builder / collection-adapter), tagged-template candidate, or DB-call candidate — the extract half of the `schema-usage` collapse (the two provenance-dependent strategies are re-admitted corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = strings/calls/templates naming no table reference. Re-pinned 2026-10-08 after the Spec-70 ORM/DDL table-catalog + heritage/specifier resolution admitted more table references: actual rose (openstatus 16833→24711, recall-protocol 17640→36001) and the residual shrank. No corpus drift (pinned SHAs).",
       "corpora": {
         "hhra-org": {
           "files": 599,
           "expected": 35810,
-          "actual": 3201
+          "actual": 7027
         },
         "blitz": {
-          "files": 637,
-          "expected": 17964,
-          "actual": 2246
+          "files": 634,
+          "expected": 17958,
+          "actual": 4142
         },
         "openstatus": {
           "files": 2242,
           "expected": 138856,
-          "actual": 16833
+          "actual": 24711
         },
         "recall-protocol": {
-          "files": 1500,
-          "expected": 164400,
-          "actual": 17640
+          "files": 1499,
+          "expected": 164398,
+          "actual": 36001
         }
       }
     },
