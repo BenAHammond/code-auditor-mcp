@@ -68,15 +68,22 @@ const REPRESENTATIVE_FILE = 'src/analyzers/universal/UniversalSOLIDAnalyzer.ts';
 //       src/analyzers/universal/UniversalSOLIDAnalyzer.ts --json 2>&1 >/dev/null
 //   (10 warm runs: 642–712 ms CPU, median ~705 ms, mean ~688 ms).
 //
-// BUDGET_MS = 900: ~23% headroom over the ~735 ms loaded figure (the ~705 ms
-// median plus the same ~4% the verify:close chain adds after the bench +
-// integration suite — the 325 ms-vs-312 ms ratio from the first re-baseline).
-// That is the same proportional margin the 400 ms budget held over its 325 ms
-// loaded baseline. The per-run jitter is wider than the old ±6 ms (~±35 ms,
+// BUDGET_MS = 900: ~28% headroom over the ~705 ms isolated median. This gate is
+// ordered FIRST among the dist-consuming gates in verify-close.mjs — right after
+// verify:dist-fresh and before test/test:integration/bench — so the warm run
+// measures the gate in the *idle* state the agent's hook actually executes in.
+// The prior placement after bench + integration carried a "+~4% the verify:close
+// chain adds" allowance forward from the first re-baseline; that allowance was
+// never re-validated for the Spec-70 receiver-resolution gate, and measured now
+// it is ~+40% (isolated ~705 ms → loaded ~1018 ms, higher on a second
+// consecutive chain) purely from the chain's own sustained load — harness noise,
+// not a slow rule, that decays within minutes. Measuring idle removes that noise
+// without widening the budget, so the gate keeps its full sensitivity: an
+// isolated +~195 ms regression still trips 900 ms (the same margin the two prior
+// re-baselines held). The per-run jitter is wider than the old ±6 ms (~±35 ms,
 // because receiver resolution touches node_modules/.d.ts through the page
-// cache), so the budget needs the full 23% to stay off a knife-edge; a
-// genuinely slow rule still trips it (baseline + ~195 ms → > 900 ms). The next
-// lever for shrinking the receiver-resolution cost itself — ts.resolveModuleName
+// cache), so the budget needs the full headroom to stay off a knife-edge. The
+// next lever for shrinking the receiver-resolution cost itself — ts.resolveModuleName
 // / go list instead of the hand-rolled specifier + heritage walk — is recorded
 // as future work, not this release. Still overridable via env so the
 // gate-liveness test can force a violation (`VERIFY_GATE_BUDGET_MS=0` → fail)

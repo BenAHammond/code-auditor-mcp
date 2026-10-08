@@ -44,16 +44,23 @@ import { spawnSync } from 'node:child_process';
  */
 export const GATES = [
   { name: 'verify:disk-space', dist: false },
-  { name: 'verify:types', dist: false },
   { name: 'verify:node-types', dist: false },
   { name: 'verify:dist-fresh', dist: false },
+  // gate-budget runs FIRST among the dist-consuming gates — before verify:types
+  // (tsc), test, test:integration, and bench — so its warm run measures the gate
+  // in the idle state the agent's hook actually executes in, not the
+  // chain-heated state. `tsc --noEmit` is itself a sustained single-core load
+  // that heats the machine enough to inflate the summed CPU time, so it must run
+  // after gate-budget too. See the BUDGET_MS note in verify-gate-budget.mjs for
+  // why the prior post-bench placement was dropped.
+  { name: 'verify:gate-budget', dist: true },
+  { name: 'verify:types', dist: false },
   { name: 'test', dist: true },
   { name: 'test:integration', dist: true },
   { name: 'bench', dist: false },
   { name: 'verify:recall-value-drift', dist: false },
   { name: 'verify:extraction-completeness', dist: false },
   { name: 'verify:oracle-shortfalls', dist: false },
-  { name: 'verify:gate-budget', dist: true },
   { name: 'verify:clean-install', dist: false },
   { name: 'verify:dist', dist: true },
   { name: 'verify:self', dist: true },
