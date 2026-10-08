@@ -4,8 +4,8 @@
  * fixture, every command the hook and skill invoke, exit codes and real
  * summaries asserted.
  *
- * This is the gate row 9 in specs/known-issues.md named as missing. The specific
- * defect it now pins shut: `code-audit changed` against a *ready* daemon used to
+ * The specific defect this gate pins shut: `code-audit changed` against a *ready*
+ * daemon used to
  * crash (exit 1 — "broken hook" by the hook's own contract) because the daemon
  * fast-path returned a result with no `summary`, so `result.summary.dismissed`
  * threw on every `.ts` edit. `verify:dist` proves the tarball installs; it never

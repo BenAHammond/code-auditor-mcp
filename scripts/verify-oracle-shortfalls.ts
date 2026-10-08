@@ -7,7 +7,19 @@
  * compares each counted oracle against what its processor actually emitted and
  * returns the per-file shortfalls (actual < expected). The gap is the by-design
  * residual (an oracle counts a dumber superset than its producer emits); this
- * gate pins the *aggregate* of that residual, per (fact-kind, corpus).
+ * gate pins the *aggregate* of that residual, per (fact-kind, corpus). The
+ * `residual` (`expected − actual`) is derived, never pinned.
+ *
+ * It is a drift ratchet, not a coverage gate: the oracle is a broad upper-bound
+ * superset (for example `countQuerySites` counts every `\.\w+\s*\(` member call
+ * plus SQL-keyword occurrences) while the producer emits only what
+ * receiver-resolution proves, so `expected ≫ actual` is by design. The gate's
+ * job is to catch corpus drift and a producer emitting *more* than the oracle —
+ * not to drive `expected ≈ actual`. Its known weakness is a permanent property
+ * of a drift ratchet, not a defect to file: a producer that silently stops
+ * emitting a fact kind is visible only if the re-recorded baseline is inspected
+ * against the hand-authored `composition` prose, because the aggregate pins the
+ * whole kind's numbers, not per-producer presence.
  *
  * The corpora are READ-ONLY reference (frozen), so the aggregates are stable: a
  * move means a producer or oracle changed (the regression this gate exists to

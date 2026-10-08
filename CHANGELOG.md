@@ -183,8 +183,7 @@ result can never throw again. The gap that let the crash through — no gate ran
 shipped commands against a live daemon — is closed by the **14th release gate**,
 `verify:daemon-smoke`: it starts a daemon against a fixture project and runs every
 command the hook and skill invoke (`changed --json`, `changed` plain, `audit`, …),
-asserting exit codes and that a real summary comes back. See `specs/known-issues.md`
-(board row 9).
+asserting exit codes and that a real summary comes back.
 
 ### `verify:close` no longer short-circuits on the first failing gate
 
@@ -228,17 +227,19 @@ always-on index-population visitors, and the phase model's single
 performance item, tracked against the phase-model migration's remaining
 board items (Spec 63 R1–R3, Spec 64 R1–R3/R5–R7, board §6.1/§6.2/§7/§8/§9).
 
-### Known limitation — `text(N)` DDL columns don't parse under the sqlite grammar
+### `text(N)` DDL columns now normalize around the sqlite grammar gap
 
 **`node-sql-parser`'s sqlite grammar rejects `text(N)` column spellings — the
-shape Drizzle-sqlite emits for `text` columns — so DDL extraction reports
+shape Drizzle-sqlite emits for `text` columns — so DDL extraction reported
 `cannot-fire` on those tables rather than emitting their tables/columns.**
-`text(256)` / `text(2)` fail to parse while `text` and `varchar(255)` succeed;
-it is an upstream grammar limitation, not a defect in this tool's extractors.
-This is a permanent detection gap across any Drizzle-sqlite corpus (most
-acutely openstatus), not a file-local note; the honest `cannot-fire` is correct
-behavior for an unparseable statement, and a regex fallback would re-introduce
-the hand-rolled parser this release removed. See `specs/known-issues.md`.
+`text(256)` / `text(2)` failed to parse while `text` and `varchar(255)`
+succeeded; the honest `cannot-fire` was correct for an unparseable statement,
+but the fix is input normalization, not a regex fallback:
+`normalizeSqliteTextLength` rewrites `text(N)` → `varchar(N)` before the parse —
+lossless for fact extraction, and it never re-introduces the hand-rolled parser
+this release removed. The grammar residue normalization cannot cover (`UPDATE …
+FROM`, Drizzle `ALTER COLUMN … TO`) is costed in
+`specs/spec70-sql-parser-residual.md`.
 
 ## [Unreleased]
 

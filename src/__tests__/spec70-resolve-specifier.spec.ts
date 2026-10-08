@@ -176,4 +176,14 @@ describe('Spec 70 B1 — classifyImportSource arm (resolved in-repo import → u
     const dzEnv = importEnv('eq', 'drizzle-orm', () => ({ kind: 'vendor', path: '/repo/node_modules/drizzle-orm/index.d.ts' }));
     expect(classifyRootIdentifier('eq', dzEnv)).toBe('not-handle');
   });
+
+  it('a bare specifier that resolves to nothing names no module → `unproven` with a precise reason', () => {
+    // `__prismaFolder__` (a codegen token) and blitz `db` (a build-step alias)
+    // both answer `unresolved` from the seam: no in-repo file, no node_modules
+    // declaration, no manifest package. The reason must say the specifier names
+    // no module — never claim it is a package we merely fail to recognize.
+    const env = importEnv('db', '__prismaFolder__', () => ({ kind: 'unresolved' }));
+    expect(classifyRootIdentifier('db', env)).toBe('unproven');
+    expect(env.importResolutionReason).toContain('names no module in this tree');
+  });
 });

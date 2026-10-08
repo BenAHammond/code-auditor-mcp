@@ -907,6 +907,18 @@ function classifyImportSource(
     if (importKind === 'default' || importKind === 'namespace') return 'handle';
     return handles.has(name) ? 'handle' : 'not-handle';
   }
+  // A bare specifier that resolved to neither an in-repo file, a node_modules
+  // declaration, a Node builtin, nor a manifest DB package names no module in
+  // this tree. That is the honest cannot-fire case — a codegen token
+  // (`__prismaFolder__`), a build-step alias (blitz `db`), or a genuinely absent
+  // module all resolve to nothing here, and guessing a target from the name would
+  // be a fabrication (Spec 70 B1). Only when a resolver was threaded and answered
+  // `unresolved` do we say this; without a resolver (Go, bare-root callers) the
+  // fallback reason below is the conservative "unrecognized package".
+  if (resolved?.kind === 'unresolved') {
+    env.importResolutionReason = `imports from \`${source}\`, which names no module in this tree (no in-repo file reachable from the specifier, no node_modules declaration)`;
+    return 'unproven';
+  }
   return 'unproven';
 }
 
