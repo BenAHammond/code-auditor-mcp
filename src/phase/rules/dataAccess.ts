@@ -161,7 +161,7 @@ const sqlInjectionRisk: RuleDefinition<DataAccessNeeds> = {
 
     for (const call of ctx.facts['data-access-calls']) {
       if (!call.hasSqlInjectionRisk) continue;
-      const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method, ordinals);
+      const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method ?? '', ordinals);
 
       if (call.sqlEscaped) {
         out.push({
@@ -175,7 +175,7 @@ const sqlInjectionRisk: RuleDefinition<DataAccessNeeds> = {
           resolution: {
             action: 'parameterize',
             summary: `The SQL in ${call.method} interpolates a manually quote-escaped value. Quote-doubling defends only the single-quote case (not backslash escapes, unicode quote variants, or numeric/identifier positions) — replace the interpolation with a parameterized query (\`?\`, \`$1\`, or \`:name\`) for a full guarantee.`,
-            symbols: [call.method],
+            symbols: [call.method ?? ''],
             files: [call.file],
             lines: [call.line],
           },
@@ -192,7 +192,7 @@ const sqlInjectionRisk: RuleDefinition<DataAccessNeeds> = {
           resolution: {
             action: 'parameterize',
             summary: `Replace the string-interpolated SQL in ${call.method} with a parameterized query — bind values via the driver's placeholder form (\`?\`, \`$1\`, or \`:name\`) instead of concatenating them into the statement.`,
-            symbols: [call.method],
+            symbols: [call.method ?? ''],
             files: [call.file],
             lines: [call.line],
           },
@@ -231,7 +231,7 @@ const complexQuery: RuleDefinition<DataAccessNeeds> = {
         column: call.column,
         // §7 — one symbol per finding. Without this, two complex queries in the
         // same file collide on `[rule, file, '']` and dedup/baseline folds them.
-        symbol: nextSymbol(call.enclosingFunction ?? 'top-level', call.method, ordinals),
+        symbol: nextSymbol(call.enclosingFunction ?? 'top-level', call.method ?? '', ordinals),
       });
     }
     return out;
@@ -272,7 +272,7 @@ const unfilteredQuery: RuleDefinition<MissingOrgFilterNeeds> = {
 
       const kind = isWrite ? 'write' : 'read';
       const subject = kind === 'read' ? `tenant table ${call.tables.join(', ')}` : call.tables.join(', ');
-      const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method, ordinals);
+      const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method ?? '', ordinals);
 
       out.push({
         ruleId: 'unfiltered-query',

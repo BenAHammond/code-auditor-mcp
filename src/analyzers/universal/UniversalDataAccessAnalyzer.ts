@@ -212,7 +212,9 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
 
 export interface DatabaseCall {
   type: string;
-  method: string;
+  /** The resolved method/property name, or null when the callee shape cannot be
+   *  walked to a name (no method name — never a guessed one). */
+  method: string | null;
   file: string;
   line: number;
   column: number;
@@ -1032,7 +1034,7 @@ function checkViolations(
   const { filePath, config, symbolOrdinals, skipTestRules } = ctx;
   const violations: Violation[] = [];
 
-  const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method, symbolOrdinals);
+  const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method ?? '', symbolOrdinals);
   const push = (message: string, opts: Omit<DataAccessViolationClassification, 'symbol'>) =>
     violations.push(makeViolation(filePath, { line: call.line, column: call.column }, message, { ...opts, symbol }));
 
@@ -1050,7 +1052,7 @@ function checkViolations(
         resolution: {
           action: 'parameterize',
           summary: `The SQL in ${call.method} interpolates a manually quote-escaped value. Quote-doubling defends only the single-quote case (not backslash escapes, unicode quote variants, or numeric/identifier positions) — replace the interpolation with a parameterized query (\`?\`, \`$1\`, or \`:name\`) for a full guarantee.`,
-          symbols: [call.method],
+          symbols: [call.method ?? ''],
           files: [filePath],
           lines: [call.line],
         },
@@ -1062,7 +1064,7 @@ function checkViolations(
         resolution: {
           action: 'parameterize',
           summary: `Replace the string-interpolated SQL in ${call.method} with a parameterized query — bind values via the driver's placeholder form (\`?\`, \`$1\`, or \`:name\`) instead of concatenating them into the statement.`,
-          symbols: [call.method],
+          symbols: [call.method ?? ''],
           files: [filePath],
           lines: [call.line],
         },
@@ -2072,35 +2074,44 @@ function extractCallExpressionMethod(
   callExpr: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
-): string {
-  // Extract the method name from the callee of a call expression.
-  // For `sql.exec(...)` the callee is a member_expression whose
-  // property_identifier is "exec".  Walking the AST avoids picking up SQL
-  // keywords (COUNT, JOIN, WHERE, ...) that appear inside template literals
-  // in the call arguments, which a regex scan of the full call-expression
-  // text would incorrectly match.
-  // Use the shared callee extractor: it recurses through `await_expression` and
-  // skips `type_arguments`, so `await d1<{...}>(...)` resolves to `d1` rather
-  // than falling through to the "unknown" regex fallback.
+): string | null {
+  // Walk the AST to the callee and read the method name as a node. The name is
+  // `property_identifier` on a `member_expression` (or `field_identifier` on a Go
+  // `selector_expression`); a bare `identifier` callee is a named function call.
+  // There is no shape where scanning the call text for `name(` is the right
+  // answer — an unrecognised callee shape is "no method name" (null), never a
+  // guessed name. `getCallExpressionCallee` recurses through `await_expression`
+  // and stops before `arguments`, so a keyword inside a template-literal argument
+  // is never read as the name.
   const callee = getCallExpressionCallee(callExpr, adapter);
-  if (callee) {
-    const calleeType = adapter.getNodeType(callee);
-    if (calleeType === 'member_expression') {
-      const mc = adapter.getChildren(callee);
-      const prop = mc.find(c => adapter.getNodeType(c) === 'property_identifier');
-      if (prop) return adapter.getNodeText(prop, sourceCode);
-    } else {
-      // Bare identifier call (e.g. `exec(...)`)
-      return adapter.getNodeText(callee, sourceCode);
-    }
+  if (!callee) return null;
+  const calleeType = adapter.getNodeType(callee);
+  if (calleeType === 'member_expression') {
+    const prop = adapter.getChildren(callee).find(
+      c => adapter.getNodeType(c) === 'property_identifier',
+    );
+    return prop ? adapter.getNodeText(prop, sourceCode) : null;
   }
-  // Fallback: regex on just the callee portion of the text
-  const callText = adapter.getNodeText(callExpr, sourceCode);
-  const m = callText.match(/\.(\w+)\s*[<(]/);
-  return m ? m[1] : 'unknown';
+  if (calleeType === 'selector_expression') {
+    const field = adapter.getChildren(callee).find(
+      c => adapter.getNodeType(c) === 'field_identifier',
+    );
+    return field ? adapter.getNodeText(field, sourceCode) : null;
+  }
+  if (calleeType === 'identifier') {
+    return adapter.getNodeText(callee, sourceCode);
+  }
+  if (calleeType === 'call_expression') {
+    return extractCallExpressionMethod(callee, adapter, sourceCode);
+  }
+  return null;
 }
 
-function extractMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): string {
+function extractMethodName(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+): string | null {
   const nodeType = adapter.getNodeType(node);
 
   // For template literals inside a DB-provenanced call, extract the method
@@ -2113,19 +2124,17 @@ function extractMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: 
         return extractCallExpressionMethod(callExpr, adapter, sourceCode);
       }
     }
+    return null;
   }
 
-  // For call expressions themselves, extract from the callee child. The
-  // full node text includes the arguments (which may contain template
-  // literals with SQL keywords), so a naive regex scan of the whole text
-  // can match COUNT, JOIN, WHERE, etc. instead of the real method name.
   if (nodeType === 'call_expression') {
     return extractCallExpressionMethod(node, adapter, sourceCode);
   }
 
-  const text = adapter.getNodeText(node, sourceCode);
-  const match = text.match(/([\p{L}\p{N}_]+)\s*\(/u);
-  return match ? match[1] : 'unknown';
+  // Any other node shape has no callee to walk to: there is no method name. The
+  // site abstains (null) rather than scanning the node's text for a `name(` that
+  // would turn "I don't recognise this shape" into a confident wrong name.
+  return null;
 }
 
 /**

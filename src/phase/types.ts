@@ -995,7 +995,7 @@ export type ResolvedWhere = {
 
 export type ResolvedQuery = {
   type: string;
-  method: string;
+  method: string | null;
   file: string;
   line: number;
   column: number;
@@ -1065,8 +1065,9 @@ export type DataAccessCallCandidate = {
   readonly format: 'typescript' | 'go';
   /** The comment-stripped node text (`queryText`). */
   readonly nodeText: string;
-  /** `extractMethodName` — the resolved method/property label. */
-  readonly method: string;
+  /** `extractMethodName` — the resolved method/property label, or null when the
+   *  callee shape cannot be walked to a name (no method name, never a guess). */
+  readonly method: string | null;
   /** The static SQL argument (unquoted), or null when absent/interpolated. */
   readonly sqlArg: string | null;
   /** `isOrmPattern(nodeText)` — an ORM-shaped text, not necessarily SQL. */
