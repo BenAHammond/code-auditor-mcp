@@ -576,7 +576,7 @@ function collectLocalFunctionNames(
       const { nameNode, valueNode } = splitVariableDeclarator(node, adapter);
       if (!nameNode || !valueNode) return;
       const vt = valueNode.type;
-      if (vt === 'arrow_function' || vt === 'function_expression' || vt === 'generator_function_expression') {
+      if (vt === 'arrow_function' || vt === 'function_expression' || vt === 'generator_function') {
         for (const n of extractPatternNames(nameNode, adapter, sourceCode)) names.add(n);
       }
     }
@@ -1476,7 +1476,7 @@ const FUNCTION_NODE_TYPES = new Set([
   'arrow_function',
   'method_definition',
   'generator_function_declaration',
-  'generator_function_expression',
+  'generator_function',
 ]);
 
 /**
@@ -1724,7 +1724,7 @@ function collectClassCallExpressions(cls: ASTNode, adapter: LanguageAdapter): AS
     'function_expression',
     'arrow_function',
     'generator_function_declaration',
-    'generator_function_expression',
+    'generator_function',
   ]);
   const walk = (node: ASTNode): void => {
     for (const child of adapter.getChildren(node)) {

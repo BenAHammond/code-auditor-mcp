@@ -530,7 +530,7 @@ function extractJSXElements(node: ASTNode, content: string): string[] {
 
   walkAST(node, (child) => {
     if (child.type === 'jsx_element') {
-      const openTag = findChildOfType(child, 'open_tag');
+      const openTag = findChildOfType(child, 'jsx_opening_element');
       if (openTag) {
         const tagNameNode = openTag.children?.find(c =>
           c.type === 'identifier' || c.type === 'member_expression');

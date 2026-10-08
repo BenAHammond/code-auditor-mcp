@@ -1002,7 +1002,7 @@ class TsPublicApi extends TsExtraction {
 class TsPredicatesOptional extends TsPublicApi {
   isClass(node: ASTNode): boolean {
     const type = (getRawNode(node)).type;
-    return type === 'class_declaration' || type === 'abstract_class_declaration' || type === 'class_expression';
+    return type === 'class_declaration' || type === 'abstract_class_declaration' || type === 'class';
   }
 
   isFunction(node: ASTNode): boolean {
@@ -1012,7 +1012,7 @@ class TsPredicatesOptional extends TsPublicApi {
       type === 'function_expression' ||
       type === 'arrow_function' ||
       type === 'generator_function_declaration' ||
-      type === 'generator_function_expression'
+      type === 'generator_function'
     );
   }
 

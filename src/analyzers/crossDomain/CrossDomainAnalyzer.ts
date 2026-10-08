@@ -659,7 +659,7 @@ function enclosingFunctionBatches(filePath: string, writeLine: number): boolean 
     'arrow_function',
     'function_expression',
     'generator_function_declaration',
-    'generator_function_expression',
+    'generator_function',
   ]);
 
   // Collect the enclosing function nodes (outermost first) that span the write

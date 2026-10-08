@@ -247,7 +247,7 @@ function isAnonymousOrCallback(node: ASTNode, adapter: AstFile['adapter']): bool
   if (
     nodeType === 'arrow_function' ||
     nodeType === 'function_expression' ||
-    nodeType === 'generator_function_expression'
+    nodeType === 'generator_function'
   ) {
     if (isInlineInCallArguments(parent, adapter)) return true;
     if (isJsxAttributeValue(parentType)) return true;

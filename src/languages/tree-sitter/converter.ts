@@ -92,7 +92,7 @@ export function isFunctionType(type: string): boolean {
     case 'arrow_function':
     case 'method_definition':
     case 'generator_function_declaration':
-    case 'generator_function_expression':
+    case 'generator_function':
       return true;
     default:
       return false;
@@ -107,7 +107,7 @@ export function isFunctionType(type: string): boolean {
 export function isClassType(type: string): boolean {
   switch (type) {
     case 'class_declaration':
-    case 'class_expression':
+    case 'class':
       return true;
     default:
       return false;

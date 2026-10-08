@@ -185,22 +185,20 @@ export function getExports(root: ASTNode, sourceCode: string): ExportInfo[] {
     // Check for type-only exports
     const isTypeOnly = hasModifier(node, 'type');
 
-    // export clause with named exports
+    // export clause with named exports (`export { a, b }`) — the `export_clause`
+    // holds `export_specifier` children directly (no `named_exports` node).
     const exportClause = findChildOfType(node, 'export_clause');
     if (exportClause) {
-      const namedExports = findChildOfType(exportClause, 'named_exports');
-      if (namedExports) {
-        for (const child of namedExports.children ?? []) {
-          if (child.type !== 'export_specifier') continue;
-          const ids = child.children?.filter(c => c.type === 'identifier') ?? [];
-          if (ids.length > 0) {
-            exports.push({
-              name: getNodeText(ids[ids.length - 1], sourceCode),
-              isDefault: false,
-              isTypeOnly,
-              line
-            });
-          }
+      for (const child of exportClause.children ?? []) {
+        if (child.type !== 'export_specifier') continue;
+        const ids = child.children?.filter(c => c.type === 'identifier') ?? [];
+        if (ids.length > 0) {
+          exports.push({
+            name: getNodeText(ids[ids.length - 1], sourceCode),
+            isDefault: false,
+            isTypeOnly,
+            line
+          });
         }
       }
     }
@@ -571,20 +569,17 @@ export function getReExports(root: ASTNode, sourceCode: string): Array<{ name: s
 
     const exportClause = findChildOfType(node, 'export_clause');
     if (exportClause) {
-      const namedExports = findChildOfType(exportClause, 'named_exports');
-      if (namedExports) {
-        for (const child of namedExports.children ?? []) {
-          if (child.type !== 'export_specifier') continue;
-          const identifiers = child.children?.filter(c => c.type === 'identifier') ?? [];
-          if (identifiers.length > 0) {
-            const name = identifiers.length > 1
-              ? getNodeText(identifiers[0], sourceCode)
-              : getNodeText(identifiers[identifiers.length - 1], sourceCode);
-            reExports.push({ name, module: moduleSpecifier });
-          }
+      for (const child of exportClause.children ?? []) {
+        if (child.type !== 'export_specifier') continue;
+        const identifiers = child.children?.filter(c => c.type === 'identifier') ?? [];
+        if (identifiers.length > 0) {
+          const name = identifiers.length > 1
+            ? getNodeText(identifiers[0], sourceCode)
+            : getNodeText(identifiers[identifiers.length - 1], sourceCode);
+          reExports.push({ name, module: moduleSpecifier });
         }
       }
-    } else if (!exportClause) {
+    } else {
       // export * from './module' — no export clause
       reExports.push({ name: '*', module: moduleSpecifier });
     }
@@ -658,8 +653,9 @@ export function getReExports(root: ASTNode, sourceCode: string): Array<{ name: s
 const TYPE_NODE_TYPES = new Set([
   'type_annotation',
   'type_identifier',
+  'nested_identifier',
+  'nested_type_identifier',
   'generic_type',
-  'qualified_name',
   'union_type',
   'intersection_type',
   'conditional_type',
@@ -667,15 +663,14 @@ const TYPE_NODE_TYPES = new Set([
   'index_signature',
   'type_predicate',
   'predefined_type',
-  'string_type',
-  'number_type',
-  'boolean_type',
   'object_type',
   'array_type',
   'tuple_type',
   'function_type',
   'constructor_type',
-  'typeof_expression',
+  'type_query',
+  'extends_type_clause',
+  'implements_clause',
   'template_type',
   'literal_type',
   'lookup_type',
@@ -748,46 +743,6 @@ function isInTypeArguments(identifier: ASTNode, container: ASTNode): boolean {
 }
 
 /**
- * `interface X extends SomeType<...>` — the identifier names the base type of an
- * `extends` heritage clause. Covers both the bare `generic_type` parent and the
- * `namespace.Type` (`member_expression`) parent wrapped in a `generic_type`.
- */
-function isHeritageExtendsTypeUsage(identifier: ASTNode, parent: ASTNode): boolean {
-  let typeNode: ASTNode | undefined;
-  if (parent.type === 'generic_type' && parent.children?.[0] === identifier) {
-    typeNode = parent;
-  } else if (parent.type === 'member_expression' && parent.children?.[0] === identifier) {
-    typeNode = parent.parent;
-    if (typeNode?.type !== 'generic_type') return false;
-  } else {
-    return false;
-  }
-  const heritageClause = typeNode.parent;
-  if (heritageClause?.type !== 'heritage_clause') return false;
-  if (!hasModifier(heritageClause, 'extends')) return false;
-  const interfaceNode = heritageClause.parent;
-  return interfaceNode?.type === 'interface_declaration';
-}
-
-/**
- * `class X implements SomeType` — the identifier is a base type in an
- * `implements` heritage clause of a class declaration.
- */
-function isClassImplementsTypeUsage(identifier: ASTNode, parent: ASTNode): boolean {
-  if (parent.type !== 'class_declaration') return false;
-  for (const child of parent.children ?? []) {
-    if (child.type !== 'heritage_clause') continue;
-    if (!hasModifier(child, 'implements')) continue;
-    for (const typeNode of child.children ?? []) {
-      if (typeNode === identifier) return true;
-      if (typeNode.type === 'member_expression' && typeNode.children?.[0] === identifier) return true;
-      if (typeNode.type === 'generic_type' && typeNode.children?.[0] === identifier) return true;
-    }
-  }
-  return false;
-}
-
-/**
  * `function test<T extends SomeType>()` — the identifier is a type-parameter
  * constraint. When a direct `type_annotation` constraint exists it is decisive
  * (return its result, do not fall through to the secondary child scan).
@@ -823,16 +778,14 @@ function isMappedTypeUsage(identifier: ASTNode, parent: ASTNode): boolean {
 }
 
 /**
- * Type positions reachable through the parent's own parent — a generic type in a
- * heritage clause, or type arguments on call/new/tagged-template expressions.
+ * Type positions reachable through the parent's own parent — type arguments on
+ * call/new/tagged-template expressions (tagged templates parse as
+ * `call_expression`).
  */
 function isAncestorTypeUsage(identifier: ASTNode, parent: ASTNode): boolean {
   if (!parent.parent) return false;
-  if (parent.type === 'generic_type' && parent.parent.type === 'heritage_clause') {
-    return true;
-  }
   const grand = parent.parent;
-  if (grand.type === 'call_expression' || grand.type === 'new_expression' || grand.type === 'tagged_template_literal') {
+  if (grand.type === 'call_expression' || grand.type === 'new_expression') {
     return isInTypeArguments(identifier, grand);
   }
   return false;
@@ -850,14 +803,7 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
   if (TYPE_NODE_TYPES.has(parent.type)) return true;
 
   // Type query: `typeof X`
-  if (parent.type === 'typeof_expression') return true;
-
-  // Qualified name in type position
-  if (parent.type === 'qualified_name' && parent.children?.[0] === identifier) {
-    return isTypeOnlyUsage(parent);
-  }
-
-  if (isHeritageExtendsTypeUsage(identifier, parent)) return true;
+  if (parent.type === 'type_query') return true;
 
   // Type alias: `type X = SomeType`
   if (parent.type === 'type_alias_declaration') {
@@ -865,7 +811,6 @@ function isTypeOnlyUsage(identifier: ASTNode): boolean {
     if (typeAnnotation) return isNodeInTypePosition(identifier, typeAnnotation);
   }
 
-  if (isClassImplementsTypeUsage(identifier, parent)) return true;
   if (isTypeParameterConstraintUsage(identifier, parent)) return true;
 
   // Type annotations in variable declarations: `const x: SomeType = ...`
@@ -1025,7 +970,7 @@ function recordJsxUsage(
 ): void {
   let tagNameNode: ASTNode | undefined;
   if (node.type === 'jsx_element') {
-    const openTag = findChildOfType(node, 'open_tag');
+    const openTag = findChildOfType(node, 'jsx_opening_element');
     if (openTag) {
       tagNameNode = openTag.children?.find(c =>
         c.type === 'identifier' || c.type === 'member_expression');

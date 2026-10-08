@@ -17,7 +17,7 @@
  * commit forms are recognised here as one "transaction-scope" signal.
  *
  * The producer runs the *same* node set and the *same* span test as the legacy
- * walk — `FUNCTION_NODE_TYPES` (including `generator_function_expression`, which
+ * walk — `FUNCTION_NODE_TYPES` (including `generator_function`, which
  * the adapter's `extractFunctions` set omits) and a substring test over the
  * node's full byte range — so a batch/transaction in a nested callback still
  * clears the enclosing outer function, exactly as the legacy ancestor walk did.
@@ -38,7 +38,7 @@ const FUNCTION_NODE_TYPES = new Set([
   'arrow_function',
   'function_expression',
   'generator_function_declaration',
-  'generator_function_expression',
+  'generator_function',
 ]);
 
 /**

@@ -316,7 +316,7 @@ export const countBatchFunctions = countNodeTypes([
   'arrow_function',
   'function_expression',
   'generator_function_declaration',
-  'generator_function_expression',
+  'generator_function',
 ]);
 
 /** imports (Go) — count `import_spec` nodes, exempting `*_test.go`. */

@@ -160,9 +160,9 @@ function evaluate(node: ASTNode, ctx: EvalContext, depth: number): EvalResult {
     case 'function_expression':
     case 'function_declaration':
     case 'generator_function_declaration':
-    case 'generator_function_expression':
+    case 'generator_function':
     case 'class_declaration':
-    case 'class_expression':
+    case 'class':
       return { resolved: false, reason: 'function-value' };
     case 'computed_property_name':
       return { resolved: false, reason: 'computed-key' };

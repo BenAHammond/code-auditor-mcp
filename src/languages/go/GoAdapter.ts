@@ -82,7 +82,7 @@ class GoTraversalHelpers {
       case 'function_declaration':
       case 'type_spec':
       case 'field_declaration':
-      case 'method_spec': {
+      case 'method_elem': {
         const nameNode = node.childForFieldName?.('name');
         if (nameNode) return nameNode.text;
         return null;
@@ -277,12 +277,11 @@ class GoAnalysis extends GoTraversalHelpers {
       switch (child.type) {
         case 'if_statement':
         case 'for_statement':
-        case 'switch_statement':
         case 'expression_switch_statement':
         case 'type_switch_statement':
         case 'select_statement':
-        case 'type_case_clause':
-        case 'expression_case_clause':
+        case 'type_case':
+        case 'expression_case':
         case 'default_case':
         case 'communication_case':
           complexity++;
@@ -417,7 +416,7 @@ class GoAnalysis extends GoTraversalHelpers {
     const members: InterfaceInfo['members'] = [];
 
     for (const member of typeNode.namedChildren) {
-      if (member.type === 'method_spec') {
+      if (member.type === 'method_elem') {
         const memberNameNode = member.childForFieldName?.('name');
         if (memberNameNode) {
           members.push({

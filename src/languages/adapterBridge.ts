@@ -233,10 +233,10 @@ export function positionToLineColumn(
 
 const FUNCTION_TYPES = new Set([
   'function_declaration', 'function_expression', 'arrow_function',
-  'method_definition', 'generator_function_declaration', 'generator_function_expression',
+  'method_definition', 'generator_function_declaration', 'generator_function',
 ]);
 
-const CLASS_TYPES = new Set(['class_declaration', 'class_expression']);
+const CLASS_TYPES = new Set(['class_declaration', 'class']);
 
 const IMPORT_TYPES = new Set(['import_statement', 'import']);
 

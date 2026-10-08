@@ -40,7 +40,7 @@ const FUNCTION_NODE_TYPES = new Set([
   'function_declaration',
   'function_expression',
   'generator_function_declaration',
-  'generator_function_expression',
+  'generator_function',
   'method_definition',
 ]);
 

@@ -78,7 +78,7 @@ const NESTED_FUNCTION_TYPES = new Set([
   'arrow_function',
   'method_definition',
   'generator_function_declaration',
-  'generator_function_expression',
+  'generator_function',
   'method_declaration', // Go method
   'func_literal',       // Go closure
 ]);
