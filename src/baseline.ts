@@ -125,6 +125,7 @@ function warnStaleBaselineOnce(
  * Returns null if no baseline file exists or it fails to parse.
  *
  * @param projectRoot - Absolute path to the project root containing the baseline file.
+ * @param opts - Optional load overrides (config dir + notification sink, for tests).
  * @returns The parsed baseline, or null when absent, incompatible, or unparseable.
  */
 export function loadBaseline(projectRoot: string, opts: BaselineLoadOptions = {}): Baseline | null {

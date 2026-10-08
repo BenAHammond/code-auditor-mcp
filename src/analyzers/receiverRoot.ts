@@ -408,6 +408,11 @@ function bindingFromField(node: ASTNode, adapter: LanguageAdapter, sourceCode: s
  * fields still yields a (possibly empty) entry — the entry's presence tells
  * {@link classifyMemberPath} the name is a *known* interface, so an unknown
  * field cannot-fire rather than falls back to the bare type name.
+ *
+ * @param ast the parsed file AST to walk for interface/type-alias declarations
+ * @param adapter the language adapter used to find and read declaration nodes
+ * @param sourceCode the file source text for reading node text
+ * @returns a name → field-name → type-text map for every interface/type alias
  */
 export function extractInterfaceFields(
   ast: AST,
@@ -687,6 +692,11 @@ function classifyMemberPath(
  * resolvable member path (its `thisField` guard already leaves it unproven), and
  * any segment that is not a plain identifier (a method name, an index, a call
  * result) is dropped to empty — only declared interface fields are resolvable.
+ *
+ * @param root the receiver's leftmost identifier
+ * @param receiver the member-chain text left of the method
+ * @param thisField true when the receiver is a `this`/`super` field
+ * @returns the non-root member-path segments, or an empty array when not resolvable
  */
 export function deriveMemberPath(
   root: string,
@@ -708,6 +718,10 @@ export function deriveMemberPath(
  * `this.`/`super.` prefix is stripped first so the root's member chain is
  * recoverable — it resolves through the root's base-class field type (`this.env`
  * is `Env`) and then the same interface-field seam as B3.
+ *
+ * @param root the receiver's leftmost identifier (after the `this.`/`super.` strip)
+ * @param receiver the member-chain text left of the method
+ * @returns the member-path segments after the root, or an empty array when not resolvable
  */
 export function deriveThisMemberPath(root: string, receiver: string): readonly string[] {
   if (!root || !receiver) return [];
@@ -900,10 +914,12 @@ function classifyValue(value: ValueDescriptor, env: RootResolutionEnv, depth: nu
         const root = value.receiverRoot;
         // A method call on a *provably non-DB* root is itself non-DB: `cheerio.load()`,
         // `JSON.parse()`, `lodash.get()` all resolve to a package/global that is not a
-        // handle, so the call's return is not a handle either.
+        // handle, so the call's return is not a handle either. A method call on a
+        // *handle* root is NOT itself a handle — `db.prepare()` returns a Statement,
+        // `db.transaction()` a Transaction, `stmt.all()` a result row — so it
+        // abstains to `unproven` rather than over-claiming `handle`.
         if (root) {
           const rootDisp = classifyRootIdentifier(root, env, depth + 1);
-          if (rootDisp === 'handle') return 'handle';
           if (rootDisp === 'not-handle') return 'not-handle';
         }
       }
@@ -1046,6 +1062,12 @@ function splitHeritage(text: string): { base: string; args: string[] } {
  * (`WorkflowEntrypoint<Env>`), or null when the node is not inside a class or
  * the class has no base class. The smallest enclosing class wins (nested classes
  * resolve to the innermost), matching the deleted form-3 producer.
+ *
+ * @param ast the parsed file AST searched for enclosing classes
+ * @param adapter the language adapter used to find and read class nodes
+ * @param node the node whose enclosing class heritage is sought
+ * @param sourceCode the file source text for reading the heritage text
+ * @returns the enclosing class's `extends` clause text, or null when none applies
  */
 export function findEnclosingClassHeritage(
   ast: AST,

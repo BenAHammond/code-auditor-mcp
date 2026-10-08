@@ -56,8 +56,7 @@ import {
 } from '../languages/sql/sqlAst.js';
 import { rawInsertColumnsFromAst } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import type { GoResolutionEnv, GoBinding } from '../languages/go/goResolution.js';
-import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
-import { describeUnprovenReceiver, resolveSpecifier, makeHeritageResolver, type TsconfigPathMap } from '../analyzers/receiverResolution.js';
+import { describeUnprovenReceiver, resolveSpecifier, makeHeritageResolver, type TsconfigPathMap, type UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
 
 // ── Specifier resolution (Spec 70 B1) ────────────────────────────────────────
 
@@ -492,6 +491,9 @@ function admitDbCall(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
+ * @param projectRoot the corpus root for specifier resolution, optional
+ * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
  * @returns the classified schema-usage facts (strategies 1/2/4/5/6, in order)
  */
 export function classifySchemaUsage(
@@ -568,6 +570,9 @@ export function classifySchemaUsage(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
+ * @param projectRoot the corpus root for specifier resolution, optional
+ * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
  * @returns the unresolved-query site records re-admitted via `identifyHandle`
  */
 export function classifyUnresolvedQuerySites(
@@ -928,6 +933,10 @@ function buildDataAccessCall(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts (TS-family only)
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
+ * @param projectRoot the corpus root for specifier resolution, optional
+ * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
+ * @param verdictCache an optional shared verdict cache keyed by candidate handle identity
  * @returns the resolved DB calls, deduped and rebuilt with no AST
  */
 export function classifyDataAccessCalls(
@@ -1020,6 +1029,10 @@ export function classifyDataAccessCalls(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts
  * @param sqlDialect the corpus's named dialect, or null to skip R3
+ * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
+ * @param projectRoot the corpus root for specifier resolution, optional
+ * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
+ * @param verdictCache an optional shared verdict cache keyed by candidate handle identity
  * @returns the resolved loop-query facts (deduped, stable symbols assigned)
  */
 export function classifyLoopQueries(
@@ -1101,6 +1114,10 @@ export function classifyLoopQueries(
  * @param provenance the `receiver-provenance` fixed point
  * @param activityFacts the `receiver-activity` facts (TS-family only)
  * @param sqlDialect the corpus's named dialect, or null
+ * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
+ * @param projectRoot the corpus root for specifier resolution, optional
+ * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
+ * @param verdictCache an optional shared verdict cache keyed by candidate handle identity
  * @returns the unproven query-receiver records, deduped and rebuilt
  */
 export function classifyUnprovenQueryReceivers(

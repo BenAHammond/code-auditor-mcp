@@ -456,6 +456,11 @@ function isPrismaObjectForm(
  * would just rebuild the receiver-name failure one layer up. See the
  * extraction-completeness gate (scripts/verify-extraction-completeness.ts) for
  * the pinned residual.
+ *
+ * @param node the candidate call node to classify
+ * @param adapter the language adapter used to read the callee
+ * @param sourceCode the file source text for reading callee text
+ * @returns true when the call is query-builder shaped (chain companion or Prisma object form)
  */
 export function isQueryBuilderShape(
   node: ASTNode,
@@ -1247,10 +1252,14 @@ function isInPrepareBindChain(
 function findCallFromEntry(node: ASTNode, adapter: LanguageAdapter): ASTNode | null {
   const type = adapter.getNodeType(node);
   if (type === 'template_string') {
-    const args = adapter.getParent(node);
-    if (!args || adapter.getNodeType(args) !== 'arguments') return null;
-    const call = adapter.getParent(args);
-    return call && adapter.getNodeType(call) === 'call_expression' ? call : null;
+    // A nested template (`${cond ? \` WHERE x = ?\` : ''}`) is a fragment of its
+    // enclosing query, not a query in its own right. Resolve it through the
+    // substitution/outer-template chain to the enclosing call (as
+    // `enclosingCallOf` does) so it inherits that call's parameterization —
+    // `.query(sql, params)` / `.prepare().bind()` — instead of being re-read as
+    // a bare interpolation whose direct parent is `template_substitution` (not
+    // `arguments`) and therefore wrongly reported as raw injection ("in unknown").
+    return enclosingCallOf(node, adapter);
   }
   if (type === 'call_expression') return node;
   return null;

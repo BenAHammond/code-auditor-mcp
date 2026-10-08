@@ -1154,6 +1154,26 @@ export function buildProvenanceContext(
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
+ * Build the TS receiver-classification env each local fold constructs. The three
+ * receiver folds (`collectDbActivity`, `applySqlArgumentInference`,
+ * `delegatesToProvenanced`) once each hand-built a near-identical `env` literal;
+ * this constructor keeps the classifier's inputs in one place. `interfaceFields`
+ * is omitted by the bare-root callers that classify a receiver with no member
+ * chain (the B3 arm reads it only for `env.DB`-shaped chains); `delegatesToProvenanced`
+ * passes an empty provenance map so the receiver's own declaration — not its
+ * propagated provenance — decides its disposition.
+ */
+function buildRootEnv(
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  provenance: ReadonlyMap<string, ProvenanceEvidence>,
+  bindings: ReadonlyMap<string, Binding>,
+  interfaceFields?: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): RootResolutionEnv {
+  return { provenance, bindings, interfaceFields, adapter, sourceCode };
+}
+
+/**
  * Collect the receiver roots of DB-shaped call sites (a member/selector call
  * whose first argument is a static SQL string literal, or whose receiver root
  * resolves handle/unproven), *proven or unproven*. This is the file-gate signal
@@ -1186,13 +1206,13 @@ export function collectDbActivity(
   // the gate on, and Go files are gated by their own import resolution instead.
   if (adapter.name === 'go') return activity;
 
-  const env: RootResolutionEnv = {
-    provenance: dbProvenanced,
-    bindings: buildBindingEnv(ast, adapter, sourceCode),
-    interfaceFields: extractInterfaceFields(ast, adapter, sourceCode),
+  const env = buildRootEnv(
     adapter,
     sourceCode,
-  };
+    dbProvenanced,
+    buildBindingEnv(ast, adapter, sourceCode),
+    extractInterfaceFields(ast, adapter, sourceCode),
+  );
 
   walkAST(ast.root, (node) => {
     if (node.type !== 'call_expression') return;
@@ -1247,13 +1267,13 @@ export function applySqlArgumentInference(
 ): Map<string, ProvenanceEvidence> {
   if (adapter.name === 'go') return dbProvenanced; // Go resolves cross-file; no TS env here.
 
-  const env: RootResolutionEnv = {
-    provenance: dbProvenanced,
-    bindings: buildBindingEnv(ast, adapter, sourceCode),
-    interfaceFields: extractInterfaceFields(ast, adapter, sourceCode),
+  const env = buildRootEnv(
     adapter,
     sourceCode,
-  };
+    dbProvenanced,
+    buildBindingEnv(ast, adapter, sourceCode),
+    extractInterfaceFields(ast, adapter, sourceCode),
+  );
 
   walkAST(ast.root, (node) => {
     if (node.type !== 'call_expression') return;
@@ -1808,12 +1828,7 @@ function delegatesToProvenanced(
     // not-handle) is consulted rather than its propagated provenance.
     const root = resolveReceiverRoot(callee, adapter, sourceCode);
     if (root === null) return false;
-    const env: RootResolutionEnv = {
-      provenance: new Map(),
-      bindings,
-      adapter,
-      sourceCode,
-    };
+    const env = buildRootEnv(adapter, sourceCode, new Map(), bindings);
     return classifyRootIdentifier(root, env) !== 'not-handle';
   }
 

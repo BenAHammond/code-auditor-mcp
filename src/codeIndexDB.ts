@@ -412,7 +412,7 @@ export class CodeIndexDB {
    * @returns Counts of added, updated, and removed rows across all files.
    */
   async syncFileIndexBatch(
-    entries: Array<{ filePath: string; currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[] }>
+    entries: Array<{ filePath: string; currentFunctions: (FunctionMetadata | EnhancedFunctionMetadata)[]; fileHash?: string }>
   ): Promise<{ added: number; updated: number; removed: number }> {
     this.ensureInitialized();
     const stats = { added: 0, updated: 0, removed: 0 };
@@ -431,8 +431,8 @@ export class CodeIndexDB {
     );
 
     this.db.transaction(() => {
-      for (const { filePath, currentFunctions } of entries) {
-        this.functionIndex.syncFileIndexRow(filePath, currentFunctions, stats, mtimes.get(filePath));
+      for (const { filePath, currentFunctions, fileHash } of entries) {
+        this.functionIndex.syncFileIndexRow(filePath, currentFunctions, stats, mtimes.get(filePath), fileHash);
       }
     }).immediate();
     await this.graph.updateDependencyGraph();
@@ -639,25 +639,67 @@ export class CodeIndexDB {
 
     const total = files.length;
 
+    // Parse each file and defer its index write to one batched transaction plus
+    // one dependency-graph rebuild after the loop. The previous per-file
+    // `synchronizeFile` → `syncFileIndex` path was one transaction plus one
+    // per-file dependency-graph rebuild per file — the same O(files × functions)
+    // query-in-loop N+1 Amendment B2 collapsed in the detached-audit path.
+    // Tree-sitter parsing stays per-file (it is the inherent cost); only the DB
+    // write is batched. Progress and per-file error attribution are unchanged.
+    const syncEntries: Array<{ filePath: string; currentFunctions: FunctionMetadata[] }> = [];
+    const inaccessiblePaths: string[] = [];
+
     for (let i = 0; i < files.length; i++) {
       const fp = files[i];
       if (progressCallback) {
         progressCallback({ current: i + 1, total, file: fp });
       }
+
+      let accessible = true;
       try {
-        const result = await this.synchronizeFile(fp);
-        if (result) {
-          syncedFiles++;
-          totalAdded += result.added;
-          totalUpdated += result.updated;
-          totalRemoved += result.removed;
-        }
+        await fs.access(fp);
+      } catch {
+        accessible = false;
+      }
+
+      if (!accessible) {
+        // File doesn't exist — defer its delete to one batched DELETE after the
+        // loop (the same json_each batch the stale cleanup below uses), instead
+        // of one `DELETE … WHERE file_path = ?` per missing file (loop-query N+1).
+        inaccessiblePaths.push(fp);
+        syncedFiles++;
+        continue;
+      }
+
+      try {
+        const { FunctionScanner } = await import('./functionScanner.js');
+        const scanner = new FunctionScanner();
+        const fileContent = await fs.readFile(fp, 'utf-8');
+        const parsedFunctions = await scanner.scanFunctions(fileContent, fp);
+        syncEntries.push({ filePath: fp, currentFunctions: parsedFunctions });
+        syncedFiles++;
       } catch (error) {
         errors.push({
           file: fp,
-          error: error instanceof Error ? error.message : String(error)
+          error: `Failed to sync file: ${errorMessage(error)}`
         });
       }
+    }
+
+    if (syncEntries.length > 0) {
+      const batchStats = await this.syncFileIndexBatch(syncEntries);
+      totalAdded += batchStats.added;
+      totalUpdated += batchStats.updated;
+      totalRemoved += batchStats.removed;
+    }
+
+    // Batch-delete the functions of every file that vanished between discovery
+    // and the scan (one json_each DELETE, not one per file).
+    if (inaccessiblePaths.length > 0) {
+      const removed = this.db
+        .prepare(SQL_DELETE_FUNCTIONS_IN_FILEPATHS)
+        .run(JSON.stringify(inaccessiblePaths));
+      totalRemoved += removed.changes;
     }
 
     // Clean up stale entries: a file is stale when it is no longer in the
@@ -803,6 +845,14 @@ export class CodeIndexDB {
       }
     }
 
+    // Collect per-file sync entries here and batch them after the loop — a
+    // `syncFileIndex` call inside the loop was a per-file transaction plus a
+    // per-file dependency-graph rebuild (query-in-loop N+1). `syncFileIndexBatch`
+    // collapses that to one transaction and one unscoped rebuild (Amendment B2),
+    // and carries each file's content hash so the warm-path short-circuit keeps
+    // its stored `file_hash` baseline.
+    const syncEntries: Array<{ filePath: string; currentFunctions: FunctionMetadata[]; fileHash: string }> = [];
+
     for (const filePath of filePaths) {
       if (missingSet.has(filePath)) continue;
 
@@ -878,14 +928,20 @@ export class CodeIndexDB {
           changedFilePaths.push(filePath);
         }
 
-        // Sync the file into the index (upsert + deletes)
-        await this.syncFileIndex(filePath, currentFunctions as FunctionMetadata[], fileHash);
+        // Defer the index write: collected above and flushed in one batch after
+        // the loop (see `syncEntries`).
+        syncEntries.push({ filePath, currentFunctions: currentFunctions as FunctionMetadata[], fileHash });
       } catch (error) {
         errors.push({
           file: filePath,
           error: error instanceof Error ? error.message : String(error)
         });
       }
+    }
+
+    // One batched write + one dependency-graph rebuild for all changed files.
+    if (syncEntries.length > 0) {
+      await this.syncFileIndexBatch(syncEntries);
     }
 
     return { changedFunctions, deletedFunctions, changedFilePaths, errors };

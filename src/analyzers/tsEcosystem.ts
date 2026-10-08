@@ -65,6 +65,9 @@ export const DB_HANDLE_TYPES: ReadonlyMap<string, ReadonlySet<string>> = new Map
  * specifier does not name a DB package. Mirrors the exact-or-subpath match
  * `provenance.ts` uses for `DB_PACKAGES` membership, so `pg/lib` and
  * `mysql2/promise` resolve to their base package's handle names.
+ *
+ * @param specifier the module specifier to resolve to DB-handle names
+ * @returns the DB-handle names for the package, or undefined when not a DB package
  */
 export function handleTypesForPackage(specifier: string): ReadonlySet<string> | undefined {
   if (!specifier) return undefined;
@@ -110,6 +113,9 @@ export function isDbHandleTypeName(name: string): boolean {
  * declared by several packages (`Pool` under `pg`/`mysql2`/`@neondatabase/serverless`,
  * `Database` under `better-sqlite3`/`bun:sqlite`/`node:sqlite`) returns the whole
  * set; the caller asks whether *any* of them is declared.
+ *
+ * @param name the handle-type name whose declaring packages are sought
+ * @returns the set of packages declaring the name, or undefined when none do
  */
 export function dbHandlePackagesForName(name: string): ReadonlySet<string> | undefined {
   if (!name) return undefined;
@@ -137,6 +143,9 @@ const NODE_BUILTIN_MODULES: ReadonlySet<string> = new Set(builtinModules);
  * True when a module specifier names a Node builtin (`fs`, `node:fs`,
  * `fs/promises`). A bare import reaching here was not a database package, so a
  * builtin is provably `not-handle` (criterion: no Node builtin is a DB client).
+ *
+ * @param specifier the module specifier to test
+ * @returns true when the specifier names a Node builtin module or subpath
  */
 export function isNodeBuiltin(specifier: string): boolean {
   if (!specifier) return false;

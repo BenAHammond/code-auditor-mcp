@@ -210,6 +210,11 @@ export interface TsconfigPathMap {
  *     (`.d.ts` / `package.json` `types`) when one exists.
  *   • nothing else resolves → `unresolved`.
  *
+ * @param specifier the import specifier text to resolve
+ * @param importerPath the absolute path of the importing file
+ * @param filesByPath the set of known in-repo file paths (extension-resolved)
+ * @param projectRoot the project root for `@/`/`~/` alias + vendor resolution, optional
+ * @param tsconfig the project's tsconfig `paths`/`baseUrl` mapping, optional
  * @returns a tagged `SpecifierResolution` — `in-repo` (an in-repo file whose
  *   export chain is not walked here), `vendor` (a node_modules declaration), or
  *   `unresolved` (neither).
@@ -450,6 +455,11 @@ function substituteTypeParams(
  *  ships a `.d.ts` that declares the base class — which is every pinned clone, none
  *  of which carries `node_modules` — so the classifier abstains. Results are
  *  cached per base class name.
+ *
+ * @param projectRoot the project root the resolver walks for vendor declarations
+ * @param declaredTypePackages the project's declared dependency packages
+ * @returns a resolver returning a field's declared type (or null to abstain),
+ *   or null when either argument is absent
  */
 export function makeHeritageResolver(
   projectRoot: string | undefined,
@@ -593,7 +603,15 @@ export function isProvablyNonDbDeclaration(
  *  `receiverResolution.ts` and `receiverConsumers.ts`) were why a fabricated claim
  *  lived in all four and took four edits to fix. The only format-specific piece is
  *  the receiver/root/cause clause ({@link describeReceiverClause}); the tail and the
- *  closing "so its DB access is unseen" are shared. */
+ *  closing "so its DB access is unseen" are shared.
+ *
+ * @param receiver the receiver chain text (e.g. `this.env.DB`)
+ * @param method the method name called on the receiver
+ * @param root the receiver's leftmost root identifier
+ * @param cause the combined verdict reason naming why the root is unproven
+ * @param queryShaped true when the site admitted via query-builder shape
+ * @param format the output dialect (`typescript` or `go`)
+ * @returns the human-readable unproven-receiver reason string */
 export function describeUnprovenReceiver(
   receiver: string,
   method: string,

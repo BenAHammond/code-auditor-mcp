@@ -28,6 +28,7 @@ import { SQL_TAG_NAMES } from './universal/schema/config.js';
  * @param text - the raw source text of the literal node, delimiters included.
  * @param opts.raw - true when the literal is a Go `raw_string_literal`
  *   (backtick, no escape sequences); the body is then returned verbatim.
+ * @returns the unquoted literal body, un-escaped to its runtime value
  */
 export function stripSqlQuotes(text: string, opts?: { raw?: boolean }): string {
   if (text.length >= 2 && (text[0] === '"' || text[0] === "'" || text[0] === '`')) {
@@ -185,7 +186,14 @@ function taggedTemplateCallee(node: ASTNode, adapter: LanguageAdapter): ASTNode 
 }
 
 /** True when a call is a SQL tagged template (`sql\`…\`` / `this.sql\`…\``) under
- *  the given tag names. */
+ *  the given tag names.
+ *
+ * @param node - the candidate call node to classify
+ * @param adapter - the language adapter used to read children and text
+ * @param sourceCode - the file source text for reading tag names
+ * @param tagNames - the recognized SQL tag names to match against
+ * @returns true when the call is a SQL tagged template under one of `tagNames`
+ */
 export function isTaggedTemplateSqlCall(
   node: ASTNode,
   adapter: LanguageAdapter,
@@ -234,6 +242,11 @@ export function isTaggedTemplateSqlCall(
  * assignment's RHS literal. A template carrying a `${…}` substitution is
  * dynamic and yields null (its shape is interpolated, not a parseable literal);
  * that is `cannot-fire`, not a negative verdict.
+ *
+ * @param node - the candidate node carrying the SQL argument
+ * @param adapter - the language adapter used to read children and text
+ * @param sourceCode - the file source text for reading node text
+ * @returns the static SQL text, or null when the node carries none (dynamic/interpolated)
  */
 export function extractStaticSql(
   node: ASTNode,
@@ -295,7 +308,14 @@ export function extractStaticSql(
  *  one Go-only step — an identifier argument resolved through the file's `const`
  *  bindings — so sqlc's SQL reaches the parser instead of surfacing `cannot-fire`.
  *  Returns null when the call carries no static SQL (a ctx/options-only argument
- *  list, or an identifier that is not a const literal). */
+ *  list, or an identifier that is not a const literal).
+ *
+ * @param node - the Go call node carrying the SQL argument
+ * @param adapter - the language adapter used to read children and text
+ * @param sourceCode - the file source text for reading node text
+ * @param goEnv - the Go resolution environment holding the file's const bindings
+ * @returns the static SQL text (const literal resolved), or null when none
+ */
 export function extractGoStaticSql(
   node: ASTNode,
   adapter: LanguageAdapter,

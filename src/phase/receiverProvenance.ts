@@ -74,7 +74,10 @@ export function evidenceFromFact(f: ProvenanceEvidenceFact): ProvenanceEvidence 
  *  *same* mapping — one rehydration, not two that could drift. The two are
  *  structurally identical (`TsBindingFact` is the §4 projection of `Binding`, whose
  *  `value` is already the serializable `ValueDescriptor`), so the reconstruction is
- *  lossless. */
+ *  lossless.
+ *
+ * @param b the serialized `TsBindingFact` to rehydrate
+ * @returns the rehydrated `Binding` interface value */
 export function bindingFromFact(b: TsBindingFact): Binding {
   return {
     kind: b.kind,

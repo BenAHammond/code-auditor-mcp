@@ -537,7 +537,24 @@ const sqlArgumentSource: EvidenceSource<'sql-argument'> = {
   evaluate(site, facts) {
     if (site.sqlArgument === null) return { kind: 'unproven', reason: '' };
     const parsed = parseSql(site.sqlArgument, facts.sqlDialect ?? DEFAULT_SQL_DIALECT);
-    if (parsed.ok) return { kind: 'handle', via: 'sql-argument' };
+    if (parsed.ok) {
+      // A parse success is not enough to prove a handle: node-sql-parser accepts
+      // fragments that are not standalone data-access statements (e.g. a bare
+      // `RETURN return_type` — the `RETURN` keyword plus an expression — which is
+      // how tree-sitter field names like `return_type`/`returnType` leak through
+      // and mis-prove a TreeSitterNode receiver as a DB handle). Only a statement
+      // of a real query/mutation kind (SELECT/INSERT/UPDATE/…), or a recognized
+      // standalone transaction-control marker, is unambiguously SQL that names a
+      // database receiver. Anything else parses to `kind === 'other'` with no
+      // statement type and stays unproven so declaration-resolution decides.
+      const astType = (parsed.ast as { type?: unknown }).type;
+      const isDataAccess = parsed.kind !== 'other' || astType === 'transaction';
+      if (isDataAccess) return { kind: 'handle', via: 'sql-argument' };
+      return {
+        kind: 'unproven',
+        reason: `the SQL argument parses but is not a standalone data-access statement (kind: ${parsed.kind})`,
+      };
+    }
     if (facts.sqlDialect === null) {
       return {
         kind: 'unproven',

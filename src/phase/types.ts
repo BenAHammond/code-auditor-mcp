@@ -177,6 +177,14 @@ export type FileMethodSymbol = {
   column?: number;
   parameterCount: number;
   parameterNames: string[];
+  /** The number of parameters that are genuine domain inputs — excluding the
+   *  threaded context/configuration parameters (optional/defaulted, or typed as
+   *  a lookup/index container, resolver, environment, dialect, or config noun).
+   *  The `parameter-count` rule measures against this so a context-threading
+   *  signature (a shared resolution environment spread into positional
+   *  parameters) is not mistaken for a caller-facing god-function that should
+   *  bundle its domain inputs into an options object. */
+  primaryParameterCount: number;
   lineCount: number;
   complexity: number;
   /** True when the method body contains a `throw` (LSP override signal). */
@@ -205,6 +213,14 @@ export type FileFunctionSymbol = {
   isAsync?: boolean;
   parameterCount: number;
   parameterNames: string[];
+  /** The number of parameters that are genuine domain inputs — excluding the
+   *  threaded context/configuration parameters (optional/defaulted, or typed as
+   *  a lookup/index container, resolver, environment, dialect, or config noun).
+   *  The `parameter-count` rule measures against this so a context-threading
+   *  signature (a shared resolution environment spread into positional
+   *  parameters) is not mistaken for a caller-facing god-function that should
+   *  bundle its domain inputs into an options object. */
+  primaryParameterCount: number;
   lineCount: number;
   complexity: number;
   /** Voting concern-group labels (empty = single-purpose); SRP reads these. */

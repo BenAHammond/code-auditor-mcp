@@ -127,6 +127,10 @@ type FunctionLike = {
   column?: number;
   parameterCount: number;
   parameterNames: string[];
+  /** Domain-input parameter count (excluding threaded context/configuration) —
+   *  see `fileSymbols.ts` `countPrimaryParameters`. `parameter-count` measures
+   *  against this; `function-length` ignores it. */
+  primaryParameterCount: number;
   lineCount: number;
   complexity: number;
   concernGroups: string[];
@@ -139,7 +143,7 @@ function collectFunctionLikes(symbols: FileSymbols[]): FunctionLike[] {
       out.push(s);
     } else if (s.kind === 'class') {
       for (const m of s.methods) {
-        out.push({ name: m.name, file: s.file, line: m.line, column: m.column, parameterCount: m.parameterCount, parameterNames: m.parameterNames, lineCount: m.lineCount, complexity: m.complexity, concernGroups: m.concernGroups });
+        out.push({ name: m.name, file: s.file, line: m.line, column: m.column, parameterCount: m.parameterCount, parameterNames: m.parameterNames, primaryParameterCount: m.primaryParameterCount, lineCount: m.lineCount, complexity: m.complexity, concernGroups: m.concernGroups });
       }
     }
   }
@@ -447,7 +451,15 @@ const parameterCount = makeSizeRule({
   id: 'parameter-count',
   thresholdKey: 'maxParametersPerMethod',
   fallback: 6,
-  measure: (fn) => fn.parameterCount,
+  // Measure the *domain* parameter count, not the total. A function that
+  // threads a shared context/configuration environment (the phase `CorpusContext`
+  // or the receiver `RootResolutionEnv`/`GoResolutionEnv` fields) spread into
+  // positional parameters has a large *total* parameter list but only a handful
+  // of genuine domain inputs — it is not the "bundle your inputs into an options
+  // object" smell the rule targets, so it is not flagged for its context tail.
+  // The primary count is computed at extraction time (fileSymbols.ts), where the
+  // type annotations still live.
+  measure: (fn) => fn.primaryParameterCount,
   messageFor: (fn, max) => `Function "${fn.name}" has ${fn.parameterCount} parameters, exceeding the maximum of ${max}. Consider using an options object.`,
   resolutionFor: (fn) => ({
     action: 'bundle-params',

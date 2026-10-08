@@ -220,20 +220,38 @@ export class DependencyGraphIndex {
    * @returns Resolves once every function's dependency_depth has been updated.
    */
   async calculateDependencyDepths(): Promise<void> {
-    const functions = this.db.prepare('SELECT id, name FROM functions').all() as any[];
     const update = this.db.prepare('UPDATE functions SET dependency_depth = ? WHERE id = ?');
 
-    // Calculate depths outside transaction since getTransitiveDependencies is async
-    const depths: Array<{ id: number; maxDepth: number }> = [];
-    for (const fn of functions) {
-      const deps = await this.getTransitiveDependencies(fn.name);
-      const maxDepth = deps.length > 0 ? Math.max(...deps.map(d => d.depth)) : 0;
-      depths.push({ id: fn.id, maxDepth });
-    }
+    // One recursive CTE computes every function's deepest transitive dependency
+    // distance in a single query — the previous per-function
+    // `getTransitiveDependencies(fn.name)` loop was one recursive CTE per function
+    // (a query-in-loop N+1). `root_name` carries each start function's name through
+    // the closure, mirroring `getTransitiveDependencies`'s base/recursive terms
+    // (`depth < 10` matches its default maxDepth), so the per-name max depth is
+    // equivalent to the loop's `Math.max(...deps.map(d => d.depth))`.
+    const rows = this.db.prepare(`
+      WITH RECURSIVE deps(root_name, callee_name, depth) AS (
+        SELECT f.name, fc.callee_name, 1
+        FROM functions f
+        JOIN function_calls fc ON fc.caller_id = f.id
+        UNION
+        SELECT deps.root_name, fc.callee_name, deps.depth + 1
+        FROM function_calls fc
+        JOIN deps ON fc.caller_id IN (SELECT id FROM functions WHERE name = deps.callee_name)
+        WHERE deps.depth < 10
+      )
+      SELECT root_name AS name, MAX(depth) AS maxDepth
+      FROM deps
+      GROUP BY root_name
+    `).all() as Array<{ name: string; maxDepth: number }>;
 
+    const maxByName = new Map<string, number>();
+    for (const row of rows) maxByName.set(row.name, row.maxDepth);
+
+    const functions = this.db.prepare('SELECT id, name FROM functions').all() as any[];
     const txn = this.db.transaction(() => {
-      for (const { id, maxDepth } of depths) {
-        update.run(maxDepth, id);
+      for (const fn of functions) {
+        update.run(maxByName.get(fn.name) ?? 0, fn.id);
       }
     });
 

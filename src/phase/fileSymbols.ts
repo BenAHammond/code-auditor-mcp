@@ -16,7 +16,7 @@
  */
 
 import type { AstFile, FileSymbols, FileFunctionSymbol, FileClassSymbol } from './types.js';
-import type { ASTNode, ClassInfo, FunctionInfo } from '../languages/types.js';
+import type { ASTNode, ClassInfo, FunctionInfo, ParameterInfo } from '../languages/types.js';
 import { walkAST } from '../languages/adapterBridge.js';
 import { findNodeByLocation } from '../languages/locationIndex.js';
 import { detectFunctionConcerns, votingConcerns, CONCERN_LABELS, isFunctionNodeType } from '../analyzers/universal/functionConcerns.js';
@@ -96,6 +96,7 @@ function extractClass(file: AstFile, cls: ClassInfo): FileClassSymbol {
       column: m.location.start.column,
       parameterCount: m.parameters.length,
       parameterNames: m.parameters.map((p) => p.name),
+      primaryParameterCount: countPrimaryParameters(m.parameters),
       lineCount: m.location.end.line - m.location.start.line + 1,
       complexity: methodNode ? adapter.getComplexity(methodNode) : 0,
       throws: methodNode ? nodeThrows(methodNode) : false,
@@ -151,6 +152,7 @@ function extractFunction(
     isAsync: func.isAsync,
     parameterCount: func.parameters.length,
     parameterNames: func.parameters.map((p) => p.name),
+    primaryParameterCount: countPrimaryParameters(func.parameters),
     lineCount: func.location.end.line - func.location.start.line + 1,
     complexity,
     concernGroups,
@@ -158,6 +160,48 @@ function extractFunction(
     returnType: func.returnType,
     isAnonymousOrCallback: funcNode ? isAnonymousOrCallback(funcNode, file.adapter) : false,
   };
+}
+
+/** True when a parameter is threaded *context* rather than a domain payload.
+ *
+ *  The `parameter-count` rule's advice is "bundle the domain inputs into an
+ *  options object" — it is a smell about how many distinct *values* a caller
+ *  must pass. A function that threads a shared resolution/configuration
+ *  environment (e.g. the phase `CorpusContext`, or the receiver `RootResolutionEnv`
+ *  / `GoResolutionEnv`) spread into positional parameters is not that smell: its
+ *  trailing parameters are dependency-injected context, not per-call domain
+ *  inputs. We detect those context parameters here, while the type annotations
+ *  still live on the AST, so the rule can measure the *domain* parameter count
+ *  without reaching the tree.
+ *
+ *  A parameter is context when it is optional/defaulted (trailing configuration)
+ *  or when its type annotation names a context shape: a lookup/index container
+ *  (`Map`/`Set`/`Readonly*`/`Weak*`/`Record`), a function/resolver type, or an
+ *  environment/dialect/config/cache noun. Required, concrete-typed parameters
+ *  (`string`, `number`, a domain interface, a fact array) stay domain. */
+function isContextParameter(p: ParameterInfo): boolean {
+  if (p.optional || p.defaultValue !== undefined) return true;
+  const t = (p.type ?? '').trim();
+  if (!t) return false;
+  // Lookup/index containers — cross-cutting state, not a domain value.
+  if (/^(ReadonlyMap|ReadonlySet|Map|Set|WeakMap|WeakSet|Record)\s*</.test(t)) return true;
+  // An inline function/resolver type.
+  if (t.includes('=>')) return true;
+  // A camelCase/standalone context noun (`GoResolutionEnv`, `Dialect`,
+  // `SpecifierResolver`, `TsconfigPathMap`, …). The lowercase-prefix arm catches
+  // camelCase transitions; the trailing guard rejects `Environment`/`Configurable`
+  // (a lowercase continuation means the noun is mid-word, not a suffix).
+  return /(?:^|[a-z]|[^A-Za-z])(Env|Resolver|Dialect|Config|Cache|Options|PathMap|Context)(?=$|[^a-z])/.test(t);
+}
+
+/** The number of parameters that are domain inputs (see {@link isContextParameter}).
+ *  `parameterCount - countPrimaryParameters(...)` is the threaded-context tail. */
+function countPrimaryParameters(parameters: ParameterInfo[]): number {
+  let n = 0;
+  for (const p of parameters) {
+    if (!isContextParameter(p)) n += 1;
+  }
+  return n;
 }
 
 // ── Helpers (re-homed from UniversalSOLIDAnalyzer) ───────────────────────────
