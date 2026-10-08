@@ -787,7 +787,7 @@ export function rawInsertColumnsFromAst(sqlAst: SqlAst): string[] | null {
 
 /** The Kysely builder write verb carried as a camelCase method name — a
  *  host-language chain shape, not SQL.  `selectFrom`/`selectAll` are reads. */
-function builderWriteVerb(text: string): 'insert' | 'update' | 'delete' | null {
+export function builderWriteVerb(text: string): 'insert' | 'update' | 'delete' | null {
   if (/\.insertInto\s*\(/.test(text)) return 'insert';
   if (/\.updateTable\s*\(/.test(text)) return 'update';
   if (/\.deleteFrom\s*\(/.test(text)) return 'delete';
@@ -797,7 +797,7 @@ function builderWriteVerb(text: string): 'insert' | 'update' | 'delete' | null {
 /** True when an ORM chain carries a row-limiting shape (`.where(...)`, `.having(...)`,
  *  `.limit(...)`, `.andWhere(...)`, `.orWhere(...)`) — the host-language analog of
  *  SQL's WHERE/HAVING/LIMIT that the AST walk cannot see because there is no SQL. */
-function hasOrmFilterShape(text: string): boolean {
+export function hasOrmFilterShape(text: string): boolean {
   return /\.(?:where|andWhere|orWhere|having|limit)\s*\(/.test(text);
 }
 
@@ -1319,7 +1319,7 @@ function memberPropertyName(node: ASTNode, adapter: LanguageAdapter, sourceCode:
  * only collision in the eager set — none of run/first/raw/exec/batch are
  * Promise methods.
  */
-function isPromiseAllMember(memberExpr: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+export function isPromiseAllMember(memberExpr: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
   if (memberPropertyName(memberExpr, adapter, sourceCode) !== 'all') return false;
   const objectNode = adapter.getChildren(memberExpr).find(
     c => adapter.getNodeType(c) !== 'property_identifier',
@@ -1647,7 +1647,7 @@ function isWrapperFunctionWithBindParams(
  * catches the common idiom where the prepared statement is stored in a local
  * before being bound.
  */
-function isPrepareAssignedToVariable(
+export function isPrepareAssignedToVariable(
   prepareCall: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
@@ -1922,7 +1922,7 @@ function effectiveWrapperNames(scan: DataAccessScanContext): string[] {
  * analysis, or a static-constant resolution for bare identifiers.  Otherwise
  * the part counts as unresolved (a candidate injection).
  */
-function isSafeDynamicPart(
+export function isSafeDynamicPart(
   part: DynamicPart,
   ast: AST,
   scan: DataAccessScanContext,
@@ -2647,7 +2647,7 @@ function identifierBoundToPrepareOutsideLoop(
  * `*Statement`/`*Statements` annotation means the value is a compiled statement
  * (or a bundle of them), so a loop that re-runs it re-runs pre-prepared SQL.
  */
-function parameterBoundToStatementType(
+export function parameterBoundToStatementType(
   name: string,
   fnNode: ASTNode,
   adapter: LanguageAdapter,
@@ -3132,7 +3132,7 @@ function isLlmCallNode(
  * is `cannot-fire` (visible, never a finding), so a `map.delete()` / `set.join()`
  * on an unresolved receiver does not read as a DB call inside a loop.
  */
-function isDbCallNode(
+export function isDbCallNode(
   node: ASTNode,
   scan: DataAccessScanContext,
 ): boolean {

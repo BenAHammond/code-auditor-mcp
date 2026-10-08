@@ -1783,7 +1783,7 @@ function collectOwnCallExpressions(fn: ASTNode, adapter: LanguageAdapter): ASTNo
  * (`…/d1/database/<id>/query`). That endpoint is specific enough that a match
  * is conclusive evidence the surrounding function is a D1 wrapper.
  */
-function isD1RestCall(call: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+export function isD1RestCall(call: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
   const callee = getCallExpressionCallee(call, adapter);
   if (!callee) return false;
   const calleeText = adapter.getNodeText(callee, sourceCode) ?? '';
@@ -2163,7 +2163,7 @@ function findNextTraceIdentifier(
  * Extract top-level identifier names from an expression text.
  * E.g., "db.prepare(sql)" → ["db"], "getConnection()" → ["getConnection"]
  */
-function extractTopLevelIdentifiers(text: string): string[] {
+export function extractTopLevelIdentifiers(text: string): string[] {
   // Strip member access and arguments to get the root identifier
   // Match the first identifier before any '.' or '('
   const match = text.match(/^[\p{L}_$][\p{L}\p{N}_$]*/u);
