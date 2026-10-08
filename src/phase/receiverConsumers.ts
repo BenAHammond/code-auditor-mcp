@@ -41,7 +41,7 @@ import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { identifyHandle, type HandleVerdict, type GoWithinFileProvenanceExtract } from '../analyzers/handleIdentification.js';
 import { handleTypesForPackage } from '../analyzers/tsEcosystem.js';
-import { parseSqlTables } from '../analyzers/universal/schema/codeAnalysis.js';
+import { parseSqlTables, type UnparseableSql } from '../analyzers/universal/schema/codeAnalysis.js';
 import type { TableReference } from '../analyzers/universal/schema/types.js';
 import { dialectForPackage } from '../languages/sql/dialectDetection.js';
 import {
@@ -77,6 +77,12 @@ interface ReceiverResolution {
   provenance: ReceiverProvenanceFact;
   activityFacts: readonly ReceiverActivityFact[];
   sqlDialect: Dialect | null;
+  /** Spec 70 R2 — the corpus's dialect-detection reason (non-null only when
+   *  `sqlDialect` is null), threaded so an unparseable SQL argument in a
+   *  dialect-undetermined corpus reports the *why* (`dialect undetermined …
+   *  or ambiguous`) rather than the generic fallback string. Mirrors the legacy
+   *  `schema-code` visitor's `config.sqlDialectReason` → `parseSqlTables`. */
+  sqlDialectReason?: string | null;
   declaredTypePackages?: ReadonlySet<string>;
   projectRoot?: string;
   tsconfig?: TsconfigPathMap;
@@ -680,6 +686,76 @@ export function classifyUnresolvedQuerySites(
       const admitted = admitDbCall(call, env);
       if (!admitted) continue;
       out.push({ file: cand.file, identifier: call.unresolved.identifier, location: call.unresolved.location });
+    }
+  }
+  return out;
+}
+
+/**
+ * Spec 70 R2 — the corpus `unparseable` reduction. The legacy `schema-code`
+ * visitor emitted `checkUnparseableSql` for every DB-call / tagged-template SQL
+ * argument `findTableReferences` admitted but whose static text the named
+ * dialect could not parse (e.g. SQLite `PRAGMA`/`VACUUM`/`ANALYZE`). The collapse
+ * re-derives that surface with no AST: for each raw `schema-usage-candidates`
+ * fact, re-derive `dbProvenanced` (as `classifySchemaUsage` does), re-apply the
+ * file gate, then re-admit and re-parse every tagged template and DB-call
+ * candidate — collecting `parseSqlTables().unparseable` (which
+ * `classifySchemaUsage` discards) instead of its references. This is the
+ * `unparseable` sibling of {@link classifyUnresolvedQuerySites} (the
+ * `unresolved` half): the same re-derivation shape, a distinct output record.
+ *
+ * @param candidates the raw `schema-usage-candidates` facts (one per TS-family file)
+ * @param resolution the per-corpus resolution inputs (facts + dialect/project tail)
+ * @returns the unparseable-SQL records re-admitted via `identifyHandle`, each
+ *   stamped with its `file` (the legacy visitor emitted `checkUnparseableSql`
+ *   per-file, so the caller must be able to re-group by file)
+ */
+export function classifyUnparseableSql(
+  candidates: readonly SchemaUsageCandidatesFact[],
+  resolution: ReceiverResolution,
+): Array<UnparseableSql & { file: string }> {
+  const { withinFacts, provenance, activityFacts, sqlDialect, sqlDialectReason, declaredTypePackages, projectRoot, tsconfig } = resolution;
+  const extracts = rehydrateWithinTsExtracts(withinFacts);
+  const seeds = rehydrateReceiverProvenance(provenance);
+  const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
+  const resolver = makeSpecifierResolver(withinFacts, projectRoot, tsconfig);
+  const heritageResolver = makeHeritageResolver(projectRoot, declaredTypePackages) ?? undefined;
+
+  const out: Array<UnparseableSql & { file: string }> = [];
+  for (const cand of candidates) {
+    const extract = extracts.get(cand.file);
+    const activity = rehydrateReceiverActivity(activityByFile.get(cand.file));
+    const dbProvenanced = extract
+      ? classifyBuildProvenance(extract, seeds.get(cand.file) ?? new Map(), activity.bindings, activity.r3Sites, sqlDialect)
+      : new Map<string, ProvenanceEvidence>();
+    if (!passesFileGateRehydrated(cand.file, cand.hasSqlTag, dbProvenanced, activity.dbActivity)) {
+      continue;
+    }
+
+    const sourceCode = cand.sourceCode;
+    const resolveImport = resolver ? (source: string) => resolver(source, cand.file) : undefined;
+    const env = fileReceiverEnv(
+      { dbProvenanced, bindings: activity.bindings, bindingsByScope: activity.bindingsByScope, goEnv: undefined, interfaceFields: extract?.interfaceFields },
+      { sqlDialect, declaredTypePackages, resolveImport, resolveHeritageField: heritageResolver },
+    );
+
+    // (1) Tagged-template SQL — re-admit by the tag's package dialect, parse.
+    for (const t of cand.tagged) {
+      const siteDialect = dialectForEvidence(dbProvenanced.get(t.tagName));
+      const dialect = siteDialect ?? sqlDialect ?? null;
+      const parsed = parseSqlTables(t.templateText, t.location, sourceCode, undefined, dialect, sqlDialectReason ?? null);
+      for (const u of parsed.unparseable) out.push({ ...u, file: cand.file });
+    }
+
+    // (2) DB-call patterns — re-admit via `identifyHandle`, then parse. An
+    // unresolved candidate (`sqlText === null`) contributes no unparseable record
+    // here; its `unresolved` record is re-derived by `classifyUnresolvedQuerySites`.
+    for (const call of cand.dbCalls) {
+      if (call.sqlText === null) continue;
+      const admitted = admitDbCall(call, env);
+      if (!admitted) continue;
+      const parsed = parseSqlTables(call.sqlText, call.location, sourceCode, undefined, admitted.dialect, sqlDialectReason ?? null);
+      for (const u of parsed.unparseable) out.push({ ...u, file: cand.file });
     }
   }
   return out;

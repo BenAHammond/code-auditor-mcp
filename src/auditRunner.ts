@@ -81,7 +81,7 @@ import { deriveCoverage, presentFormatsOf } from './phase/coverage.js';
 import { MIGRATED_RULES, RULE_ANALYZER } from './phase/rules/registry.js';
 import type { Finding, FactKind, CodeBlockFact } from './phase/types.js';
 import { seedDryPairs, resolveBlockConfig, type DryPairSeed } from './phase/rules/dry.js';
-import { checkUnresolvedReceiverImports, checkUnprovenQueryReceivers, checkUnresolvedQueries, dedupeCannotFireByReceiver } from './analyzers/universal/schema/codeAnalysis.js';
+import { checkUnresolvedReceiverImports, checkUnprovenQueryReceivers, checkUnresolvedQueries, checkUnparseableSql, dedupeCannotFireByReceiver, type UnparseableSql } from './analyzers/universal/schema/codeAnalysis.js';
 import { readProjectManifest, computeManifestStaleness } from './analyzers/manifestStaleness.js';
 
 // Package version — stamped into the build (see constants.ts), not read from
@@ -632,11 +632,11 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
   // migrated and stripped.
   if (analyzers.includes('styles')) pipelineReducers.push(createStylesReducer());
   // The schema-code visitor's findings are migrated and stripped, but it must
-  // keep running for its non-finding outputs: the schema_usage index facts the
-  // cross-domain reducer reads, the ORM/DDL table catalog, and the `unparseable`
-  // cannot-fire diagnostic (Spec 70 R2). Its `unresolved-query` diagnostic
-  // (Spec 58 R1) is now re-derived corpus-side (Spec 70 1b), so this visitor no
-  // longer emits it.
+  // keep running for its one remaining live emit: the `reserved-word` finding
+  // off `checkNamingConventions` (unregistered emission, §13 disposition) and the
+  // ORM/DDL table catalog. Its `unresolved-query` diagnostic (Spec 58 R1) and its
+  // `unparseable` cannot-fire diagnostic (Spec 70 R2) are both re-derived
+  // corpus-side (Spec 70 1b / R2), so this visitor no longer emits either.
   if (analyzers.includes('schema')) pipelineVisitors.push(createSchemaCodeVisitor());
 
   return {
@@ -896,6 +896,7 @@ async function applyPhaseModelSplit(inputs: {
       externalTables,
       workerCount: resolveWorkerCount(),
       sqlDialect: infraConfig.sqlDialect as Dialect | null | undefined,
+      sqlDialectReason: infraConfig.sqlDialectReason as string | null | undefined,
       declaredTypePackages: infraConfig.declaredTypePackages as ReadonlySet<string> | undefined,
       // Spec 70 2b — the diverging-clone write: seed `dry_pair_history` from the
       // phase `code-block` fact (replacing `createDryVisitor`/`persistDryPairs`).
@@ -914,7 +915,7 @@ async function applyPhaseModelSplit(inputs: {
     // to the TS-family surface the legacy `schema-code` visitor covered (Go
     // receivers/imports never reached it). Manifest-stale: the ecosystem-list
     // self-check, unchanged from the deleted `buildPipelineResult` loop.
-    receiverDiagnostics = await buildReceiverDiagnostics(phaseResult.unprovenQueryReceivers, phaseResult.unresolvedImports, phaseResult.unresolvedQuerySites, root);
+    receiverDiagnostics = await buildReceiverDiagnostics(phaseResult.unprovenQueryReceivers, phaseResult.unresolvedImports, phaseResult.unresolvedQuerySites, phaseResult.unparseableSql, root);
 
     // Strip the migrated rules' legacy emission from every analyzer result.
     let strippedCount = 0;
@@ -995,6 +996,7 @@ async function buildReceiverDiagnostics(
   unprovenQueryReceivers: readonly { file: string; line: number; receiver: string; method: string; reason: string }[],
   unresolvedImports: readonly { importer: string; source: string; names: readonly string[] }[],
   unresolvedQuerySites: readonly { file: string; identifier: string; location: { line: number; column: number } }[],
+  unparseableSql: readonly (UnparseableSql & { file: string })[],
   projectRoot: string,
 ): Promise<CoverageDiagnostic[]> {
   const diagnostics: CoverageDiagnostic[] = [];
@@ -1035,6 +1037,23 @@ async function buildReceiverDiagnostics(
   }
   for (const [file, sites] of unresolvedByFile) {
     diagnostics.push(...checkUnresolvedQueries(sites.map((s) => ({ identifier: s.identifier, location: s.location })), file));
+  }
+
+  // Spec 70 R2 — the `unparseable` cannot-fire diagnostics. Emitted per file in
+  // fact order, mirroring the deleted legacy `schema-code` visitor, which ran
+  // `checkUnparseableSql` over every admitted tag/DB-call parse within the file.
+  const unparseableByFile = new Map<string, UnparseableSql[]>();
+  for (const u of unparseableSql) {
+    if (u.file.endsWith('.go')) continue;
+    let list = unparseableByFile.get(u.file);
+    if (!list) {
+      list = [];
+      unparseableByFile.set(u.file, list);
+    }
+    list.push(u);
+  }
+  for (const [file, records] of unparseableByFile) {
+    diagnostics.push(...checkUnparseableSql(records, file));
   }
 
   // Part 2b — the manifest staleness self-check, unchanged from the deleted

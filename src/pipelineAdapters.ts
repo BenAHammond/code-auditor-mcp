@@ -61,7 +61,6 @@ import {
   checkNamingConventions,
   checkQueryPatterns,
   checkSQLInjection,
-  checkUnparseableSql,
   getNearestTableSuggestions,
 } from './analyzers/universal/schema/codeAnalysis.js';
 import {
@@ -2839,11 +2838,9 @@ const getSchemaCodeAnalyzer = lazySingleton<any>(() =>
  *  `createSchemaCodeVisitor` (which exceeded the 200-line `function-length`
  *  budget) so the factory stays a thin descriptor over the shared analyzer. */
 async function runSchemaCodeVisit(ast: unknown, adapter: unknown, context: VisitorContext, sourceCode: string) {
-  const { analyzer: a, defaults, parseMigrationOps, extractDdlColumnNames, extractDdlTableColumns } = await getSchemaCodeAnalyzer();
+  const { defaults, parseMigrationOps, extractDdlColumnNames, extractDdlTableColumns } = await getSchemaCodeAnalyzer();
   const pm = await _getProvenanceModule();
   const violations: Violation[] = [];
-  const diagnostics: CoverageDiagnostic[] = [];
-  const indexFacts: IndexFactsEntry[] = [];
 
   // Pipeline config for this analyzer (moved before table extraction, needed
   // by the table-source registry and provenance context).
@@ -2929,7 +2926,7 @@ async function runSchemaCodeVisit(ast: unknown, adapter: unknown, context: Visit
       if (doDDLColumns.length > 0) (facts[context.filePath] as any).ddlColumns = doDDLColumns;
       if (Object.keys(doDDLTableColumns).length > 0) (facts[context.filePath] as any).ddlTableColumns = doDDLTableColumns;
     }
-    return { violations: [], facts, ...(diagnostics.length > 0 && { diagnostics }) };
+    return { violations: [], facts };
   }
 
   // Build known-tables set from schemas config (pre-pipeline + DB-loaded schemas)
@@ -2943,57 +2940,17 @@ async function runSchemaCodeVisit(ast: unknown, adapter: unknown, context: Visit
     }
   }
 
-  // Find table references (per-file, uses allTables for short-id false-positive filtering)
-  // Spec 70 1b — `unresolved` is no longer consumed here: the `unresolved-query`
-  // diagnostic is re-derived corpus-side (classifyUnresolvedQuerySites →
-  // buildReceiverDiagnostics), so the legacy visitor stops emitting it.
-  const { references: tableRefs, unparseable } = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, { config: schemaConfig, provenanceContext, allTables, handleEnv });
-
-  // Record schema usage → emit as indexFacts via the shared instance
-  a.recordTableUsage(ast as AST, adapter as LanguageAdapter, context.filePath, tableRefs, sourceCode);
-  const pending = a.getPendingSchemaRecords();
-
-  // Emit clear-by-file + per-usage index facts
-  if (pending.clearFiles.length > 0) {
-    for (const filePath of pending.clearFiles) {
-      indexFacts.push({ table: 'schema_usage', data: { _action: 'clear-by-file', file_path: filePath } });
-    }
-  }
-  for (const usage of pending.usages) {
-    indexFacts.push({
-      table: 'schema_usage',
-      data: {
-        file_path: usage.filePath,
-        table_name: usage.tableName,
-        function_name: usage.functionName,
-        function_start_line: usage.functionStartLine,
-        function_start_column: usage.functionStartColumn,
-        usage_type: usage.usageType,
-        line: usage.line,
-        column: usage.column,
-        raw_query: usage.rawQuery,
-        origin: usage.origin ?? null,
-      },
-    });
-  }
+  // Find table references (per-file, uses allTables for short-id false-positive
+  // filtering). The `unresolved`/`unparseable` halves are no longer consumed
+  // here: both the `unresolved-query` (Spec 58 R1 / 70 1b) and `unparseable`
+  // (Spec 70 R2) coverage diagnostics are re-derived corpus-side
+  // (classifyUnresolvedQuerySites / classifyUnparseableSql →
+  // buildReceiverDiagnostics), so this visitor stops emitting them.
+  const { references: tableRefs } = findTableReferences(ast as AST, adapter as LanguageAdapter, sourceCode, { config: schemaConfig, provenanceContext, allTables, handleEnv });
 
   // Check naming conventions
   if (schemaConfig.checkNamingConventions !== false) {
     violations.push(...checkNamingConventions(tableRefs, context.filePath));
-  }
-
-  // Spec 58 R1 — DB-call SQL held in an unresolvable identifier is a coverage
-  // diagnostic, not a finding. Emitted corpus-side now (Spec 70 1b:
-  // `classifyUnresolvedQuerySites` → `buildReceiverDiagnostics`), not by this
-  // visitor, so the phase model is the single home for the `unresolved-query`
-  // signal.
-
-  // Spec 70 R2 — a provenanced static SQL argument the named dialect cannot
-  // parse is unreadable, not "no tables". Emit a cannot-fire diagnostic so
-  // unknown-table / stale-table-reference don't read the empty reference set
-  // as clean (silent clean wearing a fact).
-  if (schemaConfig.reportUnresolvedQueries !== false) {
-    diagnostics.push(...checkUnparseableSql(unparseable, context.filePath));
   }
 
   // Check query patterns
@@ -3030,8 +2987,6 @@ async function runSchemaCodeVisit(ast: unknown, adapter: unknown, context: Visit
   return {
     violations,
     facts: { [context.filePath]: fileFacts },
-    indexFacts: indexFacts.length > 0 ? indexFacts : undefined,
-    ...(diagnostics.length > 0 && { diagnostics }),
   };
 }
 

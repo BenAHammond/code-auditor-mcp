@@ -53,9 +53,10 @@ import type {
 } from './types.js';
 import type { IndexHandle } from '../types.js';
 import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
+import type { UnparseableSql } from '../analyzers/universal/schema/codeAnalysis.js';
 import type { HandleVerdict } from '../analyzers/handleIdentification.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
-import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites } from './receiverConsumers.js';
+import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites, classifyUnparseableSql } from './receiverConsumers.js';
 import { withRuleTiming, withRuleTimingAsync } from '../analyzers/ruleTiming.js';
 
 /**
@@ -90,6 +91,16 @@ export interface PhaseModelResult {
    *  the `unresolved-query` coverage diagnostic re-homed in the caller. Empty when
    *  `schema-usage` was not needed. */
   unresolvedQuerySites: readonly UnresolvedQuerySite[];
+  /** Spec 70 R2 — the re-admitted tagged-template/DB-call SQL arguments whose
+   *  static text the named dialect could not parse, re-derived corpus-side from
+   *  the raw `schema-usage-candidates` fact + the `receiver-provenance` fixed
+   *  point with no AST (`classifyUnparseableSql` mirrors
+   *  `classifyUnresolvedQuerySites`, collecting `parseSqlTables().unparseable`
+   *  that `classifySchemaUsage` discards). Feeds the `unparseable` cannot-fire
+   *  diagnostic re-homed in the caller; each record is stamped with its `file`
+   *  so the caller can group per file as the legacy visitor did. Empty when
+   *  `schema-usage` was not needed. */
+  unparseableSql: readonly (UnparseableSql & { file: string })[];
 }
 
 /**
@@ -164,6 +175,12 @@ export interface PhaseInfra {
    *  to every parsed file so the `data-access-calls` producer parses SQL-content
    *  facts rather than regex. Absent in the slice tests (single fixture). */
   sqlDialect?: Dialect | null;
+  /** Spec 70 R2 — the corpus's dialect-detection reason (non-null only when
+   *  `sqlDialect` is null), threaded to the `unparseable` re-derivation so an
+   *  unparseable SQL argument in a dialect-undetermined corpus reports the *why*
+   *  rather than the generic fallback string (mirrors the legacy `schema-code`
+   *  visitor's `config.sqlDialectReason`). */
+  sqlDialectReason?: string | null;
   /** Spec 70 criterion 9 (Item 3) — the project's declared type packages
    *  (package.json `dependencies`/`devDependencies` ∪ tsconfig `compilerOptions.types`),
    *  the ambient-arm gate for an unbound handle-type name. Absent (undefined) the
@@ -187,10 +204,10 @@ export async function runPhaseModel(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra?: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [] };
+  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [] };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [] };
+  if (active.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [] };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -263,7 +280,7 @@ export async function runPhaseModelOverFiles(
   infra?: PhaseInfra,
   unread: readonly UnreadStyleSourceFact[] = [],
 ): Promise<PhaseModelResult> {
-  const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites } = await buildFacts(files, infra, unread);
+  const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql } = await buildFacts(files, infra, unread);
   const findings = await analyzeAll(facts, thresholdsByRule, infra);
   return {
     findings,
@@ -272,6 +289,7 @@ export async function runPhaseModelOverFiles(
     unprovenQueryReceivers,
     unresolvedImports,
     unresolvedQuerySites,
+    unparseableSql,
   };
 }
 
@@ -317,7 +335,7 @@ async function buildFacts(
   files: readonly InputFile[],
   infra?: PhaseInfra,
   unread: readonly UnreadStyleSourceFact[] = [],
-): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[]; unprovenQueryReceivers: UnprovenQueryReceiver[]; unresolvedImports: UnresolvedImportFact[]; unresolvedQuerySites: UnresolvedQuerySite[] }> {
+): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[]; unprovenQueryReceivers: UnprovenQueryReceiver[]; unresolvedImports: UnresolvedImportFact[]; unresolvedQuerySites: UnresolvedQuerySite[]; unparseableSql: Array<UnparseableSql & { file: string }> }> {
   const projectRoot = infra?.projectRoot;
   const active = activeRules(infra?.enabledRules);
   const needed = neededFactKinds(active);
@@ -462,21 +480,23 @@ async function buildFacts(
   let unprovenQueryReceivers: UnprovenQueryReceiver[] = [];
   let unresolvedImports: UnresolvedImportFact[] = [];
   let unresolvedQuerySites: UnresolvedQuerySite[] = [];
+  let unparseableSql: Array<UnparseableSql & { file: string }> = [];
   const receiverProvenanceFact = facts.get('receiver-provenance') as ReceiverProvenanceFact | undefined;
   if (receiverProvenanceFact) {
     unresolvedImports = [...receiverProvenanceFact.unresolvedImports];
+    // The shared resolution tail the three corpus reductions below rehydrate from.
+    const resolutionBase = {
+      withinFacts: (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
+      provenance: receiverProvenanceFact,
+      activityFacts: (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
+      sqlDialect: infra?.sqlDialect ?? null,
+      declaredTypePackages: infra?.declaredTypePackages,
+      projectRoot: infra?.projectRoot,
+      tsconfig: infra?.tsconfigAliases,
+    };
     unprovenQueryReceivers = classifyUnprovenQueryReceivers(
       (facts.get('data-access-calls-candidates') as DataAccessCallCandidate[] | undefined) ?? [],
-      {
-        withinFacts: (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
-        provenance: receiverProvenanceFact,
-        activityFacts: (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
-        sqlDialect: infra?.sqlDialect ?? null,
-        declaredTypePackages: infra?.declaredTypePackages,
-        projectRoot: infra?.projectRoot,
-        tsconfig: infra?.tsconfigAliases,
-        verdictCache: handleVerdictCache,
-      },
+      { ...resolutionBase, verdictCache: handleVerdictCache },
     );
     // Spec 70 1b — the `unresolved-query` half (a third coverage signal, alongside
     // the two above): re-derive the re-admitted unresolvable-SQL DB-calls from the
@@ -484,19 +504,20 @@ async function buildFacts(
     // when `schema-usage` was needed (its raw fact is present); otherwise empty.
     const schemaUsageCandidates = facts.get('schema-usage-candidates') as SchemaUsageCandidatesFact[] | undefined;
     if (schemaUsageCandidates) {
-      unresolvedQuerySites = classifyUnresolvedQuerySites(schemaUsageCandidates, {
-        withinFacts: (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
-        provenance: receiverProvenanceFact,
-        activityFacts: (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
-        sqlDialect: infra?.sqlDialect ?? null,
-        declaredTypePackages: infra?.declaredTypePackages,
-        projectRoot: infra?.projectRoot,
-        tsconfig: infra?.tsconfigAliases,
+      unresolvedQuerySites = classifyUnresolvedQuerySites(schemaUsageCandidates, resolutionBase);
+      // Spec 70 R2 — the `unparseable` half (the `unresolved-query` sibling):
+      // re-derive the re-admitted static-SQL arguments the named dialect could not
+      // parse, from the same raw fact + fixed point. Threads `sqlDialectReason` so
+      // a dialect-undetermined corpus reports the legacy `why`, not the generic
+      // fallback string.
+      unparseableSql = classifyUnparseableSql(schemaUsageCandidates, {
+        ...resolutionBase,
+        sqlDialectReason: infra?.sqlDialectReason ?? null,
       });
     }
   }
 
-  return { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites };
+  return { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql };
 }
 
 /**
