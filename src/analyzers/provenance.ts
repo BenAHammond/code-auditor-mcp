@@ -1779,6 +1779,11 @@ function collectOwnCallExpressions(fn: ASTNode, adapter: LanguageAdapter): ASTNo
  * True when `call` is a `fetch(...)` to the Cloudflare D1 HTTP query API
  * (`…/d1/database/<id>/query`). That endpoint is specific enough that a match
  * is conclusive evidence the surrounding function is a D1 wrapper.
+ *
+ * @param call the candidate call-expression node
+ * @param adapter the language adapter used to read the callee and arguments
+ * @param sourceCode the file source text for reading node text
+ * @returns true when the call names `fetch` with a literal `/d1/database/` URL
  */
 export function isD1RestCall(call: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
   if (adapter.getNodeType(call) !== 'call_expression') return false;
@@ -2187,6 +2192,11 @@ function findNextTraceIdentifier(
  * parentheses, calls, member access, and subscripts — so `await db.connect()`
  * yields `db` rather than `await`, and `(db.prepare(sql))` yields `db`.
  * E.g., `db.prepare(sql)` → ["db"], `getConnection()` → ["getConnection"].
+ *
+ * @param node the initializer-expression node to walk from
+ * @param adapter the language adapter used to walk child nodes
+ * @param sourceCode the file source text for reading node text
+ * @returns the root identifier name, or an empty array when there is none
  */
 export function extractTopLevelIdentifiers(
   node: ASTNode,

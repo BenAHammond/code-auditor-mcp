@@ -827,7 +827,12 @@ export function rawInsertColumnsFromAst(sqlAst: SqlAst): string[] | null {
 /** The Kysely builder write verb carried as a camelCase method name — a
  *  host-language chain shape, not SQL.  `selectFrom`/`selectAll` are reads.
  *  Read from the callee's member chain, not the source text: a `.insertInto(…)`
- *  inside a string argument (`db.raw(".insertInto(x)")`) is not a chain member. */
+ *  inside a string argument (`db.raw(".insertInto(x)")`) is not a chain member.
+ *
+ * @param node the candidate call-expression node
+ * @param adapter the language adapter used to read the member chain
+ * @param sourceCode the file source text for reading node text
+ * @returns the Kysely write verb, or null when the chain is not a write */
 export function builderWriteVerb(
   node: ASTNode,
   adapter: LanguageAdapter,
@@ -844,7 +849,12 @@ export function builderWriteVerb(
  *  `.limit(...)`, `.andWhere(...)`, `.orWhere(...)`) — the host-language analog of
  *  SQL's WHERE/HAVING/LIMIT that the AST walk cannot see because there is no SQL.
  *  Read from the member chain, not the source text: a `.where(…)` inside a string
- *  argument is a string, not a chain member. */
+ *  argument is a string, not a chain member.
+ *
+ * @param node the candidate call-expression node
+ * @param adapter the language adapter used to read the member chain
+ * @param sourceCode the file source text for reading node text
+ * @returns true when the chain carries a row-limiting shape */
 export function hasOrmFilterShape(
   node: ASTNode,
   adapter: LanguageAdapter,
@@ -1398,6 +1408,11 @@ function memberPropertyName(node: ASTNode, adapter: LanguageAdapter, sourceCode:
  * "all" property for the eager D1 read method (Spec 52 R1). `Promise` is the
  * only collision in the eager set — none of run/first/raw/exec/batch are
  * Promise methods.
+ *
+ * @param memberExpr the member-expression node to classify
+ * @param adapter the language adapter used to read the member property
+ * @param sourceCode the file source text for reading node text
+ * @returns true when the member is the global `Promise.all`
  */
 export function isPromiseAllMember(memberExpr: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
   if (memberPropertyName(memberExpr, adapter, sourceCode) !== 'all') return false;
@@ -1728,6 +1743,11 @@ function isWrapperFunctionWithBindParams(
  * single-expression form `db.prepare(sql).bind(x).all()`.  This method
  * catches the common idiom where the prepared statement is stored in a local
  * before being bound.
+ *
+ * @param prepareCall the `db.prepare(...)` call-expression node
+ * @param adapter the language adapter used to read the parent assignment
+ * @param sourceCode the file source text for reading node text
+ * @returns true when the prepare result is stored then `.bind()`ed in scope
  */
 export function isPrepareAssignedToVariable(
   prepareCall: ASTNode,
@@ -2130,6 +2150,11 @@ function effectiveWrapperNames(scan: DataAccessScanContext): string[] {
  * config-driven sanitizer allowlist, the adapter's cross-function safety
  * analysis, or a static-constant resolution for bare identifiers.  Otherwise
  * the part counts as unresolved (a candidate injection).
+ *
+ * @param part the dynamic interpolation part to classify
+ * @param ast the file's parsed AST
+ * @param scan the data-access scan context (adapter, source, config)
+ * @returns true when the part is provably safe, false when unresolved
  */
 export function isSafeDynamicPart(
   part: DynamicPart,
@@ -2861,6 +2886,12 @@ function identifierBoundToPrepareOutsideLoop(
  * declarator's `.prepare()` initializer is), never the parameter's name: a
  * `*Statement`/`*Statements` annotation means the value is a compiled statement
  * (or a bundle of them), so a loop that re-runs it re-runs pre-prepared SQL.
+ *
+ * @param name the parameter name to match
+ * @param fnNode the function node whose parameters are inspected
+ * @param adapter the language adapter used to read parameter nodes
+ * @param sourceCode the file source text for reading node text
+ * @returns true when the named parameter is annotated with a statement type
  */
 export function parameterBoundToStatementType(
   name: string,
@@ -3354,6 +3385,10 @@ function isLlmCallNode(
  * always provides a provenance context (`mode` defaults to `'hybrid'`), so the
  * no-context / `names`-mode arm was unreachable in a default run. Without
  * provenance there is no honest handle verdict, so the node is not a DB call.
+ *
+ * @param node the candidate call node to classify
+ * @param scan the data-access scan context (adapter, source, provenance)
+ * @returns true when the node's handle verdict is `handle`
  */
 export function isDbCallNode(
   node: ASTNode,
