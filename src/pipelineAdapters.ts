@@ -282,27 +282,6 @@ export function createOrgFilterReducer(): Stage4Reducer {
   };
 }
 
-// ── Documentation visitor ────────────────────────────────────────────────────
-
-/**
- * Create the documentation stage-2 visitor, which checks documentation
- * completeness across the corpus.
- *
- * @returns The documentation stage-2 visitor.
- */
-export function createDocumentationVisitor(): Stage2Visitor {
-  return createAnalyzerAstVisitor({
-    name: 'documentation',
-    getAnalyzer: lazySingleton<any>(() =>
-      import('./analyzers/universal/UniversalDocumentationAnalyzer.js').then(
-        (m) => new m.UniversalDocumentationAnalyzer(),
-      ),
-    ),
-    description: 'Checks documentation completeness',
-    category: 'style',
-  });
-}
-
 // ── Secrets visitor ──────────────────────────────────────────────────────────
 
 /**

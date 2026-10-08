@@ -60,7 +60,9 @@ describe('checkThresholdRationales (Spec 36 R5)', () => {
 
   it('rejects an empty-string rationale as missing', () => {
     const { errors } = checkThresholdRationales(
-      { documentation: { minDescriptionLength: 2 } },
+      // 5 differs from the default (2) so the change is real; the whitespace
+      // rationale is then treated as missing.
+      { documentation: { minDescriptionLength: 5 } },
       { 'documentation.minDescriptionLength': '   ' },
     );
     expect(errors.length).toBe(1);

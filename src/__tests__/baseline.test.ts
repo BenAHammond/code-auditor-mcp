@@ -42,7 +42,6 @@ import { DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnaly
 import { DEFAULT_REACT_CONFIG } from '../analyzers/reactAnalyzer.js';
 import { DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
 import { DEFAULT_DATA_ACCESS_CONFIG } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
-import { DEFAULT_DOCUMENTATION_CONFIG } from '../analyzers/universal/UniversalDocumentationAnalyzer.js';
 import { DEFAULT_STYLES_CONFIG } from '../analyzers/universal/UniversalStylesAnalyzer.js';
 import { DEFAULT_CONVENTIONS_CONFIG } from '../analyzers/universal/UniversalConventionsAnalyzer.js';
 import { DEFAULT_ANALYZER_CONFIGS } from '../config/defaults.js';
@@ -1559,7 +1558,7 @@ describe('Rule Registry', () => {
       'solid': DEFAULT_SOLID_CONFIG,
       'dry': DEFAULT_DRY_CONFIG,
       'data-access': DEFAULT_DATA_ACCESS_CONFIG,
-      'documentation': DEFAULT_DOCUMENTATION_CONFIG,
+      'documentation': DEFAULT_ANALYZER_CONFIGS.documentation,
       'styles': DEFAULT_STYLES_CONFIG,
       'conventions': DEFAULT_CONVENTIONS_CONFIG,
       'react': DEFAULT_REACT_CONFIG,

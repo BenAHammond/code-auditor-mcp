@@ -36,12 +36,12 @@ import { RULE_ANALYZER } from '../phase/rules/registry.js';
 import { initializeLanguages, initParsers, LanguageRegistry } from '../languages/index.js';
 import { parseFile } from '../languages/adapterBridge.js';
 import type { LanguageAdapter } from '../languages/types.js';
+import type { ThresholdValues } from '../phase/types.js';
 import { UniversalSOLIDAnalyzer, DEFAULT_SOLID_CONFIG } from '../analyzers/universal/UniversalSOLIDAnalyzer.js';
 import { UniversalDRYAnalyzer, DEFAULT_DRY_CONFIG } from '../analyzers/universal/UniversalDRYAnalyzer.js';
-import { runDataAccessSlice, runLoopQueriesSlice, runSecuritySlice } from '../phase/runner.js';
+import { runDataAccessSlice, runLoopQueriesSlice, runSecuritySlice, runDocumentationSlice, runFileHeadersSlice } from '../phase/runner.js';
 import { UniversalSecretsAnalyzer, DEFAULT_SECRETS_CONFIG } from '../analyzers/universal/UniversalSecretsAnalyzer.js';
 import { UniversalSecurityAnalyzer, DEFAULT_SECURITY_CONFIG } from '../analyzers/universal/UniversalSecurityAnalyzer.js';
-import { UniversalDocumentationAnalyzer, DEFAULT_DOCUMENTATION_CONFIG } from '../analyzers/universal/UniversalDocumentationAnalyzer.js';
 import { UniversalSchemaAnalyzer, DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/UniversalSchemaAnalyzer.js';
 import { scanFile } from '../componentScanner.js';
 import { analyzeComponent, DEFAULT_REACT_CONFIG } from '../analyzers/reactAnalyzer.js';
@@ -55,7 +55,6 @@ let dry: UniversalDRYAnalyzer;
 let secrets: UniversalSecretsAnalyzer;
 let security: UniversalSecurityAnalyzer;
 let schema: UniversalSchemaAnalyzer;
-let docAnalyzer: UniversalDocumentationAnalyzer;
 let tmpDir: string;
 
 beforeAll(async () => {
@@ -68,7 +67,6 @@ beforeAll(async () => {
   secrets = new UniversalSecretsAnalyzer();
   security = new UniversalSecurityAnalyzer();
   schema = new UniversalSchemaAnalyzer();
-  docAnalyzer = new UniversalDocumentationAnalyzer();
   tmpDir = await mkdtemp(join(tmpdir(), 'ca-nearmiss-exec-'));
 }, 30_000);
 
@@ -150,26 +148,28 @@ const runSecurity: Runner = async (code) => {
   return ruleIds(vs);
 };
 
-/** Documentation — the pipeline emits documentation rules from the
- *  UniversalDocumentationAnalyzer (Spec 17 R1), NOT the legacy
- *  `analyzeDocumentation`. A runner wired to the legacy analyzer reports
- *  near-misses against a surface that no longer emits `method-documentation` /
- *  `class-documentation` (the missing-org-filter shape). Sub-rules that are
- *  opt-in by default (param/return tags) are enabled here so their guards are
- *  actually exercised, like DRY_FULL_CONFIG does for the DRY sub-rules. */
-const DOC_FULL_CONFIG = {
-  ...DEFAULT_DOCUMENTATION_CONFIG,
-  requireParamDocs: true,
-  requireReturnDocs: true,
-  scope: 'all' as const,      // samples are unexported fragments, not public API
-  docsMinLines: 0,            // samples are short; the size gate would skip them
-  fileHeaders: true,          // file-documentation is off by default (R1.5)
+/** Documentation — the pipeline emits documentation rules from the phase
+ *  slices (`runDocumentationSlice` for the five symbol rules,
+ *  `runFileHeadersSlice` for `file-documentation`); the legacy
+ *  `UniversalDocumentationAnalyzer` is deleted (§15). The `param`/`return` tag
+ *  rules no longer carry an opt-in gate (`requireParamDocs`/`requireReturnDocs`
+ *  are gone from the config surface), so they fire whenever a substantive doc
+ *  omits the tag. `scope: 'all'` + `docsMinLines: 0` mirror the legacy
+ *  `DOC_FULL_CONFIG` so the short, unexported fragments the registry declares
+ *  are not skipped by the public-only / size gates, and `fileHeaders: true`
+ *  turns on the file-documentation rule (off by default). */
+const DOC_FULL_THRESHOLDS: ThresholdValues = {
+  scope: 'all',
+  docsMinLines: 0,
+  fileHeaders: true,
 };
 const runDocumentation: Runner = async (code) => {
-  const ast = parseFile('doc-nearmiss.ts', code)!;
-  if (!ast) throw new Error('failed to parse doc near-miss');
-  const vs = await (docAnalyzer as any).analyzeAST(ast, tsAdapter, DOC_FULL_CONFIG, code);
-  return ruleIds(vs);
+  const file = { path: 'doc-nearmiss.ts', content: code };
+  const [symbols, headers] = await Promise.all([
+    runDocumentationSlice([file], DOC_FULL_THRESHOLDS),
+    runFileHeadersSlice([file], DOC_FULL_THRESHOLDS),
+  ]);
+  return [...symbols, ...headers].map((f) => f.ruleId);
 };
 
 /** Schema *code* path — sql-injection / table-naming / unknown-table over a .ts

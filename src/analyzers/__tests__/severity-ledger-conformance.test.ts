@@ -63,7 +63,6 @@ const EMIT_FILES = [
   'src/analyzers/universal/UniversalSecurityAnalyzer.ts',
   'src/analyzers/universal/UniversalDataAccessAnalyzer.ts',
   'src/analyzers/universal/UniversalDRYAnalyzer.ts',
-  'src/analyzers/universal/UniversalDocumentationAnalyzer.ts',
   'src/analyzers/documentationAnalyzer.ts', // legacy MCP path — same rules
   'src/analyzers/reactAnalyzer.ts',
   'src/analyzers/universal/UniversalSchemaAnalyzer.ts',
@@ -90,6 +89,12 @@ const EMIT_FILES = [
   'src/phase/rules/solid.ts',
   'src/phase/rules/dataAccess.ts',
   'src/phase/rules/schema.ts',
+  // Spec 68 §15 — the six documentation rules' emit sites moved here when the
+  // legacy `UniversalDocumentationAnalyzer` was deleted; the still-live
+  // `documentationAnalyzer.ts` (MCP path) keeps emitting four of them, so these
+  // two files join rather than replace that entry.
+  'src/phase/rules/documentation.ts',
+  'src/phase/rules/fileDocumentation.ts',
 ];
 
 /** Session 15 recorded the Go-subprocess rules under `analyzer/rule` notation;

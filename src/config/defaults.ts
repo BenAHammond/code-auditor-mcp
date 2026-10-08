@@ -211,13 +211,6 @@ export const DEFAULT_ANALYZER_CONFIGS = {
   documentation: {
     requireFunctionDocs: true,
     requireClassDocs: true,
-    // #135 — tag completeness (parameter-documentation / return-documentation)
-    // fires unconditionally (§10 removed the `requireParamDocs` /
-    // `requireReturnDocs` opt-in gates). These two booleans remain only for the
-    // legacy documentation analyzer (deleted in §15); the migrated rules in
-    // `phase/rules/documentation.ts` do not read them.
-    requireParamDocs: false,
-    requireReturnDocs: false,
     minDescriptionLength: 2,       // Spec 11 R3 sweep: 10 → 2 (precision-first)
     exemptPatterns: [
       '\\.test\\.',

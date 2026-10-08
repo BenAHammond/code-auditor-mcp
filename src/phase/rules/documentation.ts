@@ -23,9 +23,7 @@
  *
  * The three rules read only their tuning thresholds; §10 removed the
  * `requireParamDocs` / `requireReturnDocs` opt-in gates — these rules now fire
- * unconditionally. The two booleans survive on this config type only for
- * merge-shape parity with the legacy analyzer (deleted in §15); no rule body
- * reads them.
+ * unconditionally, so the two booleans are gone from this config surface.
  */
 
 import type {
@@ -51,8 +49,6 @@ type DocumentationNeeds = {
 interface DocumentationConfig {
   requireFunctionDocs: boolean;
   requireClassDocs: boolean;
-  requireParamDocs: boolean;
-  requireReturnDocs: boolean;
   scope: 'public' | 'all';
   docsMinLines: number;
   exemptPatterns: string[];
@@ -69,8 +65,6 @@ interface DocumentationConfig {
 const DOCUMENTATION_DEFAULTS: DocumentationConfig = {
   requireFunctionDocs: true,
   requireClassDocs: true,
-  requireParamDocs: false,
-  requireReturnDocs: false,
   scope: 'public',
   docsMinLines: 5,
   exemptPatterns: [
@@ -97,24 +91,34 @@ function resolveConfig(t: ThresholdValues): DocumentationConfig {
   };
 }
 
-/** One finding, in the unified shape §7 converges on. */
-function finding(
-  ruleId: string,
-  message: string,
-  file: string,
-  line: number,
-  column: number | undefined,
-  symbol: string,
-): Finding {
-  return { ruleId, severity: 'high' as Severity, message, file, line, column, symbol };
+/** One finding, in the unified shape §7 converges on. The `ruleId`/`severity`
+ *  string literals sit at every emit site so the severity-ledger conformance
+ *  scan (which pairs `ruleId:`/`severity:` object literals) sees them — the six
+ *  documentation rules all ship at `high`. */
+function finding(f: {
+  ruleId: string;
+  severity: Severity;
+  message: string;
+  file: string;
+  line: number;
+  column: number | undefined;
+  symbol: string;
+}): Finding {
+  return f;
 }
 
 const META = RULE_REGISTRY;
 
 // ── R1 file-level skip (config-driven, per-symbol since each symbol carries its file) ─
 
-/** True when a file path matches any exempt pattern (case-insensitive regex). */
-function isExempt(name: string, patterns: string[]): boolean {
+/**
+ * True when a file path matches any exempt pattern (case-insensitive regex).
+ *
+ * @param name - The file path to test.
+ * @param patterns - The exempt regex patterns.
+ * @returns True when `name` matches at least one pattern.
+ */
+export function isExempt(name: string, patterns: string[]): boolean {
   return patterns.some((pattern) => {
     const regex = new RegExp(pattern, 'i');
     return regex.test(name);
@@ -245,7 +249,7 @@ const functionDocumentation: RuleDefinition<DocumentationNeeds> = {
       const reason = f.isExported
         ? `exported function '${f.name}' lacks a documentation comment`
         : `function '${f.name}' lacks a documentation comment`;
-      out.push(finding('function-documentation', reason, f.file, f.line, f.column, f.name));
+      out.push(finding({ ruleId: 'function-documentation', severity: 'high', message: reason, file: f.file, line: f.line, column: f.column, symbol: f.name }));
     }
     return out;
   },
@@ -267,11 +271,12 @@ const parameterDocumentation: RuleDefinition<DocumentationNeeds> = {
     const out: Finding[] = [];
     for (const item of tagEligibleItems(ctx.facts['file-symbols'], cfg)) {
       for (const param of checkParameterDocumentation(item.jsDoc, item.parameterNames)) {
-        out.push(finding(
-          'parameter-documentation',
-          `Function '${item.name}' missing documentation for parameter '${param}'`,
-          item.file, item.line, item.column, item.name,
-        ));
+        out.push(finding({
+          ruleId: 'parameter-documentation',
+          severity: 'high',
+          message: `Function '${item.name}' missing documentation for parameter '${param}'`,
+          file: item.file, line: item.line, column: item.column, symbol: item.name,
+        }));
       }
     }
     return out;
@@ -295,11 +300,12 @@ const returnDocumentation: RuleDefinition<DocumentationNeeds> = {
     for (const item of tagEligibleItems(ctx.facts['file-symbols'], cfg)) {
       if (!item.returnType || item.returnType === 'void') continue;
       if (hasReturnDocumentation(item.jsDoc)) continue;
-      out.push(finding(
-        'return-documentation',
-        `Function '${item.name}' missing return value documentation`,
-        item.file, item.line, item.column, item.name,
-      ));
+      out.push(finding({
+        ruleId: 'return-documentation',
+        severity: 'high',
+        message: `Function '${item.name}' missing return value documentation`,
+        file: item.file, line: item.line, column: item.column, symbol: item.name,
+      }));
     }
     return out;
   },
@@ -326,11 +332,12 @@ const classDocumentation: RuleDefinition<DocumentationNeeds> = {
       if (isExempt(cls.file, cfg.exemptPatterns)) continue;
       if (cfg.scope === 'public' && !cls.isExported) continue;
       if (isSubstantiveDoc(cls.jsDoc || '')) continue;
-      out.push(finding(
-        'class-documentation',
-        `Class '${cls.name}' lacks a documentation comment`,
-        cls.file, cls.line, cls.column, cls.name,
-      ));
+      out.push(finding({
+        ruleId: 'class-documentation',
+        severity: 'high',
+        message: `Class '${cls.name}' lacks a documentation comment`,
+        file: cls.file, line: cls.line, column: cls.column, symbol: cls.name,
+      }));
     }
     return out;
   },
@@ -361,11 +368,12 @@ const methodDocumentation: RuleDefinition<DocumentationNeeds> = {
       for (const m of cls.methods) {
         if (cfg.scope === 'public' && m.isNonPublic) continue;
         if (isSubstantiveDoc(m.jsDoc || '')) continue;
-        out.push(finding(
-          'method-documentation',
-          `public method '${cls.name}.${m.name}' lacks a documentation comment`,
-          cls.file, m.line, m.column, `${cls.name}.${m.name}`,
-        ));
+        out.push(finding({
+          ruleId: 'method-documentation',
+          severity: 'high',
+          message: `public method '${cls.name}.${m.name}' lacks a documentation comment`,
+          file: cls.file, line: m.line, column: m.column, symbol: `${cls.name}.${m.name}`,
+        }));
       }
     }
     return out;

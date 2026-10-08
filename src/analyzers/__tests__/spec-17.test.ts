@@ -23,7 +23,6 @@ import { fileURLToPath } from 'url';
 
 import { initializeLanguages, initParsers } from '../../languages/index.js';
 import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
-import { UniversalDocumentationAnalyzer } from '../universal/UniversalDocumentationAnalyzer.js';
 import { UniversalSchemaAnalyzer } from '../universal/UniversalSchemaAnalyzer.js';
 import { UniversalDRYAnalyzer } from '../universal/UniversalDRYAnalyzer.js';
 import { runDataAccessSlice, runLoopQueriesSlice, runSecuritySlice } from '../../phase/runner.js';
@@ -38,95 +37,6 @@ const FIXTURES = join(__dirname, 'fixtures', 'spec-17');
 beforeAll(async () => {
   initializeLanguages();
   await initParsers();
-});
-
-// ── R1: Documentation Analyzer ──────────────────────────────────────────────
-
-describe('Spec-17 R1 — Documentation Analyzer', () => {
-  const analyzer = new UniversalDocumentationAnalyzer();
-
-  it('R1.1 — skips anonymous callback in .map() (fixture 1)', async () => {
-    const file = join(FIXTURES, 'anonymous-callback-map.ts');
-    const result = await analyzer.analyze([file], { exemptPatterns: [] });
-    // No findings — all functions are anonymous callbacks
-    expect(result.errors).toHaveLength(0);
-    const docViolations = result.violations.filter(v => v.severity !== undefined);
-    expect(docViolations).toHaveLength(0);
-  });
-
-  it('R1.1 — skips JSX event handler arrows (fixture 2)', async () => {
-    const file = join(FIXTURES, 'jsx-event-handler.tsx');
-    const result = await analyzer.analyze([file], { exemptPatterns: [] });
-    // Exported functions (Button, List) without JSDoc ARE flagged — that's correct.
-    // The anonymous callbacks (onClick, onFocus, .map item) must NOT appear in violations.
-    expect(result.errors).toHaveLength(0);
-    const funcViolations = result.violations.filter(v => v.rule === 'function-documentation');
-    // At least Button and List (exported, no JSDoc) should be flagged
-    expect(funcViolations.length).toBeGreaterThanOrEqual(2);
-    // Verify NO callback arrow is mentioned
-    for (const v of funcViolations) {
-      expect(v.message).not.toMatch(/\bonClick\b|\bonFocus\b|\bitem\b/i);
-    }
-  });
-
-  it('R1.2 — exported function without JSDoc flagged (fixture 3)', async () => {
-    const file = join(FIXTURES, 'exported-undocumented.ts');
-    const result = await analyzer.analyze([file], { exemptPatterns: [] });
-    expect(result.errors).toHaveLength(0);
-    const funcViolations = result.violations.filter(v => v.rule === 'function-documentation');
-    expect(funcViolations.length).toBeGreaterThanOrEqual(1);
-    // R1.6: message should cite "exported" (the audience reason)
-    const msg = funcViolations.map(v => v.message).join(' ');
-    expect(msg).toMatch(/exported/i);
-    // R7: severity is high (documentation is a maintainability convention)
-    funcViolations.forEach(v => expect(v.severity).toBe('high'));
-  });
-
-  it('R1.2 — private/protected/#/_ methods skipped (fixture 4)', async () => {
-    const file = join(FIXTURES, 'private-methods.ts');
-    const result = await analyzer.analyze([file], { exemptPatterns: [] });
-    expect(result.errors).toHaveLength(0);
-    // Only PUBLIC methods with class names in messages should have findings
-    const methodViolations = result.violations.filter(
-      v => v.rule === 'method-documentation' || v.rule === 'function-documentation'
-    );
-    // No finding for private methods (privateMethod, _helperMethod, #privateField)
-    // But exported utility function may be flagged
-    for (const v of methodViolations) {
-      expect(v.message).not.toMatch(/privateMethod|_helperMethod|#privateField/);
-    }
-  });
-
-  it('R1.5 — barrel/test/migration files skipped for header (fixture 5)', async () => {
-    const file = join(FIXTURES, 'barrel-test-migration.ts');
-    // Default: fileHeaders false → no header findings anyway
-    // When fileHeaders is true with default globs → still skipped for barrels
-    const result = await analyzer.analyze([file], { fileHeaders: true });
-    expect(result.errors).toHaveLength(0);
-    // Should be skipped by barrel glob (index.ts pattern or test/spec pattern)
-    const headerViolations = result.violations.filter(v => v.rule === 'file-documentation');
-    expect(headerViolations).toHaveLength(0);
-  });
-
-  it('R1.4 — scope: "all" flags named internal functions, skips callbacks (fixture 19)', async () => {
-    const file = join(FIXTURES, 'scope-all-config.ts');
-    const result = await analyzer.analyze([file], { scope: 'all', exemptPatterns: [] });
-    expect(result.errors).toHaveLength(0);
-
-    // Named internal functions should be flagged
-    const funcViolations = result.violations.filter(v => v.rule === 'function-documentation');
-    // internalFunction and helper should be flagged; getFormattedAge is exported
-    expect(funcViolations.length).toBeGreaterThanOrEqual(2);
-
-    // Callback arrows (.map((x) => x * 2)) must NOT produce findings
-    // They have no name so they can't appear in function-documentation
-    for (const v of funcViolations) {
-      expect(v.message).not.toMatch(/\barrow\b/i);
-    }
-
-    // R7: severity is high (documentation is a maintainability convention)
-    funcViolations.forEach(v => expect(v.severity).toBe('high'));
-  });
 });
 
 // ── R2: Schema Analyzer ─────────────────────────────────────────────────────
@@ -491,7 +401,6 @@ describe('Spec-17 R8 — Node-type regression guards', () => {
 
 describe('Spec-17 R7 — critical only from the ledger-approved set', () => {
   const universalAnalyzers = [
-    { name: 'UniversalDocumentationAnalyzer', analyzer: new UniversalDocumentationAnalyzer() },
     { name: 'UniversalSchemaAnalyzer', analyzer: new UniversalSchemaAnalyzer() },
     { name: 'UniversalDRYAnalyzer', analyzer: new UniversalDRYAnalyzer() },
     { name: 'UniversalSOLIDAnalyzer', analyzer: new UniversalSOLIDAnalyzer() },

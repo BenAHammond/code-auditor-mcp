@@ -12,12 +12,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { UniversalDocumentationAnalyzer } from '../analyzers/universal/UniversalDocumentationAnalyzer.js';
-
-function isExempt(filePath: string, patterns: string[]): boolean {
-  const analyzer = new UniversalDocumentationAnalyzer();
-  return (analyzer as any).isExempt(filePath, patterns);
-}
+import { isExempt } from '../phase/rules/documentation.js';
 
 describe('exemptPatterns — file paths only (Gap 4)', () => {
   it('files matching \\.spec\\. are exempt from documentation checks', () => {
