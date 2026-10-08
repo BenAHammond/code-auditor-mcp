@@ -1,7 +1,7 @@
 {
   "kinds": {
     "batch-functions": {
-      "composition": "Oracle counts every function-like node (function/method/arrow/function-expression/generator); the producer emits one fact only for a function whose span holds a `.batch(`/`.transaction(` call. Residual = the large majority of functions that hold no batch/transaction call.",
+      "composition": "Oracle counts every function-like node (function/method/arrow/function-expression/generator); the producer emits one fact only for a function whose span holds a `.batch(`/`.transaction(` call. Residual = the large majority of functions that hold no batch/transaction call. Re-pinned 2026-10-08: `generator_function_expression`→`generator_function` corrected the oracle to count generator functions it had been missing (openstatus +2).",
       "corpora": {
         "hhra-org": {
           "files": 552,
@@ -15,7 +15,7 @@
         },
         "openstatus": {
           "files": 1867,
-          "expected": 14408,
+          "expected": 14410,
           "actual": 21
         },
         "recall-protocol": {
@@ -76,27 +76,27 @@
       }
     },
     "data-access-calls-candidates": {
-      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one raw, provenance-free candidate per query-shaped call (the extract half of the `data-access-calls` collapse — the handle verdict, injection gate, and per-site SQL parse are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = the large majority of calls/templates that are not DB/ORM-shaped. Re-pinned 2026-10-08 after the Spec-70 receiver-resolution work (heritage resolution, tsconfig-path bare-specifier resolution, import-kind resolution) admitted more DB-provenanced query-shaped calls: actual rose (openstatus 36262→53297, recall-protocol 31074→52302) and the residual shrank accordingly. No corpus drift — all four corpora sit at their pinned SHAs (openstatus has no commits since the prior pin).",
+      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one raw, provenance-free candidate per query-shaped call (the extract half of the `data-access-calls` collapse — the handle verdict, injection gate, and per-site SQL parse are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = the large majority of calls/templates that are not DB/ORM-shaped. Re-pinned 2026-10-08 after the Spec-70 receiver-resolution work (heritage resolution, tsconfig-path bare-specifier resolution, import-kind resolution) admitted more DB-provenanced query-shaped calls: actual rose (openstatus 36262→53297, recall-protocol 31074→52302) and the residual shrank accordingly. Re-pinned again 2026-10-08 after the node-type correctness sweep (Tier 1/2/3 structural node reads + Tier A/B dead node-type fixes): blitz −295 and openstatus −592 are the Tier-2 precision gain — builderWriteVerb/hasOrmFilterShape/extractOrmTables now read the callee member chain instead of regexing the whole source text, so a `.insertInto(…)`/`.where(…)` inside a string argument no longer reads as a chain member; hhra-org +178 and recall-protocol +1192 are the Tier A/B dead-branch recoveries — `template_literal`→`template_string` and the corrected dead type literals now admit template-string/query-shaped calls the producer previously missed. Corpora unchanged at their pinned SHAs.",
       "corpora": {
         "hhra-org": {
-          "files": 431,
-          "expected": 16104,
-          "actual": 9600
+          "files": 422,
+          "expected": 15999,
+          "actual": 9778
         },
         "blitz": {
-          "files": 324,
-          "expected": 8115,
-          "actual": 5769
+          "files": 308,
+          "expected": 7557,
+          "actual": 5474
         },
         "openstatus": {
-          "files": 1388,
-          "expected": 67924,
-          "actual": 53297
+          "files": 1323,
+          "expected": 66528,
+          "actual": 52705
         },
         "recall-protocol": {
-          "files": 1338,
-          "expected": 92246,
-          "actual": 52302
+          "files": 1321,
+          "expected": 92045,
+          "actual": 53494
         }
       }
     },
@@ -201,7 +201,7 @@
       }
     },
     "file-symbols": {
-      "composition": "Oracle counts function-like + class + interface declaration nodes; the producer folds methods into their class symbol. Residual = methods (and other members) riding on a class symbol.",
+      "composition": "Oracle counts function-like + class + interface declaration nodes; the producer folds methods into their class symbol. Residual = methods (and other members) riding on a class symbol. Re-pinned 2026-10-08: the node-type corrections (field_definition→public_field_definition, export_declaration→export_statement, rest_parameter removal) shifted the openstatus symbol fold by two files (+30 expected, +28 actual).",
       "corpora": {
         "hhra-org": {
           "files": 45,
@@ -214,9 +214,9 @@
           "actual": 738
         },
         "openstatus": {
-          "files": 65,
-          "expected": 830,
-          "actual": 437
+          "files": 67,
+          "expected": 860,
+          "actual": 465
         },
         "recall-protocol": {
           "files": 99,
