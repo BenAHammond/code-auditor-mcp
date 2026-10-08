@@ -167,6 +167,63 @@ export function isTemplateLiteral(node: ASTNode, _adapter: LanguageAdapter): boo
   return node.type === 'template_string';
 }
 
+/** The variable-assignment node types whose RHS can carry a static SQL literal. */
+const VARIABLE_ASSIGNMENT_SQL_TYPES = new Set([
+  // TS/JS
+  'variable_declaration',
+  'lexical_declaration',
+  'variable_declarator',
+  'assignment_expression',
+  // Go
+  'short_var_declaration',
+  'var_declaration',
+  'var_spec',
+  'assignment_statement',
+]);
+
+/**
+ * The static string/template literal a variable-assignment node initialises
+ * with, or null. Only a *direct* initializer qualifies: `const q = "SELECT"` is
+ * static, `const q = "SELECT" + x` is dynamic (its literal is nested inside a
+ * binary expression) and yields null. The declaration containers
+ * (`lexical_declaration`, `var_declaration`) descend to their declarator/spec
+ * first; Go wraps the RHS in an `expression_list`.
+ */
+function variableInitializerLiteral(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+): ASTNode | null {
+  const type = adapter.getNodeType(node);
+  if (type === 'lexical_declaration' || type === 'variable_declaration') {
+    for (const c of adapter.getChildren(node) ?? []) {
+      if (adapter.getNodeType(c) === 'variable_declarator') {
+        const lit = variableInitializerLiteral(c, adapter);
+        if (lit) return lit;
+      }
+    }
+    return null;
+  }
+  if (type === 'var_declaration') {
+    for (const c of adapter.getChildren(node) ?? []) {
+      if (adapter.getNodeType(c) === 'var_spec') {
+        const lit = variableInitializerLiteral(c, adapter);
+        if (lit) return lit;
+      }
+    }
+    return null;
+  }
+  for (const c of adapter.getChildren(node) ?? []) {
+    const t = adapter.getNodeType(c);
+    if (isSqlStringLiteralType(t)) return c;
+    if (t === 'expression_list') {
+      for (const e of adapter.getChildren(c) ?? []) {
+        if (isSqlStringLiteralType(adapter.getNodeType(e))) return e;
+      }
+    }
+  }
+  return null;
+}
+
 /** The callee of a call expression, limited to the identifier / member /
  *  selector shapes a tagged-template tag can take. Inlined here (the shared
  *  `getCallExpressionCallee` lives in `provenance.ts`, which imports this module
@@ -260,12 +317,13 @@ export function extractStaticSql(
   if (isSqlStringLiteralType(type)) {
     return staticLiteralText(node, adapter, sourceCode);
   }
-  // Variable assignment: the static RHS literal, if one.
-  if (type === 'variable_declaration') {
-    const value = adapter.getChildren(node).find((c) => {
-      const t = adapter.getNodeType(c);
-      return isSqlStringLiteralType(t);
-    });
+  // Variable assignment: the static RHS literal, if one. The declaration
+  // containers (`lexical_declaration`, `var_declaration`) descend to their
+  // declarator/spec; the declarator/spec/assignment then yields its direct
+  // string/template literal (a literal nested inside a binary expression is
+  // dynamic and yields null).
+  if (VARIABLE_ASSIGNMENT_SQL_TYPES.has(type)) {
+    const value = variableInitializerLiteral(node, adapter);
     return value ? staticLiteralText(value, adapter, sourceCode) : null;
   }
   // Call/new expression: the first static string/template argument.

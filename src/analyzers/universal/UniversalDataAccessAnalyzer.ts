@@ -1157,11 +1157,28 @@ function isFunctionCall(node: ASTNode, adapter: LanguageAdapter): boolean {
          node.type === 'new_expression';
 }
 
+/**
+ * The node types that name a variable assignment whose RHS could be a static
+ * SQL literal. The previous check compared against `variable_declaration` (TS
+ * `var` only) and `binary_expression` (arithmetic/comparison — never an
+ * assignment), so `const`/`let`/`:=` declarations and every reassignment were
+ * dead. The type is the whole signal; `extractStaticSql` then reads the RHS.
+ */
+const VARIABLE_ASSIGNMENT_TYPES = new Set([
+  // TS/JS
+  'variable_declaration',   // var q = …
+  'lexical_declaration',    // const/let q = …
+  'variable_declarator',    // the declarator inside either
+  'assignment_expression',  // q = …
+  // Go
+  'short_var_declaration',  // q := …
+  'var_declaration',        // var q = …
+  'var_spec',               // the spec inside var_declaration
+  'assignment_statement',   // q = …
+]);
+
 function isVariableAssignment(node: ASTNode, adapter: LanguageAdapter): boolean {
-  // Only get the actual variable declaration, not the statement
-  return node.type === 'variable_declaration' ||
-         node.type === 'binary_expression' && (node.children?.some(child =>
-           adapter.getNodeText(child, '').includes('=')) ?? false);
+  return VARIABLE_ASSIGNMENT_TYPES.has(adapter.getNodeType(node));
 }
 
 function containsSQLKeywords(text: string): boolean {
