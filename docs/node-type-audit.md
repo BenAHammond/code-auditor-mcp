@@ -93,17 +93,23 @@ several wrong equivalents. They are comments only, but they mislead future work:
 
 ---
 
-## Recommendation
+## Outcome
 
-Tier A are genuine correctness defects in a release candidate: they silently
-drop Go interface methods, named exports, JSX element names, type-only-usage
-detection, and every generator/class *expression*. Tier B and C are cleanup
-(dead weight / stale docs) with no behavior change.
+Every finding above is fixed, and the fix is machine-checked:
 
-Fixing Tier A changes output — e.g. Go interfaces begin listing method members,
-cyclomatic complexity rises for Go switches, and function indexing begins
-seeing generator/class expressions — so the fixes must be followed by a
-re-measure of the affected corpora and a re-baseline before `verify:close`.
-The mechanical renames are unambiguous; the only nuance is `heritage_clause`,
-which splits into `class_heritage` (class `extends`/`implements`) and
-`extends_type_clause` (interface `extends`).
+- **Tier A** (10 dead literals) were made live in `44cb195`, each pinned by a
+  red test (`1155d32`) so the fix is what turned them green. The only structural
+  fix was `heritage_clause`, which split into `class_heritage` (class
+  `extends`/`implements`) and `extends_type_clause` (interface `extends`).
+- **Tier B** (15 dead aliases) and **Tier C** (10 stale doc-table rows) were
+  removed / corrected in `73ae613` — dead weight and stale comments only, no
+  behavior change.
+- **The gate** (`90ac764` → `scripts/verify-node-types.mjs`, wired as
+  `verify:node-types` into `verify:close`) reads the live vocabulary from the
+  five shipped grammars' `node-types.json` and fails on any `src/` string
+  literal that is compared against a tree-sitter node type but is absent from
+  that union. There is no hand-maintained allowlist, so a dead node-type literal
+  cannot be reintroduced without `verify:close` failing.
+
+The tables above are the record of what the audit found; the gate is what keeps
+that record closed.

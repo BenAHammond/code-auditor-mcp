@@ -49,12 +49,3 @@ asks when a finding says `unproven` or flags a method name.
 - `measure-name-fallback-cost.ts` — "How often does the method-name regex fallback fire?"
   imports `extractMethodName` + the fallback path.
 
-## The two missing surfaces
-
-1. **Explain (per-site disposition trace).** Group A + the `dump-*` probes all ask
-   the same question: *for this site, which evidence sources ran and what did each
-   say?* `unproven` with no trace is where the user stops. The three-way
-   disposition has a `reason` field that is currently `undefined` on emitted
-   findings — there is nothing below the CLI.
-2. **Coverage (disposition split).** Group C counts handle / not-handle / unproven
-   per corpus. The report has a coverage section; it does not report the split.

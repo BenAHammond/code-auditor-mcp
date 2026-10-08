@@ -63,7 +63,7 @@ annotated with a `DB_HANDLE_TYPES` member or traceable to a package import*:
 
 ## What stays cannot-fire (the 284), by cause
 
-The cannot-fire residual is not one defect class; it is four, and each is a
+The cannot-fire residual is not one defect class; it is three, and each is a
 **documented `cannot-fire` reason**, not a silent `clean`:
 
 1. **Runtime bindings** — recall-protocol's Cloudflare D1. `env.DB`,
@@ -82,16 +82,7 @@ The cannot-fire residual is not one defect class; it is four, and each is a
    recover these; the declared-handle-type resolution does not, and reports
    cannot-fire honestly.
 
-3. **Framework wrapper indirections** — blitz's `import db from "db"` →
-   `db/index.ts` → `const EnhancedPrisma = enhancePrisma(PrismaClient)` →
-   `export default new EnhancedPrisma()`. `@prisma/client` *is* in `DB_PACKAGES`,
-   so `PrismaClient` is provenanced; the chain breaks at `enhancePrisma(…)`
-   (its callee is a Blitz wrapper, not a provenanced identifier) and at
-   `new EnhancedPrisma()` (an unprovenanced constructor). Recovering this needs
-   wrapper-return or `new <provenanced-type>()` recognition, which is out of
-   scope for §10's declared-handle-type anchor.
-
-4. **Library internals** — knex's own `lib/…` and `test/…` sources use `sql`/
+3. **Library internals** — knex's own `lib/…` and `test/…` sources use `sql`/
    `db`/`stmt` as query-compiler/client references. knex *is* the DB library; its
    internals are not name-list-deletable receivers in the app-code sense, and
    they resolve to nothing.
@@ -162,7 +153,7 @@ completion, not a denominator change: the bare-receiver count is unchanged at 44
 `recall-protocol`'s +9 is the `db: D1Database` parameter-annotation propagation
 (Rule 8b) finishing its recovery; `hhra-org`'s +6 is the `Database` wrapper class
 (`@neondatabase/serverless`) resolving through the completed binding rule. The
-residual 269 cannot-fire receivers are the four documented causes above, unchanged
+residual 269 cannot-fire receivers are the three documented causes above, unchanged
 in kind — none became `clean`.
 
 This receiver-level re-measure is the `before/after` reconciliation for the
