@@ -615,7 +615,13 @@ describe('findTableReferences — SQL assembled in a constant (Spec 58 R1)', () 
     expect(v[0].message).toContain("'db'");
     expect(v[0].message).toContain('./db');
     expect(v[0].message).toContain('unseen');
-    expect(v[0].details).toEqual({ source: './db', names: ['db'] });
+    expect(v[0].details?.source).toBe('./db');
+    expect(v[0].details?.names).toEqual(['db']);
+    // Spec 69 §10 — the release bar is that an unproven receiver explains itself.
+    // The import-level emission must carry the same `reason` the call-site shape does,
+    // so a consumer reading `details.reason` never sees `undefined`.
+    expect(v[0].details?.reason).toContain("'db'");
+    expect(v[0].details?.reason).toContain('./db');
   });
 });
 

@@ -1435,18 +1435,25 @@ export function checkUnresolvedReceiverImports(
   unresolved: Array<{ source: string; names: string[] }>,
   filePath: string,
 ): CoverageDiagnostic[] {
-  return unresolved.map((u) => ({
-    analyzerName: 'schema',
-    kind: 'cannot-fire',
-    message:
-      `Import of ${u.names.length > 0 ? u.names.map((n) => `'${n}'`).join(', ') : 'a DB receiver'} ` +
+  return unresolved.map((u) => {
+    const reason =
+      `import of ${u.names.length > 0 ? u.names.map((n) => `'${n}'`).join(', ') : 'a DB receiver'} ` +
       `from '${u.source}' does not resolve to an in-repo file, so its DB provenance cannot be ` +
-      `established by declaration. DB access through this receiver is unseen: table-reference ` +
-      `and data-access rules may report clean on access they could not observe.`,
-    file: filePath,
-    line: 0,
-    details: { source: u.source, names: u.names },
-  }));
+      `established by declaration`;
+    return {
+      analyzerName: 'schema',
+      kind: 'cannot-fire',
+      message:
+        `${reason}. DB access through this receiver is unseen: table-reference ` +
+        `and data-access rules may report clean on access they could not observe.`,
+      file: filePath,
+      line: 0,
+      // `reason` carries the same "why" the call-site shape (`checkUnprovenQueryReceivers`)
+      // carries in `details.reason` — a consumer reading `details.reason` must never
+      // see `undefined` for an unproven receiver, whichever emission path produced it.
+      details: { source: u.source, names: u.names, reason },
+    };
+  });
 }
 
 /**
