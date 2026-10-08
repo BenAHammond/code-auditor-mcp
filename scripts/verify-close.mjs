@@ -45,6 +45,7 @@ import { spawnSync } from 'node:child_process';
 export const GATES = [
   { name: 'verify:disk-space', dist: false },
   { name: 'verify:types', dist: false },
+  { name: 'verify:node-types', dist: false },
   { name: 'verify:dist-fresh', dist: false },
   { name: 'test', dist: true },
   { name: 'test:integration', dist: true },
