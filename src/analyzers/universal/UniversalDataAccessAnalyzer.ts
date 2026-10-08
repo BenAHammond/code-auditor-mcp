@@ -2331,7 +2331,7 @@ function extractMethodName(
 
   // For template literals inside a DB-provenanced call, extract the method
   // name from the enclosing call expression instead of the template body.
-  if (nodeType === 'template_string' || nodeType === 'template_literal') {
+  if (nodeType === 'template_string') {
     const parent = adapter.getParent(node);
     if (parent && adapter.getNodeType(parent) === 'arguments') {
       const callExpr = adapter.getParent(parent);

@@ -485,10 +485,7 @@ function applyPropagationRule(
     return propagateDefaultParameter(node, adapter, sourceCode, provenanceMap, ctx.localFunctions);
   }
 
-  if (
-    node.type === 'public_field_definition' ||
-    node.type === 'field_definition'
-  ) {
+  if (node.type === 'public_field_definition') {
     return propagateClassField(node, adapter, sourceCode, provenanceMap, ctx.localFunctions);
   }
 
@@ -2089,10 +2086,7 @@ function recordClassField(
   node: ASTNode,
   ctx: AssignmentGraphContext,
 ): void {
-  if (
-    node.type !== 'public_field_definition' &&
-    node.type !== 'field_definition'
-  ) {
+  if (node.type !== 'public_field_definition') {
     return;
   }
   const children = ctx.adapter.getChildren(node);
@@ -2431,7 +2425,7 @@ export function extractTsWithinFileProvenance(
       return;
     }
 
-    if (node.type === 'public_field_definition' || node.type === 'field_definition') {
+    if (node.type === 'public_field_definition') {
       const children = adapter.getChildren(node);
       const nameChild = children.find((c) => c.type === 'property_identifier');
       if (!nameChild) return;

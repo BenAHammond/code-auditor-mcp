@@ -619,8 +619,7 @@ export function getArgStringLiteral(
         const argType = adapter.getNodeType(arg);
         if (
           argType === 'string' ||
-          argType === 'template_string' ||
-          argType === 'template_literal'
+          argType === 'template_string'
         ) {
           if (stringCount === argIndex) {
             const text = adapter.getNodeText(arg, sourceCode).trim();

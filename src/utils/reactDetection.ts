@@ -28,7 +28,7 @@ function isFunctionType(type: string): boolean {
 
 /** Check if a tree-sitter node type is a JSX node. */
 function isJsxType(type: string): boolean {
-  return type === 'jsx_element' || type === 'jsx_fragment' || type === 'jsx_self_closing_element';
+  return type === 'jsx_element' || type === 'jsx_self_closing_element';
 }
 
 /**
@@ -140,7 +140,7 @@ export function isClassComponent(node: ASTNode, sourceCode: string): boolean {
   // older grammars used a flat `heritage_clause` — handle both. `implements_clause`
   // must NOT count as a React base (implementing an interface is not extending).
   for (const child of node.children ?? []) {
-    if (child.type !== 'class_heritage' && child.type !== 'heritage_clause') continue;
+    if (child.type !== 'class_heritage') continue;
 
     for (const clause of child.children ?? []) {
       if (clause.type !== 'extends_clause') continue;
@@ -310,8 +310,7 @@ function extractPropsFromObjectPattern(
 ): PropDefinition[] {
   const out: PropDefinition[] = [];
   for (const element of pattern.children ?? []) {
-    if (element.type !== 'binding_element' &&
-        element.type !== 'shorthand_property_identifier_pattern' &&
+    if (element.type !== 'shorthand_property_identifier_pattern' &&
         !(allowPairPattern && element.type === 'pair_pattern')) continue;
 
     // shorthand_property_identifier_pattern has no children — the name IS the node
@@ -361,8 +360,7 @@ export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinit
         if (firstParam) {
           // Check for destructured parameter (object pattern) — treesitter wraps
           // destructured params in required_parameter, so look inside it.
-          const pattern = findChildOfType(firstParam, 'object_pattern') ??
-            findChildOfType(firstParam, 'object_binding_pattern');
+          const pattern = findChildOfType(firstParam, 'object_pattern');
           if (pattern) {
             props.push(...extractPropsFromObjectPattern(pattern, sourceCode, true));
           }
@@ -378,8 +376,7 @@ export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinit
       const firstParam = params.children?.[0];
       if (firstParam) {
         // Check if parameter is destructured — tree-sitter wraps in required_parameter
-        const pattern = findChildOfType(firstParam, 'object_pattern') ??
-          findChildOfType(firstParam, 'object_binding_pattern');
+        const pattern = findChildOfType(firstParam, 'object_pattern');
         if (pattern) {
           props.push(...extractPropsFromObjectPattern(pattern, sourceCode, false));
         }
@@ -390,7 +387,7 @@ export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinit
         const typeAnnot = findChildOfType(firstParam, 'type_annotation');
         if (typeAnnot) {
           const typeNode = typeAnnot.children?.find(c =>
-            c.type === 'object_type' || c.type === 'type_literal');
+            c.type === 'object_type');
           if (typeNode) {
             props.push(...extractPropsFromTypeLiteral(typeNode, sourceCode));
           }
@@ -404,7 +401,7 @@ export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinit
   // For class components, check Props in extends clause
   if (node.type === 'class_declaration') {
     for (const child of node.children ?? []) {
-      if (child.type !== 'class_heritage' && child.type !== 'heritage_clause') continue;
+      if (child.type !== 'class_heritage') continue;
 
       for (const clause of child.children ?? []) {
         if (clause.type !== 'extends_clause') continue;
@@ -417,7 +414,7 @@ export function extractPropTypes(node: ASTNode, sourceCode: string): PropDefinit
         const typeArgs = findChildOfType(clause, 'type_arguments');
         if (typeArgs?.children) {
           const firstArg = typeArgs.children[0];
-          if (firstArg?.type === 'object_type' || firstArg?.type === 'type_literal') {
+          if (firstArg?.type === 'object_type') {
             props.push(...extractPropsFromTypeLiteral(firstArg, sourceCode));
           }
         }

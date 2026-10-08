@@ -151,7 +151,7 @@ class CssAstSupport extends CssParserCore {
       case 'id_name':
       case 'tag_name':
       case 'feature_name':
-      case 'keyframe_block_name':
+      case 'keyframes_name':
         return n.text;
       default:
         return null;

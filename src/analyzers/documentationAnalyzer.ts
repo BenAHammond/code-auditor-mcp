@@ -58,8 +58,7 @@ function countParameters(node: ASTNode): number {
   if (!params?.children) return 0;
   return params.children.filter(
     c => c.type === 'required_parameter' ||
-      c.type === 'optional_parameter' ||
-      c.type === 'rest_parameter'
+      c.type === 'optional_parameter'
   ).length;
 }
 

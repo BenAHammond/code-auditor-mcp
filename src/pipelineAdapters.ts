@@ -1632,7 +1632,7 @@ function clDynamicImport(node: ASTNode, sourceCode: string): { specifier: string
   // to an edge just like `import('@babel/plugin-syntax-jsx')`. Only an
   // interpolated template (`` import(`./${name}.js`) ``) is genuinely computed.
   const templateNode = args?.children?.find(
-    (c) => c.type === 'template_string' || c.type === 'template_literal',
+    (c) => c.type === 'template_string',
   );
   if (templateNode) {
     const hasSubstitution = (templateNode.children ?? []).some(

@@ -298,7 +298,6 @@ export function extractIdentifierUsage(
       if (
         parentType === 'type_annotation' ||
         parentType === 'type_identifier' ||
-        parentType === 'type_reference' ||
         parentType === 'predefined_type' ||
         parentType === 'generic_type'
       ) {

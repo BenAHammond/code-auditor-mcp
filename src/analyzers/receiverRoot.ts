@@ -210,7 +210,6 @@ const VALUE_DECLARATION_TYPES = new Set([
   'required_parameter',
   'optional_parameter',
   'public_field_definition',
-  'field_definition',
   'function_declaration',
   'method_definition',
   'generator_function_declaration',
@@ -335,7 +334,7 @@ function collectBindings(
       continue;
     }
 
-    if (node.type === 'public_field_definition' || node.type === 'field_definition') {
+    if (node.type === 'public_field_definition') {
       const name = fieldName(node, adapter, sourceCode);
       if (name) out.push({ name, binding: { ...bindingFromField(node, adapter, sourceCode), scope } });
       continue;

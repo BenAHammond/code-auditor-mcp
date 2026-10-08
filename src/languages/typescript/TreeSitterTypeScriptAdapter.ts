@@ -614,10 +614,7 @@ class TsExtraction extends TsNameDocumentation {
           fnInfo.isMethod = true;
           methods.push(fnInfo);
         }
-      } else if (
-        member.type === 'public_field_definition' ||
-        member.type === 'field_definition'
-      ) {
+      } else if (member.type === 'public_field_definition') {
         const propInfo = this.buildPropertyInfo(member);
         if (propInfo) properties.push(propInfo);
       }
@@ -1176,7 +1173,7 @@ class TsScopeStatic extends TsPredicatesOptional {
       const grandparent = parent.parent;
       if (!grandparent) return null;
       const gpType = (getRawNode(grandparent)).type;
-      if (gpType === 'for_of_statement' || gpType === 'for_in_statement') {
+      if (gpType === 'for_in_statement') {
         return grandparent;
       }
     }

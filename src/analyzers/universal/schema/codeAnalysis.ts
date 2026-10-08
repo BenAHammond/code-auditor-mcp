@@ -1167,7 +1167,7 @@ export function hasTemplateArgument(node: ASTNode, adapter: LanguageAdapter): bo
   if (!node.children) return false;
   for (const child of node.children) {
     const type = adapter.getNodeType(child);
-    if (type === 'template_string' || type === 'template_literal') {
+    if (type === 'template_string') {
       return true;
     }
   }
@@ -1186,7 +1186,7 @@ export function getTemplateText(node: ASTNode, adapter: LanguageAdapter, sourceC
   if (!node.children) return null;
   for (const child of node.children) {
     const type = adapter.getNodeType(child);
-    if (type === 'template_string' || type === 'template_literal') {
+    if (type === 'template_string') {
       const text = adapter.getNodeText(child, sourceCode).trim();
       // A template literal's source text includes its surrounding backticks
       // (`` `SELECT …` ``). node-sql-parser rejects a statement wrapped in
@@ -1223,8 +1223,7 @@ export function getFirstStringArgument(
         const argType = adapter.getNodeType(arg);
         if (
           argType === 'string' ||
-          argType === 'template_string' ||
-          argType === 'template_literal'
+          argType === 'template_string'
         ) {
           const text = adapter.getNodeText(arg, sourceCode).trim();
           // Strip surrounding quotes from string literals
@@ -1938,7 +1937,7 @@ const FUNCTION_NODE_TYPES = new Set([
   'function_declaration',
   'function_expression',
   'generator_function_declaration',
-  'generator_function_expression',
+  'generator_function',
   'method_definition',
 ]);
 

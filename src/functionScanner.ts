@@ -196,7 +196,7 @@ export function extractFunctionsFromSource(
 
     const params = findChildOfType(node, 'formal_parameters');
     const parameterCount = params?.children?.filter(c =>
-      c.type === 'required_parameter' || c.type === 'optional_parameter' || c.type === 'rest_parameter'
+      c.type === 'required_parameter' || c.type === 'optional_parameter'
     ).length ?? 0;
 
     return {
@@ -567,7 +567,7 @@ function isComponentExported(node: ASTNode): boolean {
   // Check if parent is an export statement
   let parent = node.parent;
   while (parent) {
-    if (parent.type === 'export_statement' || parent.type === 'export_declaration') {
+    if (parent.type === 'export_statement') {
       return true;
     }
     parent = parent.parent;

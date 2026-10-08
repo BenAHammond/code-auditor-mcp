@@ -298,7 +298,7 @@ const TYPE_NODE_TYPES = new Set([
   'intersection_type', 'object_type', 'function_type', 'type_annotation',
   'type_arguments', 'array_type', 'tuple_type', 'conditional_type',
   'literal_type', 'type_query', 'nested_type_identifier', 'this_type',
-  'optional_type', 'rest_type', 'member_type', 'template_literal_type',
+  'optional_type', 'rest_type', 'template_literal_type',
   'type_predicate', 'parenthesized_type', 'infer_type', 'lookup_type',
   'constructor_type', 'type_parameter', 'type_parameters', 'flow_maybe_type',
 ]);

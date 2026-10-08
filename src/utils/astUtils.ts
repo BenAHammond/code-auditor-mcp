@@ -176,7 +176,7 @@ export function getExports(root: ASTNode, sourceCode: string): ExportInfo[] {
 
   // export declarations: export { name1, name2 }
   const exportNodes = findNodes(root, n =>
-    n.type === 'export_statement' || n.type === 'export_declaration'
+    n.type === 'export_statement'
   );
 
   for (const node of exportNodes) {
@@ -395,8 +395,7 @@ export function getParameterCount(node: ASTNode): number {
 
   let count = 0;
   for (const child of params.children ?? []) {
-    if (child.type === 'required_parameter' || child.type === 'optional_parameter' ||
-        child.type === 'rest_parameter') {
+    if (child.type === 'required_parameter' || child.type === 'optional_parameter') {
       count++;
     }
   }
@@ -558,7 +557,7 @@ export function getImportsDetailed(root: ASTNode, sourceCode: string): ImportMap
 export function getReExports(root: ASTNode, sourceCode: string): Array<{ name: string; module: string }> {
   const reExports: Array<{ name: string; module: string }> = [];
   const exportNodes = findNodes(root, n =>
-    n.type === 'export_statement' || n.type === 'export_declaration'
+    n.type === 'export_statement'
   );
 
   for (const node of exportNodes) {
@@ -600,12 +599,12 @@ export function getReExports(root: ASTNode, sourceCode: string): Array<{ name: s
  * | TS API check                       | Tree-sitter equivalent                 |
  * |------------------------------------|----------------------------------------|
  * | ts.isTypeNode(p)                   | p.type === 'type_annotation'           |
- * | ts.isTypeReferenceNode(p)          | p.type === 'type_reference'            |
- * | ts.isTypeQueryNode(p)              | p.type === 'typeof_expression'         |
- * | ts.isQualifiedName(p)              | p.type === 'qualified_name'            |
+ * | ts.isTypeReferenceNode(p)          | p.type === 'type_identifier'           |
+ * | ts.isTypeQueryNode(p)              | p.type === 'type_query'                |
+ * | ts.isQualifiedName(p)              | p.type === 'nested_type_identifier'    |
  * | ts.isExpressionWithTypeArguments(p)| p.type === 'generic_type'              |
  * | ts.isPropertyAccessExpression(p)   | p.type === 'member_expression'         |
- * | ts.isHeritageClause(p)             | p.type === 'heritage_clause'           |
+ * | ts.isHeritageClause(p)             | p.type === 'class_heritage'            |
  * | ts.isInterfaceDeclaration(p)       | p.type === 'interface_declaration'     |
  * | ts.isTypeAliasDeclaration(p)       | p.type === 'type_alias_declaration'    |
  * | ts.isClassDeclaration(p)           | p.type === 'class_declaration'         |
@@ -623,16 +622,16 @@ export function getReExports(root: ASTNode, sourceCode: string): Array<{ name: s
  * | ts.isTypePredicateNode(p)          | p.type === 'type_predicate'            |
  * | ts.isMethodDeclaration(p)          | p.type === 'method_definition'         |
  * | ts.isMethodSignature(p)            | p.type === 'method_signature'          |
- * | ts.isPropertyDeclaration(p)        | p.type === 'class_property'            |
+ * | ts.isPropertyDeclaration(p)        | p.type === 'public_field_definition'   |
  * | ts.isPropertySignature(p)          | p.type === 'property_signature'        |
- * | ts.isGetAccessorDeclaration(p)     | p.type === 'get_accessor'              |
+ * | ts.isGetAccessorDeclaration(p)     | p.type === 'method_definition'         |
  * | ts.isFunctionDeclaration(p)        | p.type === 'function_declaration'      |
  * | ts.isArrowFunction(p)              | p.type === 'arrow_function'            |
  * | ts.isFunctionExpression(p)         | p.type === 'function_expression'       |
  * | ts.isParameter(p)                  | p.type === 'required_parameter'        |
  * | ts.isCallExpression(p)             | p.type === 'call_expression'           |
  * | ts.isNewExpression(p)              | p.type === 'new_expression'            |
- * | ts.isTaggedTemplateExpression(p)   | p.type === 'tagged_template_literal'   |
+ * | ts.isTaggedTemplateExpression(p)   | p.type === 'call_expression'           |
  * | ts.isImportDeclaration(p)          | p.type === 'import_statement'          |
  * | ts.isImportSpecifier(p)            | p.type === 'import_specifier'          |
  * | ts.isImportClause(p)               | p.type === 'import_clause'             |
@@ -693,7 +692,7 @@ const DECLARATION_TYPES = new Set([
 ]);
 
 /** Set of node types that represent spreads */
-const SPREAD_TYPES = new Set(['spread_element', 'rest_parameter']);
+const SPREAD_TYPES = new Set(['spread_element']);
 
 /** Node types whose direct `type_annotation` child holds an identifier's type
  *  position — parameters, property signatures, index signatures, and type
@@ -702,7 +701,6 @@ const DIRECT_TYPE_ANNOTATION_PARENTS = new Set([
   'required_parameter',
   'optional_parameter',
   'property_signature',
-  'class_property',
   'index_signature',
   'type_assertion',
 ]);
