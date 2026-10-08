@@ -432,32 +432,40 @@ function checkAstPattern(
  * Enforce that style declarations in matching files only use allowed mechanisms.
  * Queries the style_declarations table in the CodeIndexDB.
  */
-function checkStyleMechanism(
-  rule: StyleMechanismRule,
+function checkStyleMechanisms(
+  rules: StyleMechanismRule[],
   files: string[],
   indexHandle: IndexHandle
 ): RuleViolation[] {
+  if (rules.length === 0) return [];
   const violations: RuleViolation[] = [];
 
-  const allowedSet = new Set(rule.allow);
+  // One query over the union of every rule's path-filtered files — a per-rule
+  // query loop is the N+1 the loop-query rule flags. Each rule's allow-set and
+  // path filter are then applied in JS over the single result.
+  const applicable = files.filter((file) => rules.some((rule) => !rule.path || matchesPattern(rule.path, file)));
+  if (applicable.length === 0) return violations;
 
-  // Apply the path filter up front so the query runs once over the matching
-  // files (a per-file query loop is the N+1 the loop-query rule flags).
-  const matchingFiles = files.filter((file) => !rule.path || matchesPattern(rule.path, file));
-  if (matchingFiles.length === 0) return violations;
-
+  let rows: Array<{ mechanism: string; file_path: string; line: number }>;
   try {
-    const clause = chunkedInClause('file_path', matchingFiles);
-    const rows = indexHandle.query(`
+    const clause = chunkedInClause('file_path', applicable);
+    rows = indexHandle.query(`
       SELECT DISTINCT mechanism, file_path, line
       FROM style_declarations
       WHERE ${clause}
       ORDER BY file_path, line
-    `, matchingFiles) as Array<{ mechanism: string; file_path: string; line: number }>;
+    `, applicable) as Array<{ mechanism: string; file_path: string; line: number }>;
+  } catch {
+    // Table may not exist yet (no style index built)
+    return violations;
+  }
 
+  for (const rule of rules) {
+    const allowedSet = new Set(rule.allow);
     // One violation per file: the first disallowed mechanism in line order.
     const reported = new Set<string>();
     for (const row of rows) {
+      if (rule.path && !matchesPattern(rule.path, row.file_path)) continue;
       if (reported.has(row.file_path)) continue;
       if (allowedSet.has(row.mechanism)) continue;
       reported.add(row.file_path);
@@ -471,8 +479,6 @@ function checkStyleMechanism(
         line: row.line,
       });
     }
-  } catch {
-    // Table may not exist yet (no style index built)
   }
 
   return violations;
@@ -485,31 +491,38 @@ function checkStyleMechanism(
  * A declaration whose normalized_value is not in allowValues AND has no
  * token_ref is a violation.
  */
-function checkNoRawValues(
-  rule: NoRawValuesRule,
+function checkNoRawValuesRules(
+  rules: NoRawValuesRule[],
   files: string[],
   indexHandle: IndexHandle
 ): RuleViolation[] {
+  if (rules.length === 0) return [];
   const violations: RuleViolation[] = [];
 
-  const propertiesSet = new Set(rule.properties);
-  const allowValuesSet = new Set(rule.allowValues ?? []);
+  // One query over the union of every rule's path-filtered files — a per-rule
+  // query loop is the N+1 the loop-query rule flags. Each rule's properties and
+  // allow-values are then applied in JS over the single result.
+  const applicable = files.filter((file) => rules.some((rule) => !rule.path || matchesPattern(rule.path, file)));
+  if (applicable.length === 0) return violations;
 
-  // Apply the path filter up front so the query runs once over the matching
-  // files (a per-file query loop is the N+1 the loop-query rule flags).
-  const matchingFiles = files.filter((file) => !rule.path || matchesPattern(rule.path, file));
-  if (matchingFiles.length === 0) return violations;
-
+  let rows: Array<{
+    property: string;
+    raw_value: string;
+    normalized_value: string | null;
+    file_path: string;
+    line: number;
+    token_ref: string | null;
+  }>;
   try {
-    const clause = chunkedInClause('file_path', matchingFiles);
+    const clause = chunkedInClause('file_path', applicable);
     // `token_ref` is selected in the same query so the "has a token ref" check
     // is a Set membership test, not a per-row query (the nested N+1).
-    const rows = indexHandle.query(`
+    rows = indexHandle.query(`
       SELECT property, raw_value, normalized_value, file_path, line, token_ref
       FROM style_declarations
       WHERE ${clause}
       ORDER BY file_path, line
-    `, matchingFiles) as Array<{
+    `, applicable) as Array<{
       property: string;
       raw_value: string;
       normalized_value: string | null;
@@ -517,15 +530,23 @@ function checkNoRawValues(
       line: number;
       token_ref: string | null;
     }>;
+  } catch {
+    // Table may not exist yet (no style index built)
+    return violations;
+  }
 
-    // The set of (file, line, property) declarations that carry a token ref —
-    // the exact predicate the old per-row query checked.
-    const tokenRefKeys = new Set<string>();
-    for (const row of rows) {
-      if (row.token_ref != null) tokenRefKeys.add(`${row.file_path} ${row.line} ${row.property}`);
-    }
+  // The set of (file, line, property) declarations that carry a token ref —
+  // the exact predicate the old per-row query checked.
+  const tokenRefKeys = new Set<string>();
+  for (const row of rows) {
+    if (row.token_ref != null) tokenRefKeys.add(`${row.file_path} ${row.line} ${row.property}`);
+  }
 
+  for (const rule of rules) {
+    const propertiesSet = new Set(rule.properties);
+    const allowValuesSet = new Set(rule.allowValues ?? []);
     for (const row of rows) {
+      if (rule.path && !matchesPattern(rule.path, row.file_path)) continue;
       if (!propertiesSet.has(row.property)) continue;
 
       const normVal = row.normalized_value ?? row.raw_value;
@@ -544,8 +565,6 @@ function checkNoRawValues(
         symbol: row.property,
       });
     }
-  } catch {
-    // Table may not exist yet (no style index built)
   }
 
   return violations;
@@ -704,21 +723,11 @@ export function checkRules(options: RuleEngineOptions): RuleCheckResult {
   if (indexHandle) {
     const scopedPaths = files.map(f => f.replace(/^\.\//, ''));
 
-    for (const rule of styleMechanisms) {
-      try {
-        violations.push(...checkStyleMechanism(rule, scopedPaths, indexHandle));
-      } catch (err: any) {
-        errors.push(`Error checking style-mechanism "${rule.id}": ${err.message}`);
-      }
-    }
-
-    for (const rule of noRawValues) {
-      try {
-        violations.push(...checkNoRawValues(rule, scopedPaths, indexHandle));
-      } catch (err: any) {
-        errors.push(`Error checking no-raw-values "${rule.id}": ${err.message}`);
-      }
-    }
+    // Batch the per-kind queries: each kind runs ONE query over the union of its
+    // rules' files, then partitions per rule in JS. A per-rule query loop is the
+    // N+1 the loop-query rule flags.
+    violations.push(...checkStyleMechanisms(styleMechanisms, scopedPaths, indexHandle));
+    violations.push(...checkNoRawValuesRules(noRawValues, scopedPaths, indexHandle));
   }
 
   return { rules, violations, errors };
