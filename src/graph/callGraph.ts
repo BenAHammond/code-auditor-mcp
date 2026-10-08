@@ -354,10 +354,9 @@ function accumulateBrandes(
   pred: number[][],
   sigma: Float64Array,
   delta: Float64Array,
-  nodeIndex: Map<number, number>,
-  bc: Float64Array,
-  s: number,
+  state: { nodeIndex: Map<number, number>; bc: Float64Array; s: number },
 ): void {
+  const { nodeIndex, bc, s } = state;
   while (stack.length > 0) {
     const w = stack.pop()!;
     const wIdx = nodeIndex.get(w)!;
@@ -385,7 +384,7 @@ function brandesExact(
 
   for (const s of nodes) {
     const { stack, pred, sigma, delta } = brandesBfs(adjacency, nodeIndex, N, s);
-    accumulateBrandes(stack, pred, sigma, delta, nodeIndex, bc, s);
+    accumulateBrandes(stack, pred, sigma, delta, { nodeIndex, bc, s });
   }
 
   // Undirected normalization: divide by 2
@@ -412,7 +411,7 @@ function brandesSampled(
 
   for (const s of pivots) {
     const { stack, pred, sigma, delta } = brandesBfs(adjacency, nodeIndex, N, s);
-    accumulateBrandes(stack, pred, sigma, delta, nodeIndex, bc, s);
+    accumulateBrandes(stack, pred, sigma, delta, { nodeIndex, bc, s });
   }
 
   // Scale: multiply by N / pivotCount to estimate the full values

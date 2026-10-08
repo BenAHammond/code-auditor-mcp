@@ -467,14 +467,16 @@ async function buildFacts(
     unresolvedImports = [...receiverProvenanceFact.unresolvedImports];
     unprovenQueryReceivers = classifyUnprovenQueryReceivers(
       (facts.get('data-access-calls-candidates') as DataAccessCallCandidate[] | undefined) ?? [],
-      (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
-      receiverProvenanceFact,
-      (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
-      infra?.sqlDialect ?? null,
-      infra?.declaredTypePackages,
-      infra?.projectRoot,
-      infra?.tsconfigAliases,
-      handleVerdictCache,
+      {
+        withinFacts: (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
+        provenance: receiverProvenanceFact,
+        activityFacts: (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
+        sqlDialect: infra?.sqlDialect ?? null,
+        declaredTypePackages: infra?.declaredTypePackages,
+        projectRoot: infra?.projectRoot,
+        tsconfig: infra?.tsconfigAliases,
+        verdictCache: handleVerdictCache,
+      },
     );
     // Spec 70 1b — the `unresolved-query` half (a third coverage signal, alongside
     // the two above): re-derive the re-admitted unresolvable-SQL DB-calls from the
@@ -482,16 +484,15 @@ async function buildFacts(
     // when `schema-usage` was needed (its raw fact is present); otherwise empty.
     const schemaUsageCandidates = facts.get('schema-usage-candidates') as SchemaUsageCandidatesFact[] | undefined;
     if (schemaUsageCandidates) {
-      unresolvedQuerySites = classifyUnresolvedQuerySites(
-        schemaUsageCandidates,
-        (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
-        receiverProvenanceFact,
-        (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
-        infra?.sqlDialect ?? null,
-        infra?.declaredTypePackages,
-        infra?.projectRoot,
-        infra?.tsconfigAliases,
-      );
+      unresolvedQuerySites = classifyUnresolvedQuerySites(schemaUsageCandidates, {
+        withinFacts: (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
+        provenance: receiverProvenanceFact,
+        activityFacts: (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
+        sqlDialect: infra?.sqlDialect ?? null,
+        declaredTypePackages: infra?.declaredTypePackages,
+        projectRoot: infra?.projectRoot,
+        tsconfig: infra?.tsconfigAliases,
+      });
     }
   }
 

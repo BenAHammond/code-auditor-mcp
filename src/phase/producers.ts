@@ -977,16 +977,15 @@ export const CORPUS_PRODUCERS = {
     produces: 'schema-usage',
     needs: ['schema-usage-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity'],
     process(facts, ctx): SchemaUsageFact[] {
-      return classifySchemaUsage(
-        facts['schema-usage-candidates'],
-        facts['within-file-provenance'],
-        facts['receiver-provenance'],
-        facts['receiver-activity'],
-        ctx?.sqlDialect ?? null,
-        ctx?.declaredTypePackages,
-        ctx?.projectRoot,
-        ctx?.tsconfigAliases,
-      );
+      return classifySchemaUsage(facts['schema-usage-candidates'], {
+        withinFacts: facts['within-file-provenance'],
+        provenance: facts['receiver-provenance'],
+        activityFacts: facts['receiver-activity'],
+        sqlDialect: ctx?.sqlDialect ?? null,
+        declaredTypePackages: ctx?.declaredTypePackages,
+        projectRoot: ctx?.projectRoot,
+        tsconfig: ctx?.tsconfigAliases,
+      });
     },
   } satisfies CorpusProcessor<'schema-usage', readonly ['schema-usage-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
   // Spec 70 Item 4 (step 3) — the third of the four receiver consumers. The
@@ -1006,17 +1005,16 @@ export const CORPUS_PRODUCERS = {
     produces: 'data-access-calls',
     needs: ['data-access-calls-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity'],
     process(facts, ctx): ResolvedQuery[] {
-      return classifyDataAccessCalls(
-        facts['data-access-calls-candidates'],
-        facts['within-file-provenance'],
-        facts['receiver-provenance'],
-        facts['receiver-activity'],
-        ctx?.sqlDialect ?? null,
-        ctx?.declaredTypePackages,
-        ctx?.projectRoot,
-        ctx?.tsconfigAliases,
-        ctx?.handleVerdictCache,
-      );
+      return classifyDataAccessCalls(facts['data-access-calls-candidates'], {
+        withinFacts: facts['within-file-provenance'],
+        provenance: facts['receiver-provenance'],
+        activityFacts: facts['receiver-activity'],
+        sqlDialect: ctx?.sqlDialect ?? null,
+        declaredTypePackages: ctx?.declaredTypePackages,
+        projectRoot: ctx?.projectRoot,
+        tsconfig: ctx?.tsconfigAliases,
+        verdictCache: ctx?.handleVerdictCache,
+      });
     },
   } satisfies CorpusProcessor<'data-access-calls', readonly ['data-access-calls-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
   // Spec 70 Item 4 (step 3) — the fourth of the four receiver consumers. The
@@ -1031,17 +1029,16 @@ export const CORPUS_PRODUCERS = {
     produces: 'loop-queries',
     needs: ['loop-query-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity'],
     process(facts, ctx): LoopQueryFact[] {
-      return classifyLoopQueries(
-        facts['loop-query-candidates'],
-        facts['within-file-provenance'],
-        facts['receiver-provenance'],
-        facts['receiver-activity'],
-        ctx?.sqlDialect ?? null,
-        ctx?.declaredTypePackages,
-        ctx?.projectRoot,
-        ctx?.tsconfigAliases,
-        ctx?.handleVerdictCache,
-      );
+      return classifyLoopQueries(facts['loop-query-candidates'], {
+        withinFacts: facts['within-file-provenance'],
+        provenance: facts['receiver-provenance'],
+        activityFacts: facts['receiver-activity'],
+        sqlDialect: ctx?.sqlDialect ?? null,
+        declaredTypePackages: ctx?.declaredTypePackages,
+        projectRoot: ctx?.projectRoot,
+        tsconfig: ctx?.tsconfigAliases,
+        verdictCache: ctx?.handleVerdictCache,
+      });
     },
   } satisfies CorpusProcessor<'loop-queries', readonly ['loop-query-candidates', 'within-file-provenance', 'receiver-provenance', 'receiver-activity']>,
 } satisfies CorpusProducerMap;

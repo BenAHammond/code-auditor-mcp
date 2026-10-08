@@ -119,14 +119,12 @@ function both(src: string, dialect: Dialect | null): { expected: string; actual:
       })),
       unresolvedImports: unresolvedImports.map((u) => ({ importer: u.importer, source: u.source, names: u.names })),
     };
-    const phaseUnresolved = classifyUnresolvedQuerySites(
-      candidates,
+    const phaseUnresolved = classifyUnresolvedQuerySites(candidates, {
       withinFacts,
-      provenanceFact,
+      provenance: provenanceFact,
       activityFacts,
-      dialect,
-      undefined,
-    );
+      sqlDialect: dialect,
+    });
 
     return {
       expected: canonUnresolved(legacyUnresolved),

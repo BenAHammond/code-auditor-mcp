@@ -64,6 +64,75 @@ import { describeUnprovenReceiver, resolveSpecifier, makeHeritageResolver, type 
 type SpecifierResolver = (source: string) => SpecifierResolution | null;
 
 /**
+ * The per-corpus resolution inputs the five receiver consumers share: the raw
+ * facts that rehydrate to the per-file environment each consumer folds, plus the
+ * dialect and project tail that build the specifier/heritage resolvers. Bundling
+ * them here (rather than threading eight positional parameters) keeps each
+ * consumer's signature about its own fact kind, not the shared plumbing — the
+ * `parameter-count` smell is the resolution environment spread into positional
+ * params, and the remedy is one context object, not a suppression.
+ */
+interface ReceiverResolution {
+  withinFacts: readonly WithinFileProvenanceFact[];
+  provenance: ReceiverProvenanceFact;
+  activityFacts: readonly ReceiverActivityFact[];
+  sqlDialect: Dialect | null;
+  declaredTypePackages?: ReadonlySet<string>;
+  projectRoot?: string;
+  tsconfig?: TsconfigPathMap;
+  verdictCache?: Map<string, HandleVerdict | null>;
+}
+
+/**
+ * The per-file receiver environment the fold helpers thread: `foldReceiverEnvironment`'s
+ * provenance output plus the resolution tail `identifyHandle` needs to build its
+ * `RootResolutionEnv` (`sqlDialect`, `declaredTypePackages`, `resolveImport`,
+ * `resolveHeritageField`). One object instead of the nine positional parameters the
+ * helpers used to thread.
+ */
+interface FileReceiverEnv {
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>;
+  bindings: ReadonlyMap<string, Binding>;
+  bindingsByScope: ReadonlyMap<string, ReadonlyMap<number, Binding>>;
+  goEnv: GoResolutionEnv | undefined;
+  interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
+  sqlDialect: Dialect | null;
+  declaredTypePackages: ReadonlySet<string> | undefined;
+  resolveImport: SpecifierResolver | undefined;
+  resolveHeritageField: HeritageFieldResolver | undefined;
+}
+
+/** The provenance half of a per-file receiver environment — what
+ *  `foldReceiverEnvironment` returns and the three TS-only consumers re-derive
+ *  inline from `classifyBuildProvenance` + `rehydrateReceiverActivity`. */
+interface FileReceiverFold {
+  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>;
+  bindings: ReadonlyMap<string, Binding>;
+  bindingsByScope: ReadonlyMap<string, ReadonlyMap<number, Binding>>;
+  goEnv: GoResolutionEnv | undefined;
+  interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined;
+}
+
+/** The resolution tail every consumer threads into `FileReceiverEnv` — the
+ *  corpus-wide dialect/project inputs shared across all files. */
+interface ResolutionTail {
+  sqlDialect: Dialect | null;
+  declaredTypePackages: ReadonlySet<string> | undefined;
+  resolveImport: SpecifierResolver | undefined;
+  resolveHeritageField: HeritageFieldResolver | undefined;
+}
+
+/** Assemble a `FileReceiverEnv` from the per-file fold and the resolution tail.
+ *  Single constructor — the five consumers previously each built a near-identical
+ *  nine-field literal, which `dry/similar-expression` flagged as the same object
+ *  built five times. */
+function fileReceiverEnv(fold: FileReceiverFold, tail: ResolutionTail): FileReceiverEnv {
+  const { dbProvenanced, bindings, bindingsByScope, goEnv, interfaceFields } = fold;
+  const { sqlDialect, declaredTypePackages, resolveImport, resolveHeritageField } = tail;
+  return { dbProvenanced, bindings, bindingsByScope, goEnv, interfaceFields, sqlDialect, declaredTypePackages, resolveImport, resolveHeritageField };
+}
+
+/**
  * Build the single specifier-resolution seam the consumers thread into
  * `identifyHandle`'s TS env: one `filesByPath` set derived once from the
  * within-file facts, so the four specifier kinds (relative, tsconfig-`paths`,
@@ -433,28 +502,23 @@ function rehomeReference(
  */
 function admitDbCall(
   call: DbCallCandidate,
-  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
-  bindings: ReadonlyMap<string, Binding>,
-  sqlDialect: Dialect | null,
-  interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
-  declaredTypePackages: ReadonlySet<string> | undefined,
-  resolveImport: SpecifierResolver | undefined,
-  resolveHeritageField: HeritageFieldResolver | undefined,
+  env: FileReceiverEnv,
 ): { dialect: Dialect | null } | null {
+  const { dbProvenanced, bindings, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField } = env;
   const siteDialect =
     call.calleeType === 'identifier'
       ? dialectForEvidence(dbProvenanced.get(call.name))
       : resolveSiteDialectFromReceiver(call.receiver, dbProvenanced);
   const dialect = siteDialect ?? sqlDialect ?? null;
 
-  const env = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+  const resolutionEnv = { provenance: dbProvenanced, bindings, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
   const facts = {
     imports: new Map(),
     typeAnnotations: new Map(),
     bindings: new Map(),
     withinFileProvenance: new Map(),
     sqlDialect: dialect,
-    resolution: { dialect: 'ts' as const, env },
+    resolution: { dialect: 'ts' as const, env: resolutionEnv },
   };
 
   if (call.calleeType === 'identifier') {
@@ -507,25 +571,14 @@ function admitDbCall(
  * collection-adapter — in that order, gated the same way, re-homed the same way.
  *
  * @param candidates the raw `schema-usage-candidates` facts (one per TS-family file)
- * @param withinFacts the `within-file-provenance` facts (TS-family)
- * @param provenance the `receiver-provenance` fixed point
- * @param activityFacts the `receiver-activity` facts
- * @param sqlDialect the corpus's named dialect, or null to skip R3
- * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
- * @param projectRoot the corpus root for specifier resolution, optional
- * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
+ * @param resolution the per-corpus resolution inputs (facts + dialect/project tail)
  * @returns the classified schema-usage facts (strategies 1/2/4/5/6, in order)
  */
 export function classifySchemaUsage(
   candidates: readonly SchemaUsageCandidatesFact[],
-  withinFacts: readonly WithinFileProvenanceFact[],
-  provenance: ReceiverProvenanceFact,
-  activityFacts: readonly ReceiverActivityFact[],
-  sqlDialect: Dialect | null,
-  declaredTypePackages: ReadonlySet<string> | undefined,
-  projectRoot?: string,
-  tsconfig?: TsconfigPathMap,
+  resolution: ReceiverResolution,
 ): SchemaUsageFact[] {
+  const { withinFacts, provenance, activityFacts, sqlDialect, declaredTypePackages, projectRoot, tsconfig } = resolution;
   const extracts = rehydrateWithinTsExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
   const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
@@ -545,6 +598,10 @@ export function classifySchemaUsage(
 
     const sourceCode = cand.sourceCode;
     const resolveImport = resolver ? (source: string) => resolver(source, cand.file) : undefined;
+    const env = fileReceiverEnv(
+      { dbProvenanced, bindings: activity.bindings, bindingsByScope: activity.bindingsByScope, goEnv: undefined, interfaceFields: extract?.interfaceFields },
+      { sqlDialect, declaredTypePackages, resolveImport, resolveHeritageField: heritageResolver },
+    );
 
     // (1) Tagged-template SQL — re-admit by the tag's package dialect, parse.
     for (const t of cand.tagged) {
@@ -561,7 +618,7 @@ export function classifySchemaUsage(
     // here; its `unresolved` record is re-derived by `classifyUnresolvedQuerySites`.
     for (const call of cand.dbCalls) {
       if (call.sqlText === null) continue;
-      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
+      const admitted = admitDbCall(call, env);
       if (!admitted) continue;
       const parsed = parseSqlTables(call.sqlText, call.location, sourceCode, undefined, admitted.dialect, null);
       for (const ref of parsed.references) {
@@ -586,25 +643,14 @@ export function classifySchemaUsage(
  * are not DB handles — and emit the `unresolved-query` site record.
  *
  * @param candidates the raw `schema-usage-candidates` facts (one per TS-family file)
- * @param withinFacts the `within-file-provenance` facts (TS-family)
- * @param provenance the `receiver-provenance` fixed point
- * @param activityFacts the `receiver-activity` facts
- * @param sqlDialect the corpus's named dialect, or null to skip R3
- * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
- * @param projectRoot the corpus root for specifier resolution, optional
- * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
+ * @param resolution the per-corpus resolution inputs (facts + dialect/project tail)
  * @returns the unresolved-query site records re-admitted via `identifyHandle`
  */
 export function classifyUnresolvedQuerySites(
   candidates: readonly SchemaUsageCandidatesFact[],
-  withinFacts: readonly WithinFileProvenanceFact[],
-  provenance: ReceiverProvenanceFact,
-  activityFacts: readonly ReceiverActivityFact[],
-  sqlDialect: Dialect | null,
-  declaredTypePackages: ReadonlySet<string> | undefined,
-  projectRoot?: string,
-  tsconfig?: TsconfigPathMap,
+  resolution: ReceiverResolution,
 ): UnresolvedQuerySite[] {
+  const { withinFacts, provenance, activityFacts, sqlDialect, declaredTypePackages, projectRoot, tsconfig } = resolution;
   const extracts = rehydrateWithinTsExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
   const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
@@ -623,11 +669,15 @@ export function classifyUnresolvedQuerySites(
     }
 
     const resolveImport = resolver ? (source: string) => resolver(source, cand.file) : undefined;
+    const env = fileReceiverEnv(
+      { dbProvenanced, bindings: activity.bindings, bindingsByScope: activity.bindingsByScope, goEnv: undefined, interfaceFields: extract?.interfaceFields },
+      { sqlDialect, declaredTypePackages, resolveImport, resolveHeritageField: heritageResolver },
+    );
     for (const call of cand.dbCalls) {
       if (call.unresolved === null) continue;
       // Re-admit via `identifyHandle` — mirror the legacy `dbCallVerdict` gate so
       // a non-DB receiver (`page.$`, `$('.foo')`) never emits `unresolved-query`.
-      const admitted = admitDbCall(call, dbProvenanced, activity.bindings, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver);
+      const admitted = admitDbCall(call, env);
       if (!admitted) continue;
       out.push({ file: cand.file, identifier: call.unresolved.identifier, location: call.unresolved.location });
     }
@@ -734,15 +784,7 @@ function handleIdentityKey(id: HandleIdentity): string {
 
 function reFoldHandleVerdict(
   id: HandleIdentity,
-  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
-  bindings: ReadonlyMap<string, Binding>,
-  bindingsByScope: ReadonlyMap<string, ReadonlyMap<number, Binding>>,
-  goEnv: GoResolutionEnv | undefined,
-  sqlDialect: Dialect | null,
-  interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
-  declaredTypePackages: ReadonlySet<string> | undefined,
-  resolveImport: SpecifierResolver | undefined,
-  resolveHeritageField: HeritageFieldResolver | undefined,
+  env: FileReceiverEnv,
   file: string,
   verdictCache: Map<string, HandleVerdict | null> | undefined,
 ): HandleVerdict | null {
@@ -751,23 +793,16 @@ function reFoldHandleVerdict(
     const hit = verdictCache!.get(key);
     if (hit !== undefined) return hit;
   }
-  const result = foldHandleVerdict(id, dbProvenanced, bindings, bindingsByScope, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField);
+  const result = foldHandleVerdict(id, env);
   if (key !== null) verdictCache!.set(key, result);
   return result;
 }
 
 function foldHandleVerdict(
   id: HandleIdentity,
-  dbProvenanced: ReadonlyMap<string, ProvenanceEvidence>,
-  bindings: ReadonlyMap<string, Binding>,
-  bindingsByScope: ReadonlyMap<string, ReadonlyMap<number, Binding>>,
-  goEnv: GoResolutionEnv | undefined,
-  sqlDialect: Dialect | null,
-  interfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
-  declaredTypePackages: ReadonlySet<string> | undefined,
-  resolveImport: SpecifierResolver | undefined,
-  resolveHeritageField: HeritageFieldResolver | undefined,
+  env: FileReceiverEnv,
 ): HandleVerdict | null {
+  const { dbProvenanced, bindings, bindingsByScope, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField } = env;
   if (id.format === 'go') {
     if (!goEnv || id.calleeType !== 'member' || !id.root || !id.method) return null;
     return identifyHandle(
@@ -801,7 +836,7 @@ function foldHandleVerdict(
       !!binding.typeText;
     if (!isProvenanced && !isTypeAnnotated) return null;
     const dialect = dialectForEvidence(dbProvenanced.get(name)) ?? sqlDialect ?? null;
-    const env = { provenance: dbProvenanced, bindings, bindingsByScope, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+    const resolutionEnv = { provenance: dbProvenanced, bindings, bindingsByScope, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
     return identifyHandle(
       {
         format: 'typescript',
@@ -818,7 +853,7 @@ function foldHandleVerdict(
         bindings: new Map(),
         withinFileProvenance: new Map(),
         sqlDialect: dialect,
-        resolution: { dialect: 'ts', env },
+        resolution: { dialect: 'ts', env: resolutionEnv },
       },
     );
   }
@@ -826,7 +861,7 @@ function foldHandleVerdict(
   if (id.calleeType === 'member') {
     if (!id.root || !id.method) return null;
     const dialect = resolveSiteDialectFromReceiver(id.siteReceiver, dbProvenanced) ?? sqlDialect ?? null;
-    const env = { provenance: dbProvenanced, bindings, bindingsByScope, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
+    const resolutionEnv = { provenance: dbProvenanced, bindings, bindingsByScope, interfaceFields, declaredTypePackages, resolveImport, resolveHeritageField, adapter: undefined, sourceCode: '' } as unknown as RootResolutionEnv;
     return identifyHandle(
       {
         format: 'typescript',
@@ -844,7 +879,7 @@ function foldHandleVerdict(
         bindings: new Map(),
         withinFileProvenance: new Map(),
         sqlDialect: dialect,
-        resolution: { dialect: 'ts', env },
+        resolution: { dialect: 'ts', env: resolutionEnv },
       },
     );
   }
@@ -969,27 +1004,14 @@ function buildDataAccessCall(
  * exactly as the legacy pass did.
  *
  * @param candidates the raw `data-access-calls-candidates` facts (one per file)
- * @param withinFacts the `within-file-provenance` facts (TS + Go)
- * @param provenance the `receiver-provenance` fixed point
- * @param activityFacts the `receiver-activity` facts (TS-family only)
- * @param sqlDialect the corpus's named dialect, or null to skip R3
- * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
- * @param projectRoot the corpus root for specifier resolution, optional
- * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
- * @param verdictCache an optional shared verdict cache keyed by candidate handle identity
+ * @param resolution the per-corpus resolution inputs (facts + dialect/project tail)
  * @returns the resolved DB calls, deduped and rebuilt with no AST
  */
 export function classifyDataAccessCalls(
   candidates: readonly DataAccessCallCandidate[],
-  withinFacts: readonly WithinFileProvenanceFact[],
-  provenance: ReceiverProvenanceFact,
-  activityFacts: readonly ReceiverActivityFact[],
-  sqlDialect: Dialect | null,
-  declaredTypePackages: ReadonlySet<string> | undefined,
-  projectRoot?: string,
-  tsconfig?: TsconfigPathMap,
-  verdictCache?: Map<string, HandleVerdict | null>,
+  resolution: ReceiverResolution,
 ): ResolvedQuery[] {
+  const { withinFacts, provenance, activityFacts, sqlDialect, declaredTypePackages, projectRoot, tsconfig, verdictCache } = resolution;
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const goExtracts = rehydrateWithinGoExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
@@ -1020,11 +1042,15 @@ export function classifyDataAccessCalls(
     );
 
     const resolveImport = resolver ? (source: string) => resolver(source, file) : undefined;
+    const env = fileReceiverEnv(
+      { dbProvenanced, bindings, bindingsByScope, goEnv, interfaceFields },
+      { sqlDialect, declaredTypePackages, resolveImport, resolveHeritageField: heritageResolver },
+    );
 
     // 1. Discovery filter — `isDbCallCandidate`, re-folding the handle verdict.
     const discovered: { cand: DataAccessCallCandidate; verdict: HandleVerdict | null }[] = [];
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), dbProvenanced, bindings, bindingsByScope, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
+      const verdict = reFoldHandleVerdict(dataAccessIdentity(cand), env, file, verdictCache);
       const handleAdmits = verdict !== null && verdict.kind !== 'not-handle';
       const isCandidate =
         handleAdmits || cand.isQueryBuilderShape || cand.isTaggedSqlCall || cand.isVariableAssignmentSql;
@@ -1065,27 +1091,14 @@ export function classifyDataAccessCalls(
  * provenance-dependent steps remain.
  *
  * @param candidates the raw `loop-query-candidates` facts (one per file)
- * @param withinFacts the `within-file-provenance` facts (TS-family)
- * @param provenance the `receiver-provenance` fixed point
- * @param activityFacts the `receiver-activity` facts
- * @param sqlDialect the corpus's named dialect, or null to skip R3
- * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
- * @param projectRoot the corpus root for specifier resolution, optional
- * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
- * @param verdictCache an optional shared verdict cache keyed by candidate handle identity
+ * @param resolution the per-corpus resolution inputs (facts + dialect/project tail)
  * @returns the resolved loop-query facts (deduped, stable symbols assigned)
  */
 export function classifyLoopQueries(
   candidates: readonly LoopQueryRawCandidate[],
-  withinFacts: readonly WithinFileProvenanceFact[],
-  provenance: ReceiverProvenanceFact,
-  activityFacts: readonly ReceiverActivityFact[],
-  sqlDialect: Dialect | null,
-  declaredTypePackages: ReadonlySet<string> | undefined,
-  projectRoot?: string,
-  tsconfig?: TsconfigPathMap,
-  verdictCache?: Map<string, HandleVerdict | null>,
+  resolution: ReceiverResolution,
 ): LoopQueryFact[] {
+  const { withinFacts, provenance, activityFacts, sqlDialect, declaredTypePackages, projectRoot, tsconfig, verdictCache } = resolution;
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
   const activityByFile = new Map(activityFacts.map((f) => [f.file, f]));
@@ -1113,8 +1126,12 @@ export function classifyLoopQueries(
     const reported = new Set<string>();
     const loopOrdinals = new Map<string, number>();
     const resolveImport = resolver ? (source: string) => resolver(source, file) : undefined;
+    const env = fileReceiverEnv(
+      { dbProvenanced, bindings: activity.bindings, bindingsByScope: activity.bindingsByScope, goEnv: undefined, interfaceFields: extract?.interfaceFields },
+      { sqlDialect, declaredTypePackages, resolveImport, resolveHeritageField: heritageResolver },
+    );
     for (const cand of fileCands) {
-      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), dbProvenanced, activity.bindings, activity.bindingsByScope, undefined, sqlDialect, extract?.interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
+      const verdict = reFoldHandleVerdict(loopQueryIdentity(cand), env, file, verdictCache);
       if (!verdict || verdict.kind !== 'handle') continue;
 
       const dedupKey = String(cand.loopStartOffset);
@@ -1150,27 +1167,14 @@ export function classifyLoopQueries(
  * (which read the pre-pass's `unprovenQueryReceivers`).
  *
  * @param candidates the raw `data-access-calls-candidates` facts (one per file)
- * @param withinFacts the `within-file-provenance` facts (TS + Go)
- * @param provenance the `receiver-provenance` fixed point
- * @param activityFacts the `receiver-activity` facts (TS-family only)
- * @param sqlDialect the corpus's named dialect, or null
- * @param declaredTypePackages the project's declared dependency packages (heritage field resolution), optional
- * @param projectRoot the corpus root for specifier resolution, optional
- * @param tsconfig the project's tsconfig `paths`/`baseUrl`, for bare-specifier resolution, optional
- * @param verdictCache an optional shared verdict cache keyed by candidate handle identity
+ * @param resolution the per-corpus resolution inputs (facts + dialect/project tail)
  * @returns the unproven query-receiver records, deduped and rebuilt
  */
 export function classifyUnprovenQueryReceivers(
   candidates: readonly DataAccessCallCandidate[],
-  withinFacts: readonly WithinFileProvenanceFact[],
-  provenance: ReceiverProvenanceFact,
-  activityFacts: readonly ReceiverActivityFact[],
-  sqlDialect: Dialect | null,
-  declaredTypePackages: ReadonlySet<string> | undefined,
-  projectRoot?: string,
-  tsconfig?: TsconfigPathMap,
-  verdictCache?: Map<string, HandleVerdict | null>,
+  resolution: ReceiverResolution,
 ): UnprovenQueryReceiver[] {
+  const { withinFacts, provenance, activityFacts, sqlDialect, declaredTypePackages, projectRoot, tsconfig, verdictCache } = resolution;
   const tsExtracts = rehydrateWithinTsExtracts(withinFacts);
   const goExtracts = rehydrateWithinGoExtracts(withinFacts);
   const seeds = rehydrateReceiverProvenance(provenance);
@@ -1201,6 +1205,10 @@ export function classifyUnprovenQueryReceivers(
     // its `template_string` child, so without the dedup one query-shaped site
     // emits two identical cannot-fire diagnostics and doubles the coverage count.
     const resolveImport = resolver ? (source: string) => resolver(source, file) : undefined;
+    const env = fileReceiverEnv(
+      { dbProvenanced, bindings, bindingsByScope, goEnv, interfaceFields },
+      { sqlDialect, declaredTypePackages, resolveImport, resolveHeritageField: heritageResolver },
+    );
     const admitted: { cand: DataAccessCallCandidate; verdict: Extract<HandleVerdict, { kind: 'unproven' }> }[] = [];
     for (const cand of fileCands) {
       const id = dataAccessIdentity(cand);
@@ -1215,7 +1223,7 @@ export function classifyUnprovenQueryReceivers(
       // `not-handle` root resolves to `not-handle` below.
       if (id.calleeType !== 'member') continue;
       if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
-      const verdict = reFoldHandleVerdict(id, dbProvenanced, bindings, bindingsByScope, goEnv, sqlDialect, interfaceFields, declaredTypePackages, resolveImport, heritageResolver, file, verdictCache);
+      const verdict = reFoldHandleVerdict(id, env, file, verdictCache);
       if (!verdict || verdict.kind !== 'unproven') continue;
       admitted.push({ cand, verdict });
     }
