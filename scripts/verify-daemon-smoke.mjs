@@ -42,7 +42,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, cpSync, rmSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, cpSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const CLI = resolve(process.cwd(), 'dist/cli.js');
@@ -88,6 +88,13 @@ const env = {
   // summary-header substring assertions below.
   NO_COLOR: '1',
   FORCE_COLOR: '0',
+  // Spec 51 / release directive 5 — the daemon (and every command below) must
+  // run on Node's built-in node:sqlite, never on better-sqlite3. Forcing the
+  // backend proves no runtime path silently requires the optional native module:
+  // if any path hard-depended on better-sqlite3 it would fail here rather than
+  // quietly fall back. `--version` reports the forced backend, so the assertion
+  // below also documents which backend the run exercised.
+  CODE_AUDITOR_SQLITE_BACKEND: 'node-sqlite',
 };
 delete env.CODE_AUDITOR_DATA_DIR;
 
@@ -203,6 +210,37 @@ function recordHook(name, args, options, validator) {
   }
   return result;
 }
+
+// ── 0. the daemon bin answers --version / --help through a symlink ───────────
+// The published `code-auditor-daemon` bin is a pnpm/npm `.bin` symlink. A
+// string-URL entry-point guard (not a realpath comparison) evaluates false under
+// that symlink, so the daemon boots to a silent exit and `--version`/`--help`
+// print nothing — the exact defect release directive 4 pins shut. Reproduce the
+// symlink condition and assert the daemon answers both before anything else runs.
+const daemonLinkDir = mkdtempSync(join(TMP_BASE, 'ca-smoke-dlink-'));
+const daemonLink = join(daemonLinkDir, 'code-auditor-daemon');
+symlinkSync(DAEMON_ENTRY, daemonLink);
+const runDaemonBin = (args) =>
+  spawnSync(process.execPath, [daemonLink, ...args], {
+    cwd: projectRoot,
+    env,
+    encoding: 'utf-8',
+    maxBuffer: 4 * 1024 * 1024,
+  });
+
+console.log('\ndaemon bin (through a .bin-style symlink):');
+record(
+  'code-auditor-daemon --version',
+  runDaemonBin(['--version']),
+  [0],
+  contains(PKG_VERSION),
+);
+record(
+  'code-auditor-daemon --help',
+  runDaemonBin(['--help']),
+  [0],
+  contains('Usage:'),
+);
 
 // ── 1. start the daemon and wait for ready ────────────────────────────────────
 console.log('verify:daemon-smoke — starting daemon against fixture copy');
@@ -416,7 +454,7 @@ function cleanup() {
       /* already gone */
     }
   }
-  for (const dir of [projectRoot, cacheRoot, genConfigDir]) {
+  for (const dir of [projectRoot, cacheRoot, genConfigDir, daemonLinkDir]) {
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {

@@ -20,7 +20,8 @@
 import '../native-bootstrap.js';
 
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
 import { DaemonCore } from './core.js';
 import { SocketFace } from './socketServer.js';
 import { LspFace } from './lspServer.js';
@@ -150,11 +151,23 @@ async function main(): Promise<void> {
 // to reach `runDaemonForeground`; without this guard the import's top-level
 // `main()` would re-run `runDaemonForeground` on the CLI's own argv — a second
 // daemon in the same process, a second lease, and a second seed.
-const isEntrypoint =
-  !!process.argv[1] &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+//
+// Compare realpaths, not string-built URLs (the same symlink defect the MCP
+// server's `isMainModule` fixes — see mcp.ts): `import.meta.url` is
+// symlink-resolved by Node, while `process.argv[1]` under a pnpm/npm `.bin`
+// shim is the shim path. A naive URL comparison never matches on a symlinked
+// install, so the published `code-auditor-daemon` bin boots to a silent exit
+// and never answers `--version` / `--help`.
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
 
-if (isEntrypoint) {
+if (isMainModule()) {
   main().catch((err) => {
     console.error('[code-auditor-daemon] fatal:', err);
     process.exit(1);
