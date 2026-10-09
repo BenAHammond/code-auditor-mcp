@@ -37,7 +37,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -148,6 +148,29 @@ describe('verify:gate-budget — liveness', () => {
     expect(res.status).toBe(1);
     expect(res.stderr).toContain('exceeds budget');
   }, 30_000);
+});
+
+describe('verify:dist-fresh — liveness', () => {
+  // A stale dist/cli.js must fail the gate through its own exit 1, never pass by
+  // accident. This is the antidote to "the gate happened to be fresh when I ran
+  // it": it proves the failure branch is live by making dist stale on purpose
+  // (backdating dist/cli.js so every source input is newer than it), then asserts
+  // the real gate exits non-zero. Requires the compiled CLI; skip in a bare test
+  // run without a build — in the release path `verify:dist-fresh` has already
+  // asserted dist is fresh before any test runs.
+  it.skipIf(!existsSync(DIST_CLI))('exits 1 when dist/cli.js is older than a source input', () => {
+    const before = statSync(DIST_CLI);
+    utimesSync(DIST_CLI, 0, 0);
+    try {
+      const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-dist-fresh.mjs')], {
+        encoding: 'utf-8',
+      });
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('dist/cli.js is older than');
+    } finally {
+      utimesSync(DIST_CLI, before.atimeMs / 1000, before.mtimeMs / 1000);
+    }
+  });
 });
 
 describe('assert_compatible — liveness', () => {
@@ -300,6 +323,55 @@ describe('verify:close — run-all (no gate skips another)', () => {
       expect(GATES.indexOf(name)).toBeGreaterThan(distFresh);
     }
   });
+});
+
+describe('verify:close — a stale dist fails the chain', () => {
+  // Directive 5's other half. "run-all, no skips" (above) proves no gate is ever
+  // skipped; this proves the *failure* half end to end — a stale dist/cli.js makes
+  // `verify:close` exit non-zero through the real runner, not a report that dist
+  // happened to be fresh. `VERIFY_CLOSE_GATES` narrows the run to the single
+  // `verify:dist-fresh` gate so the test stays fast, but that gate is the real one:
+  // it runs against the backdated dist, exits 1, and the runner propagates it.
+  it.skipIf(!existsSync(DIST_CLI))('exits non-zero when verify:dist-fresh fails on a stale dist', () => {
+    const before = statSync(DIST_CLI);
+    utimesSync(DIST_CLI, 0, 0);
+    try {
+      const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-close.mjs')], {
+        encoding: 'utf-8',
+        env: { ...process.env, VERIFY_CLOSE_GATES: 'verify:dist-fresh' },
+      });
+      expect(res.status).not.toBe(0);
+      expect(res.stdout).toContain('FAIL');
+      expect(res.stdout).toContain('verify:dist-fresh');
+    } finally {
+      utimesSync(DIST_CLI, before.atimeMs / 1000, before.mtimeMs / 1000);
+    }
+  }, 30_000);
+});
+
+describe('verify:close — a subset run never reads as a full pass', () => {
+  // `VERIFY_CLOSE_GATES` is a test seam, but it must never let a subset run print
+  // the release banner. "verify:close PASSED — every gate ran and passed" is
+  // reserved for the full 15: a reader or a script seeing that banner must be
+  // able to trust it means fifteen. A subset run instead names the gates it ran,
+  // states the number omitted, and ends with a clearly-different subset line.
+  // This proves the *pass* path — a single always-green gate, forced to pass via
+  // `VERIFY_MIN_FREE_BYTES=0` — must not produce the banner.
+  it('prints a subset summary and omits the release banner', () => {
+    const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-close.mjs')], {
+      encoding: 'utf-8',
+      env: {
+        ...process.env,
+        VERIFY_CLOSE_GATES: 'verify:disk-space',
+        VERIFY_MIN_FREE_BYTES: '0',
+      },
+    });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('SUBSET');
+    expect(res.stdout).toContain('1 of 15');
+    expect(res.stdout).toContain('14 omitted');
+    expect(res.stdout).not.toContain('every gate ran and passed');
+  }, 30_000);
 });
 
 describe('verify:close — run-all verdict (a failed gate fails the chain)', () => {

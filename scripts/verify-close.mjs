@@ -92,16 +92,56 @@ export function summarizeResults(results) {
   return { failed, crashed, passed, verdict };
 }
 
+/**
+ * Resolve the gate list for this run, returning `{ gates, omitted }` where
+ * `omitted` is the number of `GATES` not in this run.
+ *
+ * The release path always runs `GATES` in full — a stale `dist/cli.js` fails the
+ * chain through `verify:dist-fresh`'s own exit 1, but no gate is ever skipped,
+ * and `omitted` is 0.
+ *
+ * `VERIFY_CLOSE_GATES` (a comma-separated list, e.g. `verify:dist-fresh`) narrows
+ * the list for the liveness tests in `gate-liveness.test.ts` that prove a stale
+ * dist *fails* the chain without paying the full 15-gate run. It is a test seam,
+ * never a skip vector: it names real gates, throws on any unknown name (so it can
+ * never silently drop a gate), and is unset in every release/CI path. A subset run
+ * is *loud* about being a subset — the summary and verdict name the omitted count
+ * and never print the release banner, so a subset can never read as a full pass.
+ */
+function resolveGates() {
+  const override = process.env.VERIFY_CLOSE_GATES;
+  if (!override) return { gates: GATES, omitted: 0 };
+  const wanted = override
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const known = new Set(GATES);
+  const unknown = wanted.filter((g) => !known.has(g));
+  if (unknown.length > 0) {
+    throw new Error(`VERIFY_CLOSE_GATES names unknown gates: ${unknown.join(', ')}`);
+  }
+  return { gates: wanted, omitted: GATES.length - wanted.length };
+}
+
 function main() {
+  const { gates, omitted } = resolveGates();
+  const subset = omitted > 0;
   const results = [];
-  for (const name of GATES) {
+  for (const name of gates) {
     results.push({ name, status: runGate(name) });
   }
 
   const { failed, crashed, verdict } = summarizeResults(results);
 
   console.log('\n════════════════════════════════════════════');
-  console.log('verify:close — full run summary (run-all, no skips)');
+  if (subset) {
+    console.log(
+      `verify:close — SUBSET run: ${gates.length} of ${GATES.length} gates ` +
+        `(${omitted} omitted via VERIFY_CLOSE_GATES) — test seam, not a release check`,
+    );
+  } else {
+    console.log('verify:close — full run summary (run-all, no skips)');
+  }
   for (const r of results) {
     const mark = r.status === null ? 'CRASH' : r.status === 0 ? 'PASS' : 'FAIL';
     console.log(`  ${mark.padEnd(16)} ${r.name}`);
@@ -109,13 +149,20 @@ function main() {
   console.log('════════════════════════════════════════════');
 
   if (verdict === 'fail') {
+    const omittedNote = subset ? `; ${omitted} of ${GATES.length} gates omitted` : '';
     console.error(
-      `verify:close FAILED — ${failed.length} failed, ${crashed.length} crashed.`,
+      `verify:close FAILED${subset ? ' (subset)' : ''} — ${failed.length} failed, ${crashed.length} crashed${omittedNote}.`,
     );
     process.exit(1);
   }
 
-  console.log('verify:close PASSED — every gate ran and passed.');
+  if (subset) {
+    console.log(
+      `verify:close PASSED (subset) — ${gates.length} of ${GATES.length} gates ran and passed; ${omitted} omitted.`,
+    );
+  } else {
+    console.log('verify:close PASSED — every gate ran and passed.');
+  }
   process.exit(0);
 }
 
