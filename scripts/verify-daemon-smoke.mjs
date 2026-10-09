@@ -150,6 +150,57 @@ function contains(needle) {
   };
 }
 
+// ── hook-mode assertions (Spec 68 §hook-contract) ───────────────────────────
+// The hook runs the CLI with CODE_AUDITOR_HOOK=1. Two assertions gate it:
+//   1. zero bytes on stderr — a successful edit is silent; the host turns hook
+//      stderr into a blocking error, so any info/debug line is a defect;
+//   2. a wall-time budget — the hook reads the daemon's cache (tens of ms of
+//      actual work), it must not run the multi-second full audit.
+// The budget is 250ms: measured ~150ms, of which ~140ms is the CLI binary's
+// fixed boot (`node dist/cli.js --version` alone costs that) — the daemon
+// cache-read itself is ~10ms. It is ~12× under the 3s full audit it guards.
+const HOOK_WALL_BUDGET_MS = 250;
+
+function runHook(args, options = {}) {
+  return spawnSync(process.execPath, [CLI, ...args], {
+    cwd: options.cwd ?? projectRoot,
+    env: { ...env, CODE_AUDITOR_HOOK: '1' },
+    input: options.stdin,
+    encoding: 'utf-8',
+    maxBuffer: 64 * 1024 * 1024,
+  });
+}
+
+function recordHook(name, args, options, validator) {
+  const start = process.hrtime.bigint();
+  const result = runHook(args, options);
+  const wallMs = Number(process.hrtime.bigint() - start) / 1e6;
+  const statusOk = [0, 2].includes(result.status);
+  const stderrOk = (result.stderr ?? '').length === 0;
+  const wallOk = wallMs < HOOK_WALL_BUDGET_MS;
+  let summaryOk = true;
+  let summaryDetail = '';
+  try {
+    summaryOk = validator(result);
+  } catch (e) {
+    summaryOk = false;
+    summaryDetail = e instanceof Error ? e.message : String(e);
+  }
+  if (statusOk && stderrOk && wallOk && summaryOk) {
+    passed.push(name);
+    console.log(`  PASS  ${name} (exit ${result.status}, ${wallMs.toFixed(0)}ms, 0B stderr)`);
+  } else {
+    const why = [];
+    if (!statusOk) why.push(`exit ${result.status ?? 'CRASH'} not in [0, 2]`);
+    if (!stderrOk) why.push(`stderr ${(result.stderr ?? '').length}B (expected 0)`);
+    if (!wallOk) why.push(`wall ${wallMs.toFixed(0)}ms ≥ ${HOOK_WALL_BUDGET_MS}ms`);
+    if (!summaryOk) why.push(`summary: ${summaryDetail || 'empty / unparseable'}`);
+    failures.push({ name, result, why });
+    console.log(`  FAIL  ${name} — ${why.join('; ')}`);
+  }
+  return result;
+}
+
 // ── 1. start the daemon and wait for ready ────────────────────────────────────
 console.log('verify:daemon-smoke — starting daemon against fixture copy');
 console.log(`  project: ${projectRoot}`);
@@ -225,6 +276,20 @@ record(
   run(['self-audit', '--stdin', '--json', '-p', projectRoot], { stdin: `${srcStatements}\n` }),
   [0],
   (r) => Array.isArray(jsonOf(r)),
+);
+
+console.log('\nhook mode (CODE_AUDITOR_HOOK=1 — Spec 68 §hook-contract):');
+recordHook(
+  'changed --stdin --json (hook: finding from cache, 0B stderr)',
+  ['changed', '--stdin', '--json', '-p', projectRoot],
+  { stdin: `${srcStatements}\n` },
+  (r) => Array.isArray(jsonOf(r).violations),
+);
+recordHook(
+  'changed --stdin --json (hook: clean file, 0B stderr)',
+  ['changed', '--stdin', '--json', '-p', projectRoot],
+  { stdin: `${srcIndex}\n` },
+  (r) => Array.isArray(jsonOf(r).violations),
 );
 
 console.log('\nskill commands (SKILL.md):');

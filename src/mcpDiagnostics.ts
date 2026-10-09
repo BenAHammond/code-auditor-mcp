@@ -14,6 +14,17 @@ const traceEnabled =
   process.env.CODE_AUDITOR_TRACE === '1' ||
   process.env.CODE_AUDITOR_TRACE === 'true';
 
+/**
+ * Hook mode — set by `hook-audit.sh` before it invokes the CLI. A PostToolUse
+ * hook's stderr is surfaced by the host as a blocking error, so a *successful*
+ * audit must never write to stderr. In hook mode, `info`/`debug` lines are
+ * written to the log file only (`CODE_AUDITOR_LOG_FILE`); `warn` — a real
+ * failure signal, not progress — still goes to stderr.
+ */
+const hookMode =
+  process.env.CODE_AUDITOR_HOOK === '1' ||
+  process.env.CODE_AUDITOR_HOOK === 'true';
+
 const logFilePath = process.env.CODE_AUDITOR_LOG_FILE?.trim();
 let writeQueue: Promise<void> = Promise.resolve();
 
@@ -55,7 +66,9 @@ export function logMcp(
   const line = `[${ts}] [pid=${pid}] [code-auditor] [${level}] [${phase}] ${message}${extra}`;
   if (level === 'warn') {
     console.warn(line);
-  } else {
+  } else if (!hookMode) {
+    // info / debug: stderr is the host's blocking-error channel in a hook, so
+    // in hook mode these go to the log file only (via appendFileLine below).
     console.error(line);
   }
   appendFileLine(line);

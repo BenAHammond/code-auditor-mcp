@@ -756,11 +756,17 @@ program
       // the gate never misses a finding. SARIF needs full run metadata, so it
       // always runs in-process.
       const projectRoot = resolve(options.path || process.cwd());
+      const hookMode =
+        process.env.CODE_AUDITOR_HOOK === '1' || process.env.CODE_AUDITOR_HOOK === 'true';
       let result: any;
       if (resolvedPaths.length > 0 && options.format !== 'sarif') {
-        const { resolveDaemon, readDaemonDiagnostics } = await import('./daemon/resolve.js');
+        const { resolveDaemon, readDaemonDiagnostics, startDaemonDetached } = await import('./daemon/resolve.js');
         const daemon = await resolveDaemon(projectRoot);
         if (daemon.mode === 'not-ready') {
+          // Hook mode (Spec 68 §hook-contract): never block the edit on an audit the
+          // daemon can't serve yet — it is still indexing, and the finding arrives on
+          // a later edit. Say nothing, exit clean. A non-hook caller gets the status.
+          if (hookMode) process.exit(0);
           reportDaemonIndexing(daemon.state, !!options.json);
           return;
         }
@@ -768,11 +774,22 @@ program
           const diag = await readDaemonDiagnostics(daemon.socketPath, resolvedPaths);
           if (diag && diag.status === 'ready' && diag.staleFiles.length === 0) {
             result = await buildChangedResultFromDiagnostics(diag.diagnostics, projectRoot);
+          } else if (hookMode) {
+            // A just-edited file whose re-audit hasn't landed is not trustworthy from
+            // cache. Report nothing; the finding arrives on the next edit.
+            process.exit(0);
           }
+        } else if (hookMode) {
+          // No daemon: enqueue by starting one detached, then exit. The hook reads
+          // results from the daemon's cache on later edits — it never computes them.
+          startDaemonDetached(projectRoot);
+          process.exit(0);
         }
       }
 
       if (!result) {
+        // Hook mode never falls back to an in-process audit (Spec 68 §hook-contract).
+        if (hookMode) process.exit(0);
         await initParsers();
         const runner = createAuditRunner({
           projectRoot: options.path,

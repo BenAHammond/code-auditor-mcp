@@ -420,9 +420,39 @@ async function discoverAuditFiles(
   // Either way `_infra.files` no longer contains `.json`, so a real
   // `./invariant-rules.schema.json` import classifies `internal-broken`.
   // Classification answers "does this import resolve to a real file",
-  // independent of what the audit chooses to analyze, so it re-walks
-  // discovery with ALL_EXTENSIONS and no include/exclude narrowing.
-  const corpusFiles = await discoverFiles(root);
+  // independent of what the audit chooses to analyze.
+  //
+  // For a full (`all`) audit the corpus is the unfiltered discovery walk. For a
+  // scoped run that walk is the defect Spec 68 §hook-contract names: a
+  // single-file scope must not enumerate the whole project. A scoped run's
+  // corpus is instead "the files in scope + whatever the index already holds
+  // about the rest" — the indexed source files (`functions.file_path`) plus every
+  // file the index has ever resolved an import to (`import_specifiers.resolved_path`,
+  // which is how non-function import targets like `.json`/`.css`/`.sql` stay
+  // classifiable without a walk). If the index is unavailable the corpus degrades
+  // to the in-scope files alone — out-of-scope imports then read `internal-broken`,
+  // never a fatal.
+  let corpusFiles: string[];
+  if (isScoped) {
+    const corpus = new Set<string>(files);
+    try {
+      const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
+      await db.initialize();
+      const indexed = db.rawDb
+        .prepare('SELECT DISTINCT file_path AS p FROM functions')
+        .all() as Array<{ p: string }>;
+      for (const { p } of indexed) corpus.add(p);
+      const resolved = db.rawDb
+        .prepare('SELECT DISTINCT resolved_path AS p FROM import_specifiers WHERE resolved_path IS NOT NULL')
+        .all() as Array<{ p: string }>;
+      for (const { p } of resolved) corpus.add(p);
+    } catch {
+      // Index unavailable — the in-scope files alone remain the corpus.
+    }
+    corpusFiles = [...corpus].sort();
+  } else {
+    corpusFiles = await discoverFiles(root);
+  }
 
   logMcpInfo('discovery', 'file discovery finished', {
     projectRoot: path.resolve(root),

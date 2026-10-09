@@ -114,10 +114,16 @@ export function startDaemonDetached(projectRoot: string, configName?: string): v
   const logPath = resolveDaemonLogPath(projectRoot);
   mkdirSync(path.dirname(logPath), { recursive: true });
   const logFd = openSync(logPath, 'a');
+  // The daemon is a long-running server, never a one-shot hook gate. When the
+  // hook starts it (hook mode), strip CODE_AUDITOR_HOOK so the daemon does not
+  // inherit hook mode and suppress its own `logMcp` info lines — those are the
+  // daemon's primary diagnostic channel, routed here via stderr → logFd.
+  const childEnv = { ...process.env };
+  delete childEnv.CODE_AUDITOR_HOOK;
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: ['ignore', 'ignore', logFd],
-    env: process.env,
+    env: childEnv,
   });
   child.unref();
 }

@@ -262,15 +262,16 @@ describe('Hook script (hook-audit.sh)', () => {
     expect(content).toContain('code-audit changed --stdin --json');
   });
 
-  it('fails loudly when the CLI breaks (never a silent no-op)', () => {
+  it('reports a broken CLI to stderr but never blocks the edit (Spec 68 §hook-contract)', () => {
     const content = readFileSync(
       resolve(PLUGIN_DIR, 'scripts', 'hook-audit.sh'),
       'utf-8',
     );
-    // A non-zero CLI exit that isn't a finding (2) must be reported and exit 1,
-    // not swallowed as a clean pass.
+    // A non-zero CLI exit that isn't a finding (2) is a real failure — it is
+    // written to stderr — but the hook still exits 0: a hook that can fail the
+    // edit is worse than one that reports nothing (Spec 68 §hook-contract).
     expect(content).toContain('HOOK BROKEN');
-    expect(content).toContain('exit 1');
+    expect(content).toMatch(/HOOK BROKEN[^]*?exit 0/);
   });
 
   it('sources the shared resolver and pins to a compatible CLI', () => {

@@ -15,8 +15,8 @@
 # Exit codes:
 #   0 — clean pass or out of scope
 #   2 — a blocking self-audit finding (Claude Code feeds stdout back)
-#   1 — the hook itself broke (binary missing, version mismatch, CLI error) —
-#       reported loudly, never a silent no-op.
+#   The hook never exits non-zero except 2: a broken tool is written to stderr as
+#   a real failure but still exits 0 (Spec 68 §hook-contract).
 set -euo pipefail
 
 # Shared resolver + compatibility pinning (see hook-common.sh).
@@ -71,15 +71,17 @@ esac
 
 CODE_AUDIT_BIN="$(resolve_code_audit)"
 
-# Pin the plugin to a compatible CLI version — fail loudly on mismatch.
-assert_compatible "${CODE_AUDIT_BIN}" || exit 1
+# Pin the plugin to a compatible CLI version. On mismatch the message goes to
+# stderr (a real failure) but the hook still exits 0 — it must never block the edit.
+assert_compatible "${CODE_AUDIT_BIN}" || exit 0
 
-# Run the self-audit on the edited file. stdout/stderr feed back to the agent.
+# Run the self-audit on the edited file. CODE_AUDITOR_HOOK=1 silences info/debug
+# on stderr (they go to the log file), so a successful self-audit is quiet.
 set +e
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-  echo "${file_abs}" | ${CODE_AUDIT_BIN} self-audit --stdin --json -p "${CLAUDE_PROJECT_DIR}"
+  echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json -p "${CLAUDE_PROJECT_DIR}"
 else
-  echo "${file_abs}" | ${CODE_AUDIT_BIN} self-audit --stdin --json
+  echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json
 fi
 exit_code=$?
 set -e
@@ -89,11 +91,11 @@ if [ ${exit_code} -eq 2 ]; then
   exit 2
 fi
 
-# Any other non-zero exit is the hook breaking, not a clean pass. Report loudly
-# and fail — a silent no-op here is exactly the failure mode this guards.
+# Any other non-zero exit is a broken tool, not a clean pass. Report it to
+# stderr (a real failure) but exit 0 — failing the edit is worse than silence.
 if [ ${exit_code} -ne 0 ]; then
   echo "[code-auditor] HOOK BROKEN: self-audit exited ${exit_code} (neither clean nor a finding). Fix the install — do not treat this as a clean pass." >&2
-  exit 1
+  exit 0
 fi
 
 exit 0
