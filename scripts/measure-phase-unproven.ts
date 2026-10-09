@@ -14,6 +14,7 @@ import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runPhaseModel } from '../src/phase/phaseModel.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
 import { detectDialect } from '../src/languages/sql/dialectDetection.js';
+import { readDeclaredTypePackages } from '../src/graph/importClassification.js';
 import { assertCorpusPinned } from './corpus-pins.js';
 
 const projectRoot = process.argv[2];
@@ -43,7 +44,13 @@ async function main() {
 
   const files = await discoverFiles(projectRoot, { extensions: ALL_EXTENSIONS });
   const sqlDialect = detectDialect(projectRoot).dialect;
-  const result = await runPhaseModel(files, new Map(), { projectRoot, workerCount: 1, sqlDialect });
+  // Thread the declared-type-package set (the Fix 2 input) exactly as the
+  // production audit does (`auditRunner` → `readDeclaredTypePackages`); without
+  // it the measurement undercounts `not-handle` — every Fix 2 site (a declared
+  // non-DB package like `vitest`/`hono`) reads as `unproven` and pollutes the
+  // cannot-fire surface.
+  const declaredTypePackages = readDeclaredTypePackages(projectRoot);
+  const result = await runPhaseModel(files, new Map(), { projectRoot, workerCount: 1, sqlDialect, declaredTypePackages });
 
   const unproven = result.unprovenQueryReceivers;
   const unresolved = result.unresolvedQuerySites;
