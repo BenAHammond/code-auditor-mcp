@@ -1336,25 +1336,27 @@ export function classifyUnprovenQueryReceivers(
       if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
       const verdict = reFoldHandleVerdict(id, env, file, verdictCache);
       if (!verdict || verdict.kind !== 'unproven') continue;
-      // Fix 1 — admission requires evidence (query-shape only nominates). A
-      // member call is a data-access site only when its receiver's declaration
-      // *reaches a package*: an import whose specifier is a bare package name.
-      // Resolution walks that to a DB package (→ `handle`, never reaches here), a
-      // declared non-DB package (→ `not-handle`, filtered above), or an
-      // unrecognized one (→ this `unproven`, the honest cannot-fire of Spec 70
-      // R4). A receiver rooted in anything else — a local opaque type, an
-      // un-annotated parameter/factory-return/field, or a relative in-repo
-      // re-export — has *neither* evidence source, was never a data-access site,
-      // and nothing is reported about it.
-      const rootBinding = id.root === null
-        ? undefined
-        : ((id.scope !== undefined ? bindingsByScope.get(id.root)?.get(id.scope) : undefined) ?? bindings.get(id.root));
-      if (
-        !rootBinding ||
-        rootBinding.kind !== 'import' ||
-        barePackageName(rootBinding.source ?? '') === null
-      ) {
-        continue;
+      // Fix 1 — admission requires evidence; the evidence test is on the SITE,
+      // not the receiver root. A candidate is a data-access site when it carries
+      // a SQL argument (the sql-argument source, `handleSqlArg`) OR its receiver
+      // is reached by declaration-resolution (a bare-package import). A SQL
+      // argument qualifies the site on its own — whatever the receiver resolves
+      // to, the site reports `unproven` (cannot-fire), never a silent clean.
+      // Only a candidate with *neither* source — no SQL argument, and a receiver
+      // root that does not reach a package (a local opaque type, an un-annotated
+      // parameter/factory-return/field, or a relative in-repo re-export) — is
+      // dropped as not-a-site.
+      if (cand.handleSqlArg === null) {
+        const rootBinding = id.root === null
+          ? undefined
+          : ((id.scope !== undefined ? bindingsByScope.get(id.root)?.get(id.scope) : undefined) ?? bindings.get(id.root));
+        if (
+          !rootBinding ||
+          rootBinding.kind !== 'import' ||
+          barePackageName(rootBinding.source ?? '') === null
+        ) {
+          continue;
+        }
       }
       admitted.push({ cand, verdict });
     }
