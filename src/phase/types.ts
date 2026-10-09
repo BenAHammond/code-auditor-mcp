@@ -2224,6 +2224,14 @@ export interface CorpusContext {
    *  gate abstains: an unbound `D1Database` without a declared dependency stays
    *  `unproven` rather than being credited `handle`. */
   declaredTypePackages?: ReadonlySet<string>;
+  /** Spec 70 criterion 9 (Item 4) — the corpus-wide ambient interface-field map
+   *  (`computeAmbientInterfaceFields`): interface/type-alias field types declared
+   *  in global script files, the cross-file fallback `classifyMemberPath` consults
+   *  when the file-local `interfaceFields` map lacks a receiver's type name
+   *  (a Workers `env: Env` resolving `Env` from `worker-configuration.d.ts`).
+   *  Threaded alongside `declaredTypePackages` so the two ambient halves —
+   *  handle-type names and enclosing-interface field types — arrive together. */
+  ambientInterfaceFields?: ReadonlyMap<string, ReadonlyMap<string, string>>;
   /** Spec 70 — a shared memoization cache for the `identifyHandle` verdicts the
    *  receiver consumers re-fold, keyed by the candidate's full handle identity
    *  including the file (whose per-file provenance/env the verdict depends on).

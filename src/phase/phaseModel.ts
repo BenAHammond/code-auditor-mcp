@@ -36,9 +36,11 @@ import type {
   CorpusContext,
   DataAccessCallCandidate,
   ExternalTableDecl,
+  ExportSymbolFact,
   FactKind,
   FileFactKind,
   Finding,
+  ImportSpecifiersFact,
   OracleShortfall,
   ReceiverActivityFact,
   ReceiverProvenanceFact,
@@ -57,6 +59,7 @@ import type { UnparseableSql } from '../analyzers/universal/schema/codeAnalysis.
 import type { HandleVerdict } from '../analyzers/handleIdentification.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites, classifyUnparseableSql } from './receiverConsumers.js';
+import { computeAmbientInterfaceFields } from './receiverProvenance.js';
 import { withRuleTiming, withRuleTimingAsync } from '../analyzers/ruleTiming.js';
 
 /**
@@ -433,6 +436,18 @@ async function buildFacts(
   // (once in `data-access-calls`, once in the cannot-fire reduction).
   const handleVerdictCache = new Map<string, HandleVerdict | null>();
 
+  // Spec 70 criterion 9 (Item 4) — the ambient interface-field map (global script
+  // interfaces) is computed once here, where the import/export facts are present,
+  // and threaded through `corpusCtx` to the receiver consumers and the cannot-fire
+  // reduction below. This is what lets a Workers `env: Env` resolve `Env` from
+  // `worker-configuration.d.ts` (a global script) even though the handler file
+  // itself never declares the interface.
+  const ambientInterfaceFields = computeAmbientInterfaceFields(
+    (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
+    (facts.get('import-specifiers') as ImportSpecifiersFact[] | undefined) ?? [],
+    (facts.get('export-symbols') as ExportSymbolFact[] | undefined) ?? [],
+  );
+
   const corpusCtx: CorpusContext = {
     projectRoot: infra?.projectRoot,
     corpusFiles: infra?.corpusFiles,
@@ -443,6 +458,7 @@ async function buildFacts(
     externalTables: infra?.externalTables,
     sqlDialect: infra?.sqlDialect,
     declaredTypePackages: infra?.declaredTypePackages,
+    ambientInterfaceFields,
     handleVerdictCache,
   };
   // §5 DAG — topological sort. A corpus producer's `needs` may reference other
@@ -491,6 +507,7 @@ async function buildFacts(
       activityFacts: (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
       sqlDialect: infra?.sqlDialect ?? null,
       declaredTypePackages: infra?.declaredTypePackages,
+      ambientInterfaceFields,
       projectRoot: infra?.projectRoot,
       tsconfig: infra?.tsconfigAliases,
     };

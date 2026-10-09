@@ -983,6 +983,7 @@ export const CORPUS_PRODUCERS = {
         activityFacts: facts['receiver-activity'],
         sqlDialect: ctx?.sqlDialect ?? null,
         declaredTypePackages: ctx?.declaredTypePackages,
+        ambientInterfaceFields: ctx?.ambientInterfaceFields,
         projectRoot: ctx?.projectRoot,
         tsconfig: ctx?.tsconfigAliases,
       });
@@ -1011,6 +1012,7 @@ export const CORPUS_PRODUCERS = {
         activityFacts: facts['receiver-activity'],
         sqlDialect: ctx?.sqlDialect ?? null,
         declaredTypePackages: ctx?.declaredTypePackages,
+        ambientInterfaceFields: ctx?.ambientInterfaceFields,
         projectRoot: ctx?.projectRoot,
         tsconfig: ctx?.tsconfigAliases,
         verdictCache: ctx?.handleVerdictCache,
@@ -1035,6 +1037,7 @@ export const CORPUS_PRODUCERS = {
         activityFacts: facts['receiver-activity'],
         sqlDialect: ctx?.sqlDialect ?? null,
         declaredTypePackages: ctx?.declaredTypePackages,
+        ambientInterfaceFields: ctx?.ambientInterfaceFields,
         projectRoot: ctx?.projectRoot,
         tsconfig: ctx?.tsconfigAliases,
         verdictCache: ctx?.handleVerdictCache,

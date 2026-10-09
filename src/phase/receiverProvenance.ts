@@ -310,6 +310,48 @@ export function computeReceiverProvenance(
   return { fileProvenance, fileExports, unresolvedImports };
 }
 
+/**
+ * The corpus-wide ambient interface-field map (Spec 70 criterion 9, Item 4) —
+ * interface/type-alias field types declared in a *global script* file (one with
+ * no top-level `import` and no top-level `export`, per TypeScript's module/script
+ * split), aggregated first-wins across the corpus. `classifyMemberPath` reads
+ * this as the cross-file fallback when the file-local `interfaceFields` map lacks
+ * the receiver's type name: a Workers handler's `env: Env` resolves `Env` from
+ * `worker-configuration.d.ts` (wrangler-generated, no import/export) even though
+ * the handler file itself never declares `interface Env`.
+ *
+ * The `import-specifiers`/`export-symbols` facts are the two halves of the
+ * script/module discriminant: a file that appears in *either* is a module, whose
+ * declarations are module-scoped and must never leak into the ambient map (that
+ * would be a guessed clean, the exact failure this project pins against). Only a
+ * file in *neither* is a global script, and only its `interfaceFields` contribute.
+ *
+ * @param withinFacts the `within-file-provenance` facts (one per code file)
+ * @param importFacts the `import-specifiers` facts (one per import statement)
+ * @param exportFacts the `export-symbols` facts (one per exported symbol)
+ * @returns name → field-name → type-text, for every interface/type alias declared
+ *   in a global script file
+ */
+export function computeAmbientInterfaceFields(
+  withinFacts: readonly WithinFileProvenanceFact[],
+  importFacts: readonly ImportSpecifiersFact[],
+  exportFacts: readonly ExportSymbolFact[],
+): Map<string, ReadonlyMap<string, string>> {
+  const moduleFiles = new Set<string>();
+  for (const imp of importFacts) moduleFiles.add(imp.file);
+  for (const ex of exportFacts) moduleFiles.add(ex.file);
+
+  const out = new Map<string, ReadonlyMap<string, string>>();
+  for (const fact of withinFacts) {
+    if (fact.format === 'go' || moduleFiles.has(fact.file)) continue;
+    for (const iface of fact.ts.interfaceFields) {
+      if (out.has(iface.name)) continue; // first-wins across the corpus
+      out.set(iface.name, new Map(iface.fields.map((f) => [f.name, f.typeText])));
+    }
+  }
+  return out;
+}
+
 // ── Build-side provenance mirror (Spec 70 Item 4, step 3) ────────────────────
 
 /**
