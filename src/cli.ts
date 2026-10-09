@@ -146,17 +146,24 @@ function printAuditDiagnostics(result: AuditResult): void {
   const unprovenSiteCount = (result.metadata?.diagnostics ?? [])
     .filter((d: any) => d.kind === 'cannot-fire' && d.analyzerName === 'schema')
     .length;
+  const heldOutByProfile = result.summary?.heldOut ?? 0;
   if (coverage && coverage.length > 0) {
     const covFired = coverage.filter(c => c.state === 'fired').length;
     const covClean = coverage.filter(c => c.state === 'clean').length;
     const covIncomplete = coverage.filter(c => c.state === 'incomplete').length;
     const covNotApplicable = coverage.filter(c => c.state === 'notApplicable').length;
     const covCannotFire = coverage.filter(c => c.state === 'cannot-fire').length;
+    // Spec 69 §10 R4 follow-up — "clean" is not a printable verdict while any
+    // site is unproven (cannot-fire) or held out by a path profile: a rule that
+    // reports "clean" may have under-reported on access it could not observe.
+    const cleanSuppressed = unprovenSiteCount > 0 || heldOutByProfile > 0;
+    const cleanPart = cleanSuppressed ? '' : `${covClean} clean · `;
     console.log(
       chalk.gray(
-        `── Coverage panel ── ${covFired} fired · ${covClean} clean · ` +
+        `── Coverage panel ── ${covFired} fired · ${cleanPart}` +
         `${covIncomplete} incomplete · ${covNotApplicable} not-applicable · ` +
-        `${covCannotFire} cannot-fire · ${unprovenSiteCount} unproven sites`
+        `${covCannotFire} cannot-fire · ${unprovenSiteCount} unproven sites · ` +
+        `${heldOutByProfile} held out by profile`
       )
     );
   }
@@ -303,8 +310,15 @@ function printFindingSummary(result: AuditResult, violations: any[], baseline: a
     violations.filter(
       (v: any) => v.severity === severity && !v.gateExcluded && !v.dismissed
     ).length;
+  // Spec 69 §10 R4 follow-up — the headline states findings, unproven sites,
+  // and held-out readings together. Held-out readings are named "held out by
+  // profile" (they still count in the total but do not block the gate).
+  const heldOutByProfile = result.summary?.heldOut ?? gateExcludedCount;
+  const unprovenSites = result.summary?.unprovenSites ?? 0;
   const findingsSuffix =
-    `${dismissedSuffix}${gateExcludedCount > 0 ? ` (${gateExcludedCount.toLocaleString()} excluded from gate)` : ''}`;
+    `${dismissedSuffix}` +
+    `${unprovenSites > 0 ? ` · ${unprovenSites.toLocaleString()} unproven sites` : ''}` +
+    `${heldOutByProfile > 0 ? ` · ${heldOutByProfile.toLocaleString()} held out by profile` : ''}`;
   const summaryLine = (label: string, total: number, severity: Severity) =>
     gateExcludedCount > 0
       ? `${label}: ${total} (${gatingCount(severity)} gating)`

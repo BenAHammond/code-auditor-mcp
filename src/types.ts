@@ -730,6 +730,19 @@ export interface AuditSummary {
    * from it. Absent/0 when no dismissals apply.
    */
   dismissed?: number;
+  /**
+   * Spec 69 §10 R4 follow-up — the corpus-wide site-level cannot-fire total
+   * (sum of `byAnalyzer[].unprovenSites`), so the report headline can state
+   * findings, unproven sites, and held-out readings together.
+   */
+  unprovenSites: number;
+  /**
+   * Number of readings excluded from the blocking gate by a path profile
+   * (the built-in "scripts-and-tests" profile, or any user profile with
+   * `excludeFromGate`). Named "held out by profile" in the headline — these
+   * findings still count in `totalViolations` but do not block the gate.
+   */
+  heldOut: number;
 }
 
 export interface AuditResult {

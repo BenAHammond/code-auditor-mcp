@@ -78,3 +78,45 @@ describe('Spec 69 §10 R4 — summary.byAnalyzer unproven-site count', () => {
     });
   });
 });
+
+describe('Spec 69 §10 R4 follow-up — headline coverage totals', () => {
+  it('sums the per-analyzer unproven-site counts into a top-level total', () => {
+    const analyzerResults: Record<string, AnalyzerResult> = {
+      schema: emptyResult('schema'),
+      conventions: emptyResult('conventions'),
+    };
+    const summary = generateSummary(
+      analyzerResults,
+      10,
+      new Map([['schema', 5], ['conventions', 2]]),
+    );
+    expect(summary.unprovenSites).toBe(7);
+  });
+
+  it('defaults the top-level unproven total to 0 when no map is passed', () => {
+    const summary = generateSummary({ schema: emptyResult('schema') }, 1);
+    expect(summary.unprovenSites).toBe(0);
+  });
+
+  it('counts gate-excluded violations as heldOut without subtracting them from the total', () => {
+    const heldOutViolation: Violation = {
+      file: '/a.ts', rule: 'x', severity: 'high', message: 'm', line: 1, column: 1, gateExcluded: true,
+    };
+    const plainViolation: Violation = {
+      file: '/b.ts', rule: 'x', severity: 'high', message: 'm', line: 1, column: 1,
+    };
+    const analyzerResults: Record<string, AnalyzerResult> = {
+      schema: {
+        analyzerName: 'schema',
+        executionTime: 0,
+        violations: [heldOutViolation, plainViolation],
+        status: { status: 'visitor-ran', filesProcessed: 2 },
+      },
+    };
+    const summary = generateSummary(analyzerResults, 2);
+    // Held-out readings are named "held out by profile" in the headline; they
+    // still count in totalViolations — exclusion never subtracts from the total.
+    expect(summary.heldOut).toBe(1);
+    expect(summary.totalViolations).toBe(2);
+  });
+});

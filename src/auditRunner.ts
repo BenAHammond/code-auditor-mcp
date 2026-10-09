@@ -2207,6 +2207,7 @@ export function generateSummary(
   let criticalIssues = 0;
   let severe = 0;
   let high = 0;
+  let heldOut = 0;
   const violationsByCategory: Record<string, number> = {};
   const byAnalyzer: Record<string, { violations: number; filesProcessed: number; fatalErrors: number; unprovenSites: number }> = {};
 
@@ -2215,6 +2216,7 @@ export function generateSummary(
     for (const violation of result.violations) {
       totalViolations++;
       analyzerViolations++;
+      if (violation.gateExcluded) heldOut++;
 
       switch (violation.severity) {
         case 'critical':
@@ -2246,6 +2248,12 @@ export function generateSummary(
     .slice(0, 5)
     .map(([type, count]) => ({ type, count }));
 
+  // Spec 69 §10 R4 follow-up — the site-level cannot-fire total, summed across
+  // analyzers, so the headline can state findings + unproven sites + held-out
+  // readings together without re-deriving from per-analyzer buckets.
+  let unprovenSites = 0;
+  for (const n of unprovenSitesByAnalyzer.values()) unprovenSites += n;
+
   return {
     totalFiles: filesAnalyzed,
     totalViolations,
@@ -2254,7 +2262,9 @@ export function generateSummary(
     high,
     violationsByCategory,
     byAnalyzer,
-    topIssues
+    topIssues,
+    unprovenSites,
+    heldOut
   };
 }
 
