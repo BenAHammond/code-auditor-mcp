@@ -30,7 +30,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, symlinkSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, symlinkSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -133,6 +133,14 @@ function resolve(layout: Layout): string {
   return resolveDetail(layout).stdout;
 }
 
+/** The hook's diagnostic log, written by `warn_stale` via `hook_log`. The hook
+ * never writes stderr — a warning is a diagnostic and must not block the edit —
+ * so stale-candidate warnings land here, under the test's controlled
+ * XDG_CACHE_HOME. */
+function hookLog(layout: Layout): string {
+  return readFileSync(join(layout.cache, 'code-auditor', 'logs', 'hook.log'), 'utf8');
+}
+
 describe('resolve_code_audit — pinned-install fallback (Spec 59)', () => {
   it('positive: marketplace layout resolves to the pinned install\'s absolute bin path, not an npx command', () => {
     const layout = setup({ manifest: '9.9.9' });
@@ -151,8 +159,12 @@ describe('resolve_code_audit — pinned-install fallback (Spec 59)', () => {
     const layout = setup({ manifest: '9.9.9', siblingVersion: '9.9.8' });
     const { stdout, stderr } = resolveDetail(layout);
     expect(stdout).toBe(pinnedBin(layout, '9.9.9'));
-    expect(stderr).toContain('warn');
-    expect(stderr).toContain('9.9.8');
+    // The warn is a diagnostic: it goes to the hook log, not stderr. The hook
+    // must never write stderr, so a skipped stale build cannot block the edit.
+    expect(stderr).toBe('');
+    const log = hookLog(layout);
+    expect(log).toContain('warn');
+    expect(log).toContain('9.9.8');
   });
 
   it('order: a successful pinned install shadows a compatible global (pin is tried before PATH)', () => {
@@ -176,8 +188,11 @@ describe('resolve_code_audit — pinned-install fallback (Spec 59)', () => {
     const layout = setup({ manifest: '9.9.9', globalVersion: '9.9.8', npmExitCode: 1 });
     const { stdout, stderr } = resolveDetail(layout);
     expect(stdout).toBe('npx -y -p code-auditor-mcp@9.9.9 code-audit');
-    expect(stderr).toContain('warn');
-    expect(stderr).toContain('9.9.8');
+    // As above: the warn is a diagnostic to the log, never stderr.
+    expect(stderr).toBe('');
+    const log = hookLog(layout);
+    expect(log).toContain('warn');
+    expect(log).toContain('9.9.8');
   });
 
   it('install-failure: a failed install falls back to a last-ditch npx command, never empty', () => {

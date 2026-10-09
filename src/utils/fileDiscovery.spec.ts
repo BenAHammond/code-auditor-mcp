@@ -352,6 +352,31 @@ describe('fileDiscovery', () => {
         await fs.rm(baseDir, { recursive: true, force: true });
       }
     });
+
+    it.skipIf(!gitAvailable())('prunes a gitignored directory inside a nested git repository', async () => {
+      // The scan root (baseDir) is NOT a git repo; `nested/` is. Without the
+      // nested-repo boundary recompute, discovery computes gitignore for baseDir
+      // only (no work tree → null) and descends into the gitignored clone.
+      const baseDir = path.join(os.tmpdir(), `ca-fd-nested-${Date.now()}`);
+      await fs.mkdir(baseDir, { recursive: true });
+      try {
+        const nested = path.join(baseDir, 'nested');
+        await fs.mkdir(nested, { recursive: true });
+        execFileSync('git', ['init', '-q'], { cwd: nested, stdio: 'ignore' });
+        await fs.writeFile(path.join(nested, '.gitignore'), 'corpus/\n');
+        await fs.mkdir(path.join(nested, 'corpus'), { recursive: true });
+        await fs.writeFile(path.join(nested, 'corpus', 'expanded.ts'), 'export const a = 1;');
+        await fs.writeFile(path.join(nested, 'kept.ts'), 'export const b = 2;');
+
+        const files = await findFiles(baseDir, { extensions: ['.ts'] });
+
+        const rel = files.map((f) => path.relative(baseDir, f));
+        expect(rel).toContain(path.join('nested', 'kept.ts'));
+        expect(rel).not.toContain(path.join('nested', 'corpus', 'expanded.ts'));
+      } finally {
+        await fs.rm(baseDir, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('Spec 45 R1 — root-anchored directory exclusions', () => {

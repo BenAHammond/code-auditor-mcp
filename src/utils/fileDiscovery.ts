@@ -372,6 +372,24 @@ function isIgnoredByGit(relPath: string, index: GitIgnoreIndex): boolean {
 }
 
 /**
+ * True when `dir` is its own git repository (contains a `.git` — a directory
+ * for a normal repo, or a file for a submodule/worktree). A nested repo is a
+ * discovery boundary: its own `.gitignore` governs what inside it is disowned,
+ * not the outer repo's. The outer repo's `git ls-files --directory` does not
+ * report a directory that contains a nested repo (git stops descending at the
+ * boundary), so without recomputing here the walk would plunge into a nested
+ * repo's gitignored clones and read foreign files.
+ */
+async function isGitRepoDir(dir: string): Promise<boolean> {
+  try {
+    await fs.access(path.join(dir, '.git'));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Recursively find files matching criteria
  */
 async function findFilesRecursive(
@@ -381,6 +399,8 @@ async function findFilesRecursive(
     excludeDirs: string[];
     pattern?: RegExp;
     scanRoot: string;
+    /** The root the `gitIgnore` index was computed from (defaults to `scanRoot`). */
+    gitRoot?: string;
     onSkippedExtension?: (ext: string, filePath: string) => void;
     fileAccounting?: FileAccounting;
     gitIgnore?: GitIgnoreIndex | null;
@@ -400,7 +420,8 @@ async function findFilesRecursive(
       // per-file) its contents. `null` (not a git repo) falls through to the
       // raw walk below.
       if (options.gitIgnore) {
-        const rel = path.relative(options.scanRoot, fullPath);
+        const gitRoot = options.gitRoot ?? options.scanRoot;
+        const rel = path.relative(gitRoot, fullPath);
         if (!rel.startsWith('..') && isIgnoredByGit(rel, options.gitIgnore)) {
           continue;
         }
@@ -424,7 +445,18 @@ async function findFilesRecursive(
       }
 
       if (entry.isDirectory()) {
-        const subResults = await findFilesRecursive(fullPath, options);
+        // Nested git repository boundary — recompute the gitignore index at the
+        // nested repo's own root. `git ls-files` run from the outer scan root
+        // walks UP to the nearest enclosing repo toplevel and applies *that*
+        // repo's ignore rules, missing this nested repo's `.gitignore` (e.g. a
+        // gitignored corpus clone). Recomputing here makes the nested repo's own
+        // rules apply before descending. `scanRoot` stays the original root so
+        // exclude-dir anchoring is unaffected; only the gitignore pair moves.
+        const nestedRoot = (await isGitRepoDir(fullPath)) ? fullPath : null;
+        const subOptions = nestedRoot
+          ? { ...options, gitRoot: nestedRoot, gitIgnore: gitIgnoreIndexFor(nestedRoot) }
+          : options;
+        const subResults = await findFilesRecursive(fullPath, subOptions);
         results.push(...subResults);
       } else if (entry.isFile()) {
         // Skip the tool's own report output by basename (Bug #3).
@@ -476,13 +508,39 @@ export async function findFiles(
     extensions,
     excludeDirs,
     scanRoot: rootDir,
+    gitRoot: rootDir,
     gitIgnore: gitIgnoreIndexFor(rootDir),
     ...(options.onSkippedExtension ? { onSkippedExtension: options.onSkippedExtension } : {}),
     ...(options.fileAccounting ? { fileAccounting: options.fileAccounting } : {})
   });
 
+  // Hard bound: discovery must never return a path outside the scan root. The
+  // walk is root-anchored and does not follow symlinks, so a result here is
+  // belt-and-braces — but a silent escape is worse than a loud refusal, so any
+  // path that resolves above the root is dropped and reported rather than
+  // widened. This is a refusal, not a file-count cap: the root is the ceiling,
+  // and anything above it is an error to surface, never a limit to tune away.
+  const resolvedRoot = path.resolve(rootDir);
+  const inRoot: string[] = [];
+  const escaped: string[] = [];
+  for (const f of files) {
+    const rel = path.relative(resolvedRoot, path.resolve(f));
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      escaped.push(f);
+    } else {
+      inRoot.push(f);
+    }
+  }
+  if (escaped.length > 0) {
+    console.error(
+      `[file-discovery] refusing ${escaped.length} path(s) outside scan root ${resolvedRoot}: ` +
+        escaped.slice(0, 5).join(', ') +
+        (escaped.length > 5 ? ' …' : '')
+    );
+  }
+
   // Apply additional filtering
-  const filtered = filterFiles(files, {
+  const filtered = filterFiles(inRoot, {
     includePaths: options.includePaths,
     excludePaths: options.excludePaths,
     fileAccounting: options.fileAccounting

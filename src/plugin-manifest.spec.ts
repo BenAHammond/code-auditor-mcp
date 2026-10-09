@@ -158,14 +158,16 @@ describe('Hooks manifest (hooks.json)', () => {
     expect(inner.command).toContain('${CLAUDE_PLUGIN_ROOT}');
   });
 
-  it('command guards against an unset CLAUDE_PLUGIN_ROOT (fails loudly, not silently)', () => {
+  it('command guards against an unset CLAUDE_PLUGIN_ROOT (exits silently, never blocks)', () => {
     const inner = hooks.hooks.PostToolUse[0].hooks[0];
-    expect(inner.command).toContain('CLAUDE_PLUGIN_ROOT is unset');
-    expect(inner.command).toContain('exit 1');
+    expect(inner.command).toContain('exit 0');
+    // The hook must never write stderr or exit non-zero: an unset plugin root
+    // is a no-op (a failure surfaces on the next explicit audit), not a block.
+    expect(inner.command).not.toContain('>&2');
     // The guard must precede the script invocation so a missing plugin root
     // can never resolve to an absolute `/scripts/hook-audit.sh` that silently
     // fails to be found.
-    expect(inner.command.indexOf('is unset')).toBeLessThan(
+    expect(inner.command.indexOf('exit 0')).toBeLessThan(
       inner.command.indexOf('hook-audit.sh'),
     );
   });
@@ -262,14 +264,14 @@ describe('Hook script (hook-audit.sh)', () => {
     expect(content).toContain('code-audit changed --stdin --json');
   });
 
-  it('reports a broken CLI to stderr but never blocks the edit (Spec 68 §hook-contract)', () => {
+  it('reports a broken CLI to the hook log but never blocks the edit (Spec 68 §hook-contract)', () => {
     const content = readFileSync(
       resolve(PLUGIN_DIR, 'scripts', 'hook-audit.sh'),
       'utf-8',
     );
     // A non-zero CLI exit that isn't a finding (2) is a real failure — it is
-    // written to stderr — but the hook still exits 0: a hook that can fail the
-    // edit is worse than one that reports nothing (Spec 68 §hook-contract).
+    // written to the hook log — but the hook still exits 0: a hook that can fail
+    // the edit is worse than one that reports nothing (Spec 68 §hook-contract).
     expect(content).toContain('HOOK BROKEN');
     expect(content).toMatch(/HOOK BROKEN[^]*?exit 0/);
   });

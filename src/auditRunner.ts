@@ -16,6 +16,7 @@ import {
   AuditProgress,
   FunctionMetadata,
   AuditResultScope,
+  AuditScope,
   AuditAbortedError,
   type RuleCoverage,
   type InputPresence,
@@ -273,9 +274,55 @@ async function discoverAuditFiles(
     message: `Discovering files... (scope: ${scopeResultType})`
   });
 
-  // Discover files based on scope
-  let files: string[];
+  const { files, skippedExtensions } = await resolveDiscoveryScope(mergedOptions, scope, fileAccounting);
+
+  throwIfAborted(mergedOptions.abortSignal);
+
+  // Detect changed functions for non-all scopes
   let changedFunctions: FunctionMetadata[] | undefined;
+  if (isScoped && files.length > 0) {
+    changedFunctions = await detectChangedFunctionsForScope(mergedOptions, files);
+  }
+
+  let blastRadius: import('./types.js').BlastRadiusImpact | undefined;
+  if (isScoped && changedFunctions && changedFunctions.length > 0) {
+    blastRadius = await computeBlastRadiusForScope(mergedOptions, changedFunctions);
+  }
+
+  const corpusFiles = await buildImportClassifierCorpus(mergedOptions, root, files, isScoped);
+
+  logMcpInfo('discovery', 'file discovery finished', {
+    projectRoot: path.resolve(root),
+    totalFiles: files.length,
+    corpusFiles: corpusFiles.length,
+    scope: scopeResultType,
+    indexFunctions: !!mergedOptions.indexFunctions
+  });
+
+  return {
+    files,
+    changedFunctions,
+    skippedExtensions,
+    blastRadius,
+    corpusFiles,
+    scope,
+    isScoped,
+    scopeResultType,
+  };
+}
+
+/**
+ * Resolve the audit scope into a concrete file list. This is the dispatch the
+ * orchestrator used to hold inline: `git:<ref>` diffs the worktree, `changed`
+ * reads the index's modified-file set, an array of paths/globs is an explicit
+ * files scope, and anything else is the full discovery walk.
+ */
+async function resolveDiscoveryScope(
+  mergedOptions: AuditRunnerOptions,
+  scope: AuditScope,
+  fileAccounting: FileAccounting,
+): Promise<{ files: string[]; skippedExtensions: Array<{ ext: string; count: number }> | undefined }> {
+  let files: string[];
   // Extensions present on disk that discovery skipped (Spec 43 R5 follow-up).
   // Populated only for the `all` scope — scoped runs are explicitly scoped by
   // the user, so "what wasn't analyzed" there is the scope itself, not the
@@ -328,150 +375,152 @@ async function discoverAuditFiles(
     skippedExtensions = discovered.skippedExtensions;
   }
 
-  throwIfAborted(mergedOptions.abortSignal);
+  return { files, skippedExtensions };
+}
 
-  // Detect changed functions for non-all scopes
-  if (isScoped && files.length > 0) {
-    try {
-      const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
-      await db.initialize();
-      const detection = await db.detectChangedFunctions(files);
-      changedFunctions = detection.changedFunctions;
-      logMcpInfo('discovery', 'changed function detection', {
-        changedFunctionCount: changedFunctions.length,
-        deletedCount: detection.deletedFunctions.length,
-        errors: detection.errors.length
-      });
-    } catch (err) {
-      logMcpInfo('discovery', 'changed function detection failed (continuing)', {
-        error: err instanceof Error ? err.message : String(err)
-      });
+/**
+ * Detect changed functions for a scoped run via the code index (Spec 60.1).
+ * Returns `undefined` when the index is unavailable — the caller treats that as
+ * "no diff to report", never a fatal.
+ */
+async function detectChangedFunctionsForScope(
+  mergedOptions: AuditRunnerOptions,
+  files: string[],
+): Promise<FunctionMetadata[] | undefined> {
+  try {
+    const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
+    await db.initialize();
+    const detection = await db.detectChangedFunctions(files);
+    logMcpInfo('discovery', 'changed function detection', {
+      changedFunctionCount: detection.changedFunctions.length,
+      deletedCount: detection.deletedFunctions.length,
+      errors: detection.errors.length
+    });
+    return detection.changedFunctions;
+  } catch (err) {
+    logMcpInfo('discovery', 'changed function detection failed (continuing)', {
+      error: err instanceof Error ? err.message : String(err)
+    });
+    return undefined;
+  }
+}
+
+/**
+ * Compute transitive-caller impact for changed functions (Spec 14 R6). Advisory:
+ * on error, or when the 100ms budget is exceeded, this returns `undefined` and
+ * the feature is disabled for the run — never a fatal.
+ */
+async function computeBlastRadiusForScope(
+  mergedOptions: AuditRunnerOptions,
+  changedFunctions: FunctionMetadata[],
+): Promise<import('./types.js').BlastRadiusImpact | undefined> {
+  try {
+    const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
+    const rawDb = db.rawDb;
+    const functionIds: number[] = [];
+    // One batched query per chunk of changed functions, not one query per
+    // function (loop-query). `changedFunctions` can be large, so chunk to the
+    // SQLite bind-parameter cap; `ORDER BY id` + first-wins by (name, file_path)
+    // reproduces the old `.get` (first matching row) semantics exactly.
+    const idByKey = new Map<string, number>();
+    const BATCH = 900;
+    for (let i = 0; i < changedFunctions.length; i += BATCH) {
+      const chunk = changedFunctions.slice(i, i + BATCH);
+      const orClause = chunk.map(() => '(name = ? AND file_path = ?)').join(' OR ');
+      const params = chunk.flatMap((fn) => [fn.name, fn.filePath]);
+      const rows = rawDb.prepare(
+        `SELECT id, name, file_path FROM functions WHERE ${orClause} ORDER BY id`
+      ).all(...params) as Array<{ id: number; name: string; file_path: string }>;
+      for (const r of rows) {
+        const key = `${r.name}\0${r.file_path}`;
+        if (!idByKey.has(key)) idByKey.set(key, r.id);
+      }
     }
+    for (const fn of changedFunctions) {
+      const id = idByKey.get(`${fn.name}\0${fn.filePath}`);
+      if (id != null) functionIds.push(id);
+    }
+
+    if (functionIds.length === 0) return undefined;
+
+    const impact = computeImpact(rawDb, functionIds);
+    if (impact.latencyMs > LATENCY_BUDGET_MS) {
+      logMcpInfo('blast-radius',
+        `latency ${impact.latencyMs}ms exceeds ${LATENCY_BUDGET_MS}ms budget — blast radius disabled for this run`,
+        {}
+      );
+      return undefined;
+    }
+    logMcpInfo('blast-radius', 'computed', {
+      editedFunctionCount: impact.editedFunctionCount,
+      transitiveCallers: impact.transitiveCallers,
+      reachableExports: impact.reachableExports,
+      latencyMs: impact.latencyMs,
+    });
+    return impact;
+  } catch (err) {
+    // Blast radius is advisory — non-fatal
+    logMcpInfo('blast-radius', 'computation failed (continuing)', {
+      error: err instanceof Error ? err.message : String(err)
+    });
+    return undefined;
+  }
+}
+
+/**
+ * Build the import classifier's corpus file set (Spec 60.1 Correction 1). The
+ * classifier's corpus must be the UNFILTERED stage-1 discovery list, not the
+ * audit's `files` list, which is narrowed at two points before `_infra` is
+ * built:
+ *   1. The polyglot dispatch narrows `files` to the per-language list it
+ *      actually hands to the TypeScript analyzer — files with no detectable
+ *      language (`.json`, `.sql`) drop out here.
+ *   2. `filterFiles` (fileDiscovery.ts, called from `findFiles`) applies
+ *      `includePaths` as a positive-selection glob filter — a `.json` file that
+ *      survives step 1 is dropped here (or by the default `includePaths` from
+ *      config/defaults.ts, which omits `.json`).
+ * Either way `_infra.files` no longer contains `.json`, so a real
+ * `./invariant-rules.schema.json` import classifies `internal-broken`.
+ * Classification answers "does this import resolve to a real file", independent
+ * of what the audit chooses to analyze.
+ *
+ * For a full (`all`) audit the corpus is the unfiltered discovery walk. For a
+ * scoped run that walk is the defect Spec 68 §hook-contract names: a
+ * single-file scope must not enumerate the whole project. A scoped run's corpus
+ * is instead "the files in scope + whatever the index already holds about the
+ * rest" — the indexed source files (`functions.file_path`) plus every file the
+ * index has ever resolved an import to (`import_specifiers.resolved_path`, which
+ * is how non-function import targets like `.json`/`.css`/`.sql` stay classifiable
+ * without a walk). If the index is unavailable the corpus degrades to the
+ * in-scope files alone — out-of-scope imports then read `internal-broken`, never
+ * a fatal.
+ */
+async function buildImportClassifierCorpus(
+  mergedOptions: AuditRunnerOptions,
+  root: string,
+  files: string[],
+  isScoped: boolean,
+): Promise<string[]> {
+  if (!isScoped) {
+    return discoverFiles(root);
   }
 
-  // ── Blast-radius impact (Spec 14 R6) ──────────────────────────────
-  // Compute transitive-caller impact for changed functions.
-  // If latency exceeds the 100ms budget, skip and emit a warning;
-  // the feature is disabled-by-default when over budget.
-  let blastRadius: import('./types.js').BlastRadiusImpact | undefined;
-  if (isScoped && changedFunctions && changedFunctions.length > 0) {
-    try {
-      const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
-      const rawDb = db.rawDb;
-      const functionIds: number[] = [];
-      // One batched query per chunk of changed functions, not one query per
-      // function (loop-query). `changedFunctions` can be large, so chunk to the
-      // SQLite bind-parameter cap; `ORDER BY id` + first-wins by (name, file_path)
-      // reproduces the old `.get` (first matching row) semantics exactly.
-      const idByKey = new Map<string, number>();
-      const BATCH = 900;
-      for (let i = 0; i < changedFunctions.length; i += BATCH) {
-        const chunk = changedFunctions.slice(i, i + BATCH);
-        const orClause = chunk.map(() => '(name = ? AND file_path = ?)').join(' OR ');
-        const params = chunk.flatMap((fn) => [fn.name, fn.filePath]);
-        const rows = rawDb.prepare(
-          `SELECT id, name, file_path FROM functions WHERE ${orClause} ORDER BY id`
-        ).all(...params) as Array<{ id: number; name: string; file_path: string }>;
-        for (const r of rows) {
-          const key = `${r.name}\0${r.file_path}`;
-          if (!idByKey.has(key)) idByKey.set(key, r.id);
-        }
-      }
-      for (const fn of changedFunctions) {
-        const id = idByKey.get(`${fn.name}\0${fn.filePath}`);
-        if (id != null) functionIds.push(id);
-      }
-
-      if (functionIds.length > 0) {
-        const impact = computeImpact(rawDb, functionIds);
-        if (impact.latencyMs > LATENCY_BUDGET_MS) {
-          logMcpInfo('blast-radius',
-            `latency ${impact.latencyMs}ms exceeds ${LATENCY_BUDGET_MS}ms budget — blast radius disabled for this run`,
-            {}
-          );
-        } else {
-          blastRadius = impact;
-          logMcpInfo('blast-radius', 'computed', {
-            editedFunctionCount: impact.editedFunctionCount,
-            transitiveCallers: impact.transitiveCallers,
-            reachableExports: impact.reachableExports,
-            latencyMs: impact.latencyMs,
-          });
-        }
-      }
-    } catch (err) {
-      // Blast radius is advisory — non-fatal
-      logMcpInfo('blast-radius', 'computation failed (continuing)', {
-        error: err instanceof Error ? err.message : String(err)
-      });
-    }
+  const corpus = new Set<string>(files);
+  try {
+    const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
+    await db.initialize();
+    const indexed = db.rawDb
+      .prepare('SELECT DISTINCT file_path AS p FROM functions')
+      .all() as Array<{ p: string }>;
+    for (const { p } of indexed) corpus.add(p);
+    const resolved = db.rawDb
+      .prepare('SELECT DISTINCT resolved_path AS p FROM import_specifiers WHERE resolved_path IS NOT NULL')
+      .all() as Array<{ p: string }>;
+    for (const { p } of resolved) corpus.add(p);
+  } catch {
+    // Index unavailable — the in-scope files alone remain the corpus.
   }
-
-  // Spec 60.1 Correction 1 — the import classifier's corpus file set must be
-  // the UNFILTERED stage-1 discovery list, not the audit's `files` list.
-  // `files` is narrowed at two points before `_infra` is built:
-  //   1. The polyglot dispatch narrows `files` to the per-language list it
-  //      actually hands to the TypeScript analyzer — files with no detectable
-  //      language (`.json`, `.sql`) drop out here.
-  //   2. `filterFiles` (fileDiscovery.ts, called from `findFiles`) applies
-  //      `includePaths` as a positive-selection glob filter — a `.json` file
-  //      that survives step 1 is dropped here (or by the default `includePaths`
-  //      from config/defaults.ts, which omits `.json`).
-  // Either way `_infra.files` no longer contains `.json`, so a real
-  // `./invariant-rules.schema.json` import classifies `internal-broken`.
-  // Classification answers "does this import resolve to a real file",
-  // independent of what the audit chooses to analyze.
-  //
-  // For a full (`all`) audit the corpus is the unfiltered discovery walk. For a
-  // scoped run that walk is the defect Spec 68 §hook-contract names: a
-  // single-file scope must not enumerate the whole project. A scoped run's
-  // corpus is instead "the files in scope + whatever the index already holds
-  // about the rest" — the indexed source files (`functions.file_path`) plus every
-  // file the index has ever resolved an import to (`import_specifiers.resolved_path`,
-  // which is how non-function import targets like `.json`/`.css`/`.sql` stay
-  // classifiable without a walk). If the index is unavailable the corpus degrades
-  // to the in-scope files alone — out-of-scope imports then read `internal-broken`,
-  // never a fatal.
-  let corpusFiles: string[];
-  if (isScoped) {
-    const corpus = new Set<string>(files);
-    try {
-      const db = CodeIndexDB.getInstance(undefined, mergedOptions.projectRoot || process.cwd());
-      await db.initialize();
-      const indexed = db.rawDb
-        .prepare('SELECT DISTINCT file_path AS p FROM functions')
-        .all() as Array<{ p: string }>;
-      for (const { p } of indexed) corpus.add(p);
-      const resolved = db.rawDb
-        .prepare('SELECT DISTINCT resolved_path AS p FROM import_specifiers WHERE resolved_path IS NOT NULL')
-        .all() as Array<{ p: string }>;
-      for (const { p } of resolved) corpus.add(p);
-    } catch {
-      // Index unavailable — the in-scope files alone remain the corpus.
-    }
-    corpusFiles = [...corpus].sort();
-  } else {
-    corpusFiles = await discoverFiles(root);
-  }
-
-  logMcpInfo('discovery', 'file discovery finished', {
-    projectRoot: path.resolve(root),
-    totalFiles: files.length,
-    corpusFiles: corpusFiles.length,
-    scope: scopeResultType,
-    indexFunctions: !!mergedOptions.indexFunctions
-  });
-
-  return {
-    files,
-    changedFunctions,
-    skippedExtensions,
-    blastRadius,
-    corpusFiles,
-    scope,
-    isScoped,
-    scopeResultType,
-  };
+  return [...corpus].sort();
 }
 
 /**

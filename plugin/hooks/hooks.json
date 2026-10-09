@@ -21,11 +21,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then echo '[code-auditor] CLAUDE_PLUGIN_ROOT is unset; audit hook did not run' >&2; exit 1; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-audit.sh"
+            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then exit 0; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-audit.sh"
           },
           {
             "type": "command",
-            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then echo '[code-auditor] CLAUDE_PLUGIN_ROOT is unset; self-audit hook did not run' >&2; exit 1; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-self-audit.sh"
+            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then exit 0; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-self-audit.sh"
           }
         ]
       }

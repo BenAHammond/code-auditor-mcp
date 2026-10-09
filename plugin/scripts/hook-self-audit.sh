@@ -13,10 +13,11 @@
 # diff-gate enforces invariant rules on every edit.
 #
 # Exit codes:
-#   0 — clean pass or out of scope
+#   0 — clean pass, out of scope, or a broken tool (the failure is written to
+#       the log file, not stderr)
 #   2 — a blocking self-audit finding (Claude Code feeds stdout back)
-#   The hook never exits non-zero except 2: a broken tool is written to stderr as
-#   a real failure but still exits 0 (Spec 68 §hook-contract).
+#   The hook never exits 1 and never writes stderr: a broken tool is written to
+#   the log file, not stderr, and still exits 0 (Spec 68 §hook-contract).
 set -euo pipefail
 
 # Shared resolver + compatibility pinning (see hook-common.sh).
@@ -76,12 +77,14 @@ CODE_AUDIT_BIN="$(resolve_code_audit)"
 assert_compatible "${CODE_AUDIT_BIN}" || exit 0
 
 # Run the self-audit on the edited file. CODE_AUDITOR_HOOK=1 silences info/debug
-# on stderr (they go to the log file), so a successful self-audit is quiet.
+# on stderr (they go to the log file), so a successful self-audit is quiet. Any
+# stderr the CLI still emits is routed to the hook log, never to the host.
+mkdir -p "$(hook_log_dir)" 2>/dev/null || true
 set +e
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-  echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json -p "${CLAUDE_PROJECT_DIR}"
+  echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json -p "${CLAUDE_PROJECT_DIR}" 2>>"$(hook_log_file)"
 else
-  echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json
+  echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json 2>>"$(hook_log_file)"
 fi
 exit_code=$?
 set -e
@@ -91,10 +94,10 @@ if [ ${exit_code} -eq 2 ]; then
   exit 2
 fi
 
-# Any other non-zero exit is a broken tool, not a clean pass. Report it to
-# stderr (a real failure) but exit 0 — failing the edit is worse than silence.
+# Any other non-zero exit is a broken tool, not a clean pass. Report it to the
+# log file (a real failure) but exit 0 — failing the edit is worse than silence.
 if [ ${exit_code} -ne 0 ]; then
-  echo "[code-auditor] HOOK BROKEN: self-audit exited ${exit_code} (neither clean nor a finding). Fix the install — do not treat this as a clean pass." >&2
+  hook_log "[code-auditor] HOOK BROKEN: self-audit exited ${exit_code} (neither clean nor a finding). Fix the install — do not treat this as a clean pass."
   exit 0
 fi
 

@@ -5,13 +5,15 @@
 # and runs `code-audit changed --stdin --json` against it.
 #
 # Exit codes:
-#   0 — clean pass, or no fresh result yet (the daemon is seeding/indexing, or
-#       this edit hasn't been re-audited — feedback arrives one edit later)
+#   0 — clean pass, no fresh result yet (the daemon is seeding/indexing, or
+#       this edit hasn't been re-audited — feedback arrives one edit later), or
+#       a broken tool (the failure is written to the log file, not stderr)
 #   2 — a gating finding was read from the daemon's cache (Claude Code feeds
 #       stdout back)
-#   The hook never exits non-zero except 2: a hook that can fail the edit is
-#   worse than one that reports nothing (Spec 68 §hook-contract). A broken tool
-#   is written to stderr as a real failure but still exits 0.
+#   The hook never exits 1 and never writes stderr: a hook that can fail the
+#   edit is worse than one that reports nothing (Spec 68 §hook-contract). A
+#   broken tool is written to the log file, not stderr, and still exits 0 — a
+#   failure surfaces on the next explicit audit, never on the edit.
 set -euo pipefail
 
 # Shared resolver + compatibility pinning (see hook-common.sh).
@@ -69,18 +71,20 @@ esac
 CODE_AUDIT_BIN="$(resolve_code_audit)"
 
 # Pin the plugin to a compatible CLI version. On mismatch the message goes to
-# stderr (a real failure) but the hook still exits 0 — it must never block the edit.
+# the hook log (a real failure) but the hook still exits 0 — it must never block the edit.
 assert_compatible "${CODE_AUDIT_BIN}" || exit 0
 
 # Run the diff-scoped gate in hook mode. CODE_AUDITOR_HOOK=1 tells the CLI:
 # enqueue (start the daemon if absent), read a fresh result from the daemon's
 # cache when it has one, and never run an in-process audit — so a successful
-# edit produces zero bytes on stderr and returns in tens of milliseconds.
+# edit produces zero bytes on stderr and returns in tens of milliseconds. Any
+# stderr the CLI still emits is routed to the hook log, never to the host.
+mkdir -p "$(hook_log_dir)" 2>/dev/null || true
 set +e
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-  echo "${file}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} changed --stdin --json -p "${CLAUDE_PROJECT_DIR}"
+  echo "${file}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} changed --stdin --json -p "${CLAUDE_PROJECT_DIR}" 2>>"$(hook_log_file)"
 else
-  echo "${file}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} changed --stdin --json
+  echo "${file}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} changed --stdin --json 2>>"$(hook_log_file)"
 fi
 exit_code=$?
 set -e
@@ -91,10 +95,10 @@ if [ ${exit_code} -eq 2 ]; then
   exit 2
 fi
 
-# Any other non-zero exit is a broken tool, not a clean pass. Report it to
-# stderr (a real failure) but exit 0 — failing the edit is worse than silence.
+# Any other non-zero exit is a broken tool, not a clean pass. Report it to the
+# log file (a real failure) but exit 0 — failing the edit is worse than silence.
 if [ ${exit_code} -ne 0 ]; then
-  echo "[code-auditor] HOOK BROKEN: code-audit exited ${exit_code} (neither clean nor a finding). Fix the install — do not treat this as a clean pass." >&2
+  hook_log "[code-auditor] HOOK BROKEN: code-audit exited ${exit_code} (neither clean nor a finding). Fix the install — do not treat this as a clean pass."
   exit 0
 fi
 

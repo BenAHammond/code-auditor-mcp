@@ -18,18 +18,14 @@
  *
  * This runner fixes the *shape*, not the instance: it runs every gate, records
  * every outcome, and reports the full set, so no gate is ever skipped by an
- * earlier failure. The one remaining skip is deliberate and loud: the gates that
- * consume `dist/cli.js` (test, test:integration, gate-budget, self, dist) are
- * `SKIPPED (dist stale)` when `verify:dist-fresh` fails — they would otherwise
- * validate a compiled CLI that is not the source, the exact trap `verify:dist-fresh`
- * exists to prevent. The drift gates (bench, recall-value-drift,
- * extraction-completeness, oracle-shortfalls) are `tsx` over `src/` and do NOT
- * depend on dist, so they always run and their drift is surfaced alongside the
- * dist failure instead of being skipped by the short-circuit.
+ * earlier failure — under any condition. A stale `dist/cli.js` fails the chain
+ * through `verify:dist-fresh`'s own exit 1, but it does not skip the gates that
+ * follow it: every gate still runs and every result is still reported, so a
+ * downstream failure is surfaced alongside the stale-dist failure instead of
+ * being concealed behind a skip. The summary line names every FAIL/CRASH, and
+ * the stale-dist failure is loud in the report rather than silently aborting it.
  *
- * Exit code: 0 iff every gate ran and passed; 1 otherwise (any FAIL or CRASH).
- * A SKIP is reported but is not itself a failure — the stale dist that caused
- * the skip already failed `verify:dist-fresh`.
+ * Exit code: 0 iff every gate ran and exited 0; 1 otherwise (any FAIL or CRASH).
  *
  * Usage (from app/):
  *   node scripts/verify-close.mjs
@@ -38,54 +34,31 @@
 import { spawnSync } from 'node:child_process';
 
 /**
- * The ordered gate list. `dist: true` marks a gate that consumes `dist/cli.js`
- * and therefore must not run against a stale build; `dist: false` gates run over
- * `src/` (tsx/vitest) or the environment and are independent of the compiled CLI.
+ * The ordered gate list. `verify:gate-budget` runs before `verify:types` (tsc),
+ * test, test:integration, and bench — its warm run must measure the gate in the
+ * idle state the agent's hook actually executes in, not the chain-heated state.
+ * `tsc --noEmit` is itself a sustained single-core load that heats the machine
+ * enough to inflate the summed CPU time, so it must run after gate-budget too.
+ * See the BUDGET_MS note in verify-gate-budget.mjs for why the prior post-bench
+ * placement was dropped.
  */
 export const GATES = [
-  { name: 'verify:disk-space', dist: false },
-  { name: 'verify:node-types', dist: false },
-  { name: 'verify:dist-fresh', dist: false },
-  // gate-budget runs FIRST among the dist-consuming gates — before verify:types
-  // (tsc), test, test:integration, and bench — so its warm run measures the gate
-  // in the idle state the agent's hook actually executes in, not the
-  // chain-heated state. `tsc --noEmit` is itself a sustained single-core load
-  // that heats the machine enough to inflate the summed CPU time, so it must run
-  // after gate-budget too. See the BUDGET_MS note in verify-gate-budget.mjs for
-  // why the prior post-bench placement was dropped.
-  { name: 'verify:gate-budget', dist: true },
-  { name: 'verify:types', dist: false },
-  { name: 'test', dist: true },
-  { name: 'test:integration', dist: true },
-  { name: 'bench', dist: false },
-  { name: 'verify:recall-value-drift', dist: false },
-  { name: 'verify:extraction-completeness', dist: false },
-  { name: 'verify:oracle-shortfalls', dist: false },
-  { name: 'verify:clean-install', dist: false },
-  { name: 'verify:dist', dist: true },
-  { name: 'verify:self', dist: true },
-  { name: 'verify:daemon-smoke', dist: true },
+  'verify:disk-space',
+  'verify:node-types',
+  'verify:dist-fresh',
+  'verify:gate-budget',
+  'verify:types',
+  'test',
+  'test:integration',
+  'bench',
+  'verify:recall-value-drift',
+  'verify:extraction-completeness',
+  'verify:oracle-shortfalls',
+  'verify:clean-install',
+  'verify:dist',
+  'verify:self',
+  'verify:daemon-smoke',
 ];
-
-/**
- * Pure planning half — decide, for each gate, whether it runs or is skipped
- * given whether `verify:dist-fresh` already failed. Extracted so a
- * gate-liveness test can assert the skip/run decision without executing the
- * (slow) full chain.
- *
- * @param {{name: string, dist: boolean}[]} gates
- * @param {boolean} distFreshFailed
- * @returns {{name: string, action: 'run' | 'skip', reason?: string}[]}
- */
-export function planRun(gates, distFreshFailed) {
-  return gates.map((g) => {
-    if (g.name === 'verify:dist-fresh') return { name: g.name, action: 'run' };
-    if (g.dist && distFreshFailed) {
-      return { name: g.name, action: 'skip', reason: 'dist stale' };
-    }
-    return { name: g.name, action: 'run' };
-  });
-}
 
 /** Run one gate via `npm run <name>`, streaming its output, returning its status. */
 function runGate(name) {
@@ -99,91 +72,45 @@ function runGate(name) {
 }
 
 /**
- * Pure aggregation half — map a completed result list to a verdict. Extracted
- * from `main` so a gate-liveness test can assert the invariant the old runner
- * left implicit: **a skipped gate can never read `pass`**. The verdict is:
+ * Aggregate a completed result list into a verdict. Every gate has run (there is
+ * no skip path), so the verdict is pass iff every status is 0:
  *
- *   - `pass` — every gate ran and exited 0 (no fail, no crash, no skip).
- *   - `fail` — at least one gate failed or crashed (a skip may also be present).
- *   - `inconsistent` — at least one gate was skipped but none failed/crashed: a
- *     planning bug (a skip is only ever expected to follow a `verify:dist-fresh`
- *     failure, which is itself a failure).
+ *   - `pass` — every gate ran and exited 0 (no fail, no crash).
+ *   - `fail` — at least one gate failed or crashed.
  *
  * `failed` deliberately excludes `status === null` so a crash is not
- * double-counted in the summary line (the old filter `status !== 0` also matched
- * `null`).
+ * double-counted in the summary line.
  *
- * @param {{name: string, action: 'run' | 'skip', status: number | null, reason?: string}[]} results
- * @returns {{failed: [], crashed: [], skipped: [], passed: [], verdict: 'pass' | 'fail' | 'inconsistent'}}
+ * @param {{name: string, status: number | null}[]} results
+ * @returns {{failed: [], crashed: [], passed: [], verdict: 'pass' | 'fail'}}
  */
 export function summarizeResults(results) {
-  const failed = results.filter((r) => r.action === 'run' && r.status !== null && r.status !== 0);
-  const crashed = results.filter((r) => r.action === 'run' && r.status === null);
-  const skipped = results.filter((r) => r.action === 'skip');
-  const passed = results.filter((r) => r.action === 'run' && r.status === 0);
-  let verdict;
-  if (failed.length === 0 && crashed.length === 0 && skipped.length === 0) {
-    verdict = 'pass';
-  } else if (skipped.length > 0 && failed.length === 0 && crashed.length === 0) {
-    verdict = 'inconsistent';
-  } else {
-    verdict = 'fail';
-  }
-  return { failed, crashed, skipped, passed, verdict };
+  const failed = results.filter((r) => r.status !== null && r.status !== 0);
+  const crashed = results.filter((r) => r.status === null);
+  const passed = results.filter((r) => r.status === 0);
+  const verdict = failed.length === 0 && crashed.length === 0 ? 'pass' : 'fail';
+  return { failed, crashed, passed, verdict };
 }
 
 function main() {
   const results = [];
-  let distFreshFailed = false;
-
-  for (const gate of GATES) {
-    if (gate.name === 'verify:dist-fresh') {
-      const status = runGate(gate.name);
-      distFreshFailed = status !== 0;
-      results.push({ name: gate.name, action: 'run', status });
-      continue;
-    }
-    const plan = planRun([gate], distFreshFailed)[0];
-    if (plan.action === 'skip') {
-      console.log(`\n═══ ${gate.name} — SKIPPED (${plan.reason}) ═══`);
-      results.push({ name: gate.name, action: 'skip', status: null, reason: plan.reason });
-      continue;
-    }
-    const status = runGate(gate.name);
-    results.push({ name: gate.name, action: 'run', status });
+  for (const name of GATES) {
+    results.push({ name, status: runGate(name) });
   }
 
-  const { failed, crashed, skipped, verdict } = summarizeResults(results);
+  const { failed, crashed, verdict } = summarizeResults(results);
 
   console.log('\n════════════════════════════════════════════');
-  console.log('verify:close — full run summary (run-all, no silent skips)');
+  console.log('verify:close — full run summary (run-all, no skips)');
   for (const r of results) {
-    const mark =
-      r.action === 'skip'
-        ? `SKIPPED (${r.reason})`
-        : r.status === null
-          ? 'CRASH'
-          : r.status === 0
-            ? 'PASS'
-            : 'FAIL';
+    const mark = r.status === null ? 'CRASH' : r.status === 0 ? 'PASS' : 'FAIL';
     console.log(`  ${mark.padEnd(16)} ${r.name}`);
   }
   console.log('════════════════════════════════════════════');
 
   if (verdict === 'fail') {
     console.error(
-      `verify:close FAILED — ${failed.length} failed, ${crashed.length} crashed` +
-        (skipped.length ? `, ${skipped.length} skipped (dist stale)` : '') +
-        '.',
-    );
-    process.exit(1);
-  }
-
-  if (verdict === 'inconsistent') {
-    // A skip without a failure is a planning bug (a skip is only expected to
-    // follow a dist-fresh failure). It must not read as green.
-    console.error(
-      `verify:close inconsistent — ${skipped.length} gate(s) skipped but none failed.`,
+      `verify:close FAILED — ${failed.length} failed, ${crashed.length} crashed.`,
     );
     process.exit(1);
   }

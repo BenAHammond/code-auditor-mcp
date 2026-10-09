@@ -42,12 +42,15 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, cpSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, cpSync, rmSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const CLI = resolve(process.cwd(), 'dist/cli.js');
 const DAEMON_ENTRY = resolve(process.cwd(), 'dist/daemon/main.js');
 const FIXTURE = resolve(process.cwd(), 'tests/fixtures/corpus/d1-workers');
+// package.json is the single source of truth for the version. Read it rather
+// than hardcoding, so a patch bump cannot strand this assertion on a stale value.
+const PKG_VERSION = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf-8')).version;
 const READY_TIMEOUT_MS = Number(process.env.VERIFY_DAEMON_SMOKE_READY_MS ?? 90_000);
 
 if (!existsSync(CLI)) {
@@ -293,7 +296,7 @@ recordHook(
 );
 
 console.log('\nskill commands (SKILL.md):');
-record('--version', run(['--version']), [0], contains('5.0.0'));
+record('--version', run(['--version']), [0], contains(PKG_VERSION));
 
 record('audit (terminal summary)', run(['audit', '--path', projectRoot]), [0], contains('Code Quality Audit'));
 

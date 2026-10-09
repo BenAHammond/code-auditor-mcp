@@ -2,6 +2,38 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.0.1]
+
+### The hook is silent — never stderr, never a blocking exit
+
+The PostToolUse hook could write warnings to stderr and exit non-zero, which
+the host treats as a block on the edit itself. It now writes every diagnostic —
+info, warnings, and failures alike — to `hook.log` and never exits non-zero
+except to surface a gating finding (exit 2). The bootstrap guard for an unset
+`CLAUDE_PLUGIN_ROOT` no longer prints to stderr and exits 1; it is a silent
+no-op (exit 0) like the SessionStart warm hook. A broken install therefore
+surfaces on the next explicit audit (and in the log), never on the edit.
+
+Resolution also stopped paying a full `--version` round-trip per candidate on
+the per-edit hot path: the pinned install is version-guaranteed by its path and
+skips the re-check, and `plugin_version` is memoized so the manifest is read
+once instead of once per call site.
+
+### The daemon's project root is explicit, never re-derived
+
+The daemon re-derived its root by walking up for a marker file, which could pull
+in far more than the directory it was started for. It now uses exactly the path
+it was started for, passed explicitly, and refuses to read outside that root.
+File discovery also treats a nested git repository as a boundary, recomputing
+gitignore so a consumer's repo stops swallowing the surrounding tree.
+
+### A stale `dist` fails the chain — no gate is skipped
+
+`verify:close` was a single `&&` conjunction, so the first failing gate aborted
+the run and silently skipped every gate after it. It now runs every gate and
+reports the full set, so a stale `dist/cli.js` fails loudly through
+`verify:dist-fresh` without concealing a downstream failure behind a skip.
+
 ## [5.0.0]
 
 About a third of the non-documentation findings the tool emitted on its own

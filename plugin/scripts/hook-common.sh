@@ -30,6 +30,24 @@
 #
 # The sourcing hook runs with `set -euo pipefail`.
 
+# hook_log_dir / hook_log_file / hook_log — the hook's diagnostic log.
+#
+# The PostToolUse hook must never write stderr: the host may block on stderr
+# content, so a single warning could block the edit. Every diagnostic — info,
+# warnings, and failures alike — goes to this log file instead, and the hook
+# still exits 0. A broken install therefore surfaces on the next explicit audit
+# (and in this log), never on the edit itself.
+hook_log_dir() {
+  printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/code-auditor/logs"
+}
+hook_log_file() {
+  printf '%s' "$(hook_log_dir)/hook.log"
+}
+hook_log() {
+  mkdir -p "$(hook_log_dir)" 2>/dev/null || return 0
+  printf '%s\n' "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*" >> "$(hook_log_file)" 2>/dev/null || true
+}
+
 # resolve_code_audit — emit the CLI invocation to use.
 #
 # Resolution is version-aware: EVERY candidate — bundled sibling, pinned install,
@@ -133,8 +151,24 @@ resolve_pinned_bin() {
 #
 # The manifest lives at .claude-plugin/plugin.json (this plugin's convention),
 # but a few installs flatten it to plugin.json at the plugin root, so check both.
+#
+# Memoized: the value is read once per hook invocation and cached. Three call
+# sites (pin_dir, cli_is_compatible, assert_compatible) each re-read the same
+# manifest, and each re-read is a fresh `node` spawn (~55ms) on the per-edit hot
+# path. The memo collapses those into one spawn; the manifest cannot change
+# mid-hook, so the cache is exact, not a heuristic.
+__CODE_AUDITOR_PLUGIN_VERSION=""
+__CODE_AUDITOR_PLUGIN_VERSION_RESOLVED=0
 plugin_version() {
-  node -e "const fs=require('fs');const p=process.env.CLAUDE_PLUGIN_ROOT;for(const f of [p+'/.claude-plugin/plugin.json', p+'/plugin.json']){try{const v=JSON.parse(fs.readFileSync(f,'utf8')).version;if(v){process.stdout.write(v);break}}catch(e){}}" 2>/dev/null
+  if [ "${__CODE_AUDITOR_PLUGIN_VERSION_RESOLVED}" = "1" ]; then
+    printf '%s' "${__CODE_AUDITOR_PLUGIN_VERSION}"
+    return
+  fi
+  __CODE_AUDITOR_PLUGIN_VERSION="$(
+    node -e "const fs=require('fs');const p=process.env.CLAUDE_PLUGIN_ROOT;for(const f of [p+'/.claude-plugin/plugin.json', p+'/plugin.json']){try{const v=JSON.parse(fs.readFileSync(f,'utf8')).version;if(v){process.stdout.write(v);break}}catch(e){}}" 2>/dev/null
+  )"
+  __CODE_AUDITOR_PLUGIN_VERSION_RESOLVED=1
+  printf '%s' "${__CODE_AUDITOR_PLUGIN_VERSION}"
 }
 
 # semver_of <version-string> — the leading X.Y.Z (with optional -prerelease) in a
@@ -156,13 +190,13 @@ cli_is_compatible() {
   [ -n "${pv_sem}" ] && [ -n "${cv_sem}" ] && [ "${pv_sem}" = "${cv_sem}" ]
 }
 
-# warn_stale <cmd> — one stderr line naming a stale installed CLI, so the user
+# warn_stale <cmd> — one log line naming a stale installed CLI, so the user
 # knows why the hook is paying the pinned install and how to restore the fast path.
 warn_stale() {
   local cmd="$1" cv pv
   pv="$(semver_of "$(plugin_version)")"
   cv="$(semver_of "$($cmd --version 2>/dev/null || true)")"
-  echo "[code-auditor] warn: ${cmd} is ${cv:-unidentified} but this plugin needs ${pv:-its version} — using the pinned install instead; update the install to restore the fast path" >&2
+  hook_log "[code-auditor] warn: ${cmd} is ${cv:-unidentified} but this plugin needs ${pv:-its version} — using the pinned install instead; update the install to restore the fast path"
 }
 
 # assert_compatible <bin> — pin the plugin to a compatible CLI.
@@ -178,16 +212,27 @@ warn_stale() {
 # determined — an unidentified binary is never trusted.
 assert_compatible() {
   local bin="$1" pv cv pv_sem cv_sem
+  # The pinned install's version is guaranteed by its path: `pin_dir` encodes
+  # `plugin_version`, and `resolve_pinned_bin` installs exactly
+  # `code-auditor-mcp@<that version>` there. A `--version` round-trip on it is a
+  # full CLI process spawn (~165ms) that re-proves what the path already states,
+  # so it is skipped on the per-edit hot path. Non-pinned candidates (the
+  # bundled sibling, a project-local install, a global on PATH) are NOT
+  # path-guaranteed — the resolver's `cli_is_compatible` already version-checked
+  # them, and the full check below remains the loud backstop for any of them.
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ "${bin}" = "$(pin_dir)/node_modules/.bin/code-audit" ]; then
+    return 0
+  fi
   pv="$(plugin_version)"
   cv="$($bin --version 2>/dev/null || true)"
   pv_sem="$(semver_of "${pv}")"
   cv_sem="$(semver_of "${cv}")"
   if [ -z "${pv_sem}" ] || [ -z "${cv_sem}" ]; then
-    echo "[code-auditor] HOOK BROKEN: cannot verify CLI version (plugin='${pv}' cli='${cv}') — refusing to run an unidentified binary" >&2
+    hook_log "[code-auditor] HOOK BROKEN: cannot verify CLI version (plugin='${pv}' cli='${cv}') — refusing to run an unidentified binary"
     return 1
   fi
   if [ "${pv_sem}" != "${cv_sem}" ]; then
-    echo "[code-auditor] version mismatch: plugin ${pv_sem} vs CLI ${cv_sem} — pin the CLI to the plugin version" >&2
+    hook_log "[code-auditor] version mismatch: plugin ${pv_sem} vs CLI ${cv_sem} — pin the CLI to the plugin version"
     return 1
   fi
   return 0
