@@ -20,8 +20,12 @@
  *   1. `computeAmbientInterfaceFields` — aggregates only global-script interfaces,
  *      excluding any file that is a module (appears in import/export facts).
  *   2. The full corpus pipeline — `runPhaseModelOverFiles` over both files leaves
- *      `unprovenQueryReceivers` empty, and leaves it non-empty when the global
- *      script is absent (the negative control proving the map is the mechanism).
+ *      `unprovenQueryReceivers` empty with the sibling `.d.ts` present (the site
+ *      resolves to `handle`). With the `.d.ts` absent, the site's receiver root
+ *      `env` is a function parameter, so Fix 1 (admission requires evidence) drops
+ *      it as not-a-site rather than leaving it `unproven` — `unprovenQueryReceivers`
+ *      is empty either way, but the mechanism (proven `handle` vs dropped) is what
+ *      the positive control + the unit block below pin.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -151,22 +155,34 @@ describe('Spec 70 criterion 9 — corpus pipeline resolves a cross-file `Env`', 
     // even though the template SQL cannot be parsed under postgresql. No cannot-fire
     // site may survive…
     expect(res.unprovenQueryReceivers).toEqual([]);
-    // …and the site IS a DB handle (not a non-DB receiver that happened to clear the
-    // cannot-fire surface): it re-appears in the `unparseable` diagnostic, which is
-    // only emitted for an admitted handle whose SQL the dialect cannot parse.
+    // …and the site's SQL is surfaced on the `unparseable` diagnostic. That
+    // surface is driven by the SQL text (`?` is not a postgresql placeholder),
+    // not by the receiver verdict — the negative control produces the same
+    // `unparseable` record from a dropped not-a-site. What distinguishes the two
+    // controls is the *mechanism* (proven `handle` via the sibling `.d.ts` here,
+    // dropped not-a-site there), which the `computeAmbientInterfaceFields` unit
+    // block and this clean pipeline pin together.
     expect(res.unparseableSql).toHaveLength(1);
     expect(res.unparseableSql[0].sqlText).toContain('SELECT * FROM users');
     expect(res.unparseableSql[0].file).toBe(handlerPath);
   });
 
-  it('leaves the same site unproven when the global-script interface is absent (negative control)', async () => {
+  it('drops the site as not-a-site when the global-script interface is absent (negative control)', async () => {
     const handlerPath = path.join(root, 'handler.ts');
     // Same handler, but `Env` is nowhere declared — the ambient map is empty and
-    // the declaration-resolution source abstains, so the site is a genuine
-    // cannot-fire. This proves the sibling `.d.ts` (not some other relaxation) is
-    // what clears the surface.
+    // the declaration-resolution source abstains. The receiver root `env` is a
+    // function parameter, not a bare-package import, so Fix 1 (admission
+    // requires evidence) drops the site as not-a-site: nothing is reported on
+    // the receiver disposition (`unprovenQueryReceivers` stays empty). Its SQL
+    // text is still surfaced independently by the `unparseable` diagnostic —
+    // that surface is driven by the SQL string itself (`?` is not a postgresql
+    // placeholder), not by whether `env.DB` resolved to a handle. So the two
+    // controls are distinguished by *why* the site is absent from the
+    // cannot-fire surface: proven `handle` with the `.d.ts`, dropped not-a-site
+    // without it.
     const res = await run(handlerPath, HANDLER_SRC);
-    expect(res.unprovenQueryReceivers).toHaveLength(1);
-    expect(res.unprovenQueryReceivers[0].receiver).toBe('env.DB');
+    expect(res.unprovenQueryReceivers).toEqual([]);
+    expect(res.unparseableSql).toHaveLength(1);
+    expect(res.unparseableSql[0].sqlText).toContain('SELECT * FROM users');
   });
 });

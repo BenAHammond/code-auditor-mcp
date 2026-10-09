@@ -424,6 +424,7 @@ const typescriptResolution: ResolutionImplementation = {
     // set them, never a stale value from a prior site sharing the env.
     env.ambientRejectionReason = undefined;
     env.importResolutionReason = undefined;
+    env.importNotHandleReason = undefined;
     const classified = classifyRootIdentifier(site.root, env, 0, {
       thisField: site.thisField,
       memberPath: site.thisField
@@ -442,7 +443,9 @@ const typescriptResolution: ResolutionImplementation = {
       reason:
         disposition === 'unproven'
           ? env.ambientRejectionReason ?? env.importResolutionReason ?? describeUnprovenCause(site.root, env.provenance, env.bindings.get(site.root), TYPESCRIPT_FIELD_WORDING)
-          : disposition,
+          : disposition === 'not-handle'
+            ? env.importNotHandleReason ?? disposition
+            : disposition,
     };
   },
   extract(ast, adapter, sourceCode) {

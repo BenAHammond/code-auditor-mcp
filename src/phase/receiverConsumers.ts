@@ -58,6 +58,7 @@ import {
 import { rawInsertColumnsFromAst } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import type { GoResolutionEnv, GoBinding } from '../languages/go/goResolution.js';
 import { describeUnprovenReceiver, resolveSpecifier, makeHeritageResolver, type TsconfigPathMap, type UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
+import { barePackageName } from '../analyzers/receiverRoot.js';
 
 // ── Specifier resolution (Spec 70 B1) ────────────────────────────────────────
 
@@ -1325,17 +1326,36 @@ export function classifyUnprovenQueryReceivers(
       const id = dataAccessIdentity(cand);
       // Candidacy filter only — mirror the pre-pass's member-callee gate (an
       // identifier callee is not a query-shaped *call site*). A member call is
-      // admitted as unproven only when it carries a static SQL argument (the
-      // sql-argument evidence source, `handleSqlArg`) or is genuinely query-shaped
-      // (the real `isQueryBuilderShape` test, carried on the candidate) — a site
-      // with neither evidence source is not a data-access site and nothing is
-      // reported about it. `reFoldHandleVerdict` → `identifyHandle` re-folds the
-      // same discriminant over the re-derived provenance, so a null-arg
-      // `not-handle` root resolves to `not-handle` below.
+      // *nominated* when it carries a static SQL argument (the sql-argument
+      // evidence source, `handleSqlArg`) or is genuinely query-shaped (the real
+      // `isQueryBuilderShape` test, carried on the candidate) — nomination is not
+      // admission. `reFoldHandleVerdict` → `identifyHandle` re-folds the
+      // discriminant over the re-derived provenance, so a null-arg `not-handle`
+      // root resolves to `not-handle` below.
       if (id.calleeType !== 'member') continue;
       if (cand.handleSqlArg === null && !cand.isQueryBuilderShape) continue;
       const verdict = reFoldHandleVerdict(id, env, file, verdictCache);
       if (!verdict || verdict.kind !== 'unproven') continue;
+      // Fix 1 — admission requires evidence (query-shape only nominates). A
+      // member call is a data-access site only when its receiver's declaration
+      // *reaches a package*: an import whose specifier is a bare package name.
+      // Resolution walks that to a DB package (→ `handle`, never reaches here), a
+      // declared non-DB package (→ `not-handle`, filtered above), or an
+      // unrecognized one (→ this `unproven`, the honest cannot-fire of Spec 70
+      // R4). A receiver rooted in anything else — a local opaque type, an
+      // un-annotated parameter/factory-return/field, or a relative in-repo
+      // re-export — has *neither* evidence source, was never a data-access site,
+      // and nothing is reported about it.
+      const rootBinding = id.root === null
+        ? undefined
+        : ((id.scope !== undefined ? bindingsByScope.get(id.root)?.get(id.scope) : undefined) ?? bindings.get(id.root));
+      if (
+        !rootBinding ||
+        rootBinding.kind !== 'import' ||
+        barePackageName(rootBinding.source ?? '') === null
+      ) {
+        continue;
+      }
       admitted.push({ cand, verdict });
     }
 

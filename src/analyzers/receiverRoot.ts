@@ -197,6 +197,15 @@ export interface RootResolutionEnv {
    * walked here" instead of the generic binding cause.
    */
   importResolutionReason?: string;
+  /**
+   * Out-param populated by `classifyImportSource` when an import's bare package
+   * name is a *declared* dependency of the project yet absent from the database
+   * manifest (Fix 2): the disposition is `not-handle` — the declaration resolves
+   * to a known non-database package, which is resolution disproving — and
+   * `resolveRoot` reads this to give the verdict reason "resolves to `<pkg>`, a
+   * declared non-database package" instead of the bare disposition string.
+   */
+  importNotHandleReason?: string;
   /** The adapter + source text for reading value/type node text. */
   adapter: LanguageAdapter;
   sourceCode: string;
@@ -874,6 +883,34 @@ export function isDbShapedRoot(root: string, env: RootResolutionEnv, opts?: { th
   return classifyRootIdentifier(root, env, 0, opts) !== 'not-handle';
 }
 
+/**
+ * Strip a module specifier to its bare package name — `@scope/pkg/sub` →
+ * `@scope/pkg`, `pkg/sub` → `pkg` — or `null` when the specifier is not a bare
+ * package (a relative/alias/absolute path such as `./x`, `../x`, `@/x`, `~/x`,
+ * or `/x`). The Fix 2 / Fix 1 discriminant: a bare package name is a *package*
+ * the project declares (or an unrecognized one reached by resolution); a
+ * relative/alias path is an in-repo file, whose export chain is not walked here.
+ */
+export function barePackageName(specifier: string): string | null {
+  if (!specifier) return null;
+  if (
+    specifier.startsWith('.') ||
+    specifier.startsWith('/') ||
+    specifier.startsWith('@/') ||
+    specifier.startsWith('~/')
+  ) {
+    return null;
+  }
+  if (specifier.startsWith('@')) {
+    const firstSlash = specifier.indexOf('/');
+    if (firstSlash === -1) return specifier; // `@scope` with no subpath
+    const secondSlash = specifier.indexOf('/', firstSlash + 1);
+    return secondSlash === -1 ? specifier : specifier.slice(0, secondSlash);
+  }
+  const slash = specifier.indexOf('/');
+  return slash === -1 ? specifier : specifier.slice(0, slash);
+}
+
 function classifyImportSource(
   source: string,
   name: string,
@@ -906,6 +943,19 @@ function classifyImportSource(
   if (handles) {
     if (importKind === 'default' || importKind === 'namespace') return 'handle';
     return handles.has(name) ? 'handle' : 'not-handle';
+  }
+  // Fix 2 — a bare specifier whose package is a *declared* dependency of the
+  // project yet absent from the database manifest resolves to a known non-database
+  // package. That is resolution disproving — the declaration names an ordinary
+  // library (`vitest`, `zod`, `hono`, `react`), not a DB client — so it is a
+  // `not-handle`, never the `unproven` that floods the cannot-fire list. The
+  // reason names the resolved package. Only a *declared* package disproves; an
+  // undeclared specifier (a codegen token or transitive dep) falls through to the
+  // `unproven` arms below (Spec 70 R4).
+  const pkg = barePackageName(source);
+  if (pkg !== null && env.declaredTypePackages?.has(pkg)) {
+    env.importNotHandleReason = `resolves to \`${pkg}\`, a declared non-database package`;
+    return 'not-handle';
   }
   // A bare specifier that resolved to neither an in-repo file, a node_modules
   // declaration, a Node builtin, nor a manifest DB package names no module in

@@ -1135,13 +1135,16 @@ describe('Spec-18 — CLI end-to-end', () => {
   });
 
   it('R6.7b — changed --json carries a receiver-level cannot-fire diagnostic for a db: any receiver (file+line) without gating', async () => {
-    // `db: any` is the definition of inconclusive (Spec 69 §10 S5e): a parameter
-    // annotated `any` has no determinable DB-handle type, so a query-shaped call
-    // on it stays `unproven` and reports `cannot-fire` (never a silent `clean`).
-    // Spec 70 R3 makes a *parseable* SQL argument prove `handle`, so the argument
-    // here is *structurally invalid* SQL — `SELECT * FROM WHERE` has no table
-    // reference, a syntax error in every dialect node-sql-parser ships — to keep
-    // the receiver on the cannot-fire path. This is deliberately NOT a
+    // A receiver rooted in an *unrecognized bare-package import* is the one shape
+    // that still reports receiver-level cannot-fire (Spec 70 R4): the
+    // declaration-resolution source runs, finds the package is neither a DB
+    // handle nor a declared non-DB package, and folds to `unproven`. A parameter
+    // (the old `db: any`) is now dropped as not-a-site under Fix 1 — it carries
+    // no declaration evidence, so nothing is reported about it. Spec 70 R3 makes
+    // a *parseable* SQL argument prove `handle`, so the argument here is
+    // *structurally invalid* SQL — `SELECT * FROM WHERE` has no table reference,
+    // a syntax error in every dialect node-sql-parser ships — to keep the
+    // receiver on the cannot-fire path. This is deliberately NOT a
     // dialect-specific feature (the previous `ILIKE` only failed the sqlite
     // grammar): a structural error never parses, so the assertion does not flip
     // if the dialect handling or the default grammar changes. This pins the
@@ -1150,7 +1153,7 @@ describe('Spec-18 — CLI end-to-end', () => {
     // (it is a coverage diagnostic, not a violation).
     await writeFile(
       join(testDir, 'src', 'lib.ts'),
-      'export function record(db: any) {\n  return db.prepare(`SELECT * FROM WHERE name = \'foo\'`).run();\n}\n',
+      'import { db } from "not-a-real-db-package";\nexport function record() {\n  return db.prepare(`SELECT * FROM WHERE name = \'foo\'`).run();\n}\n',
     );
     await writeConfig(testDir, {});
 
