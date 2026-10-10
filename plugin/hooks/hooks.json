@@ -6,11 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then exit 0; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-warm.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-warm.sh"
           },
           {
             "type": "command",
-            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then exit 0; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-drift-check.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-drift-check.sh"
           }
         ]
       }
@@ -21,11 +21,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then exit 0; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-audit.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-audit.sh"
           },
           {
             "type": "command",
-            "command": "if [ -z \"${CLAUDE_PLUGIN_ROOT}\" ]; then exit 0; fi; \"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-self-audit.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-self-audit.sh"
           }
         ]
       }

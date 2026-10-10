@@ -158,18 +158,15 @@ describe('Hooks manifest (hooks.json)', () => {
     expect(inner.command).toContain('${CLAUDE_PLUGIN_ROOT}');
   });
 
-  it('command guards against an unset CLAUDE_PLUGIN_ROOT (exits silently, never blocks)', () => {
+  it('launches the script directly, with no env-var guard', () => {
+    // The launch uses the ${CLAUDE_PLUGIN_ROOT} placeholder (the only way to
+    // locate a plugin-bundled script from a hooks/hooks.json command — cwd is
+    // the session dir, not the plugin dir), but it must not gate on an unset
+    // variable: the script self-locates, so there is no unset case to guard.
     const inner = hooks.hooks.PostToolUse[0].hooks[0];
-    expect(inner.command).toContain('exit 0');
-    // The hook must never write stderr or exit non-zero: an unset plugin root
-    // is a no-op (a failure surfaces on the next explicit audit), not a block.
-    expect(inner.command).not.toContain('>&2');
-    // The guard must precede the script invocation so a missing plugin root
-    // can never resolve to an absolute `/scripts/hook-audit.sh` that silently
-    // fails to be found.
-    expect(inner.command.indexOf('exit 0')).toBeLessThan(
-      inner.command.indexOf('hook-audit.sh'),
-    );
+    expect(inner.command).not.toContain('[ -z');
+    expect(inner.command).not.toContain('if [');
+    expect(inner.command).toBe('"${CLAUDE_PLUGIN_ROOT}"/scripts/hook-audit.sh');
   });
 });
 
@@ -189,13 +186,10 @@ describe('SessionStart warm hook (hook-warm.sh)', () => {
     expect(entry.hooks[0].command).toContain('hook-warm.sh');
   });
 
-  it('is silent on an unset CLAUDE_PLUGIN_ROOT (exit 0, not the loud exit 1)', () => {
-    // A warm-the-cache nicety must never fail the session: unlike the PostToolUse
-    // guards, an unset plugin root here exits 0, and that guard must precede the
-    // script invocation.
+  it('launches the warm script directly, with no env-var guard', () => {
     const command = hooks.hooks.SessionStart[0].hooks[0].command;
-    expect(command).toContain('exit 0');
-    expect(command.indexOf('exit 0')).toBeLessThan(command.indexOf('hook-warm.sh'));
+    expect(command).not.toContain('[ -z');
+    expect(command).toBe('"${CLAUDE_PLUGIN_ROOT}"/scripts/hook-warm.sh');
   });
 
   it('exists and is executable', () => {
@@ -284,6 +278,16 @@ describe('Hook script (hook-audit.sh)', () => {
     expect(content).toContain('hook-common.sh');
     expect(content).toContain('assert_compatible');
   });
+
+  it('sources hook-common.sh from its own directory, not a host variable', () => {
+    const content = readFileSync(
+      resolve(PLUGIN_DIR, 'scripts', 'hook-audit.sh'),
+      'utf-8',
+    );
+    expect(content).toContain('BASH_SOURCE[0]');
+    expect(content).toContain('SCRIPT_DIR');
+    expect(content).not.toContain('${CLAUDE_PLUGIN_ROOT}/scripts/hook-common.sh');
+  });
 });
 
 describe('Hook compatibility pin (hook-common.sh)', () => {
@@ -323,6 +327,17 @@ describe('Hook compatibility pin (hook-common.sh)', () => {
   it('pin_dir keys the install by version so a plugin update installs a fresh copy', () => {
     expect(content).toContain('XDG_CACHE_HOME');
     expect(content).toContain('/code-auditor/cli/');
+  });
+
+  it('self-locates the plugin root from its own path (BASH_SOURCE), not a host variable', () => {
+    // plugin_root() derives the root from where the file lives — the fixed
+    // <plugin>/scripts/ offset — and honors CLAUDE_PLUGIN_ROOT only as a
+    // validated override. The raw env var is no longer read for path resolution.
+    expect(content).toContain('plugin_root()');
+    expect(content).toContain('BASH_SOURCE[0]');
+    expect(content).toContain('dirname "${here}"');
+    expect(content).toContain('CLAUDE_PLUGIN_ROOT}/scripts/hook-common.sh');
+    expect(content).not.toContain('process.env.CLAUDE_PLUGIN_ROOT');
   });
 });
 
@@ -524,12 +539,12 @@ describe('SessionStart drift-check hook (hook-drift-check.sh)', () => {
     expect(commands.some((c: string) => c.includes('hook-drift-check.sh'))).toBe(true);
   });
 
-  it('is silent on an unset CLAUDE_PLUGIN_ROOT (exit 0, not the loud exit-1)', () => {
+  it('launches the drift-check script directly, with no env-var guard', () => {
     const command = hooks.hooks.SessionStart[0].hooks
       .map((h: any) => h.command)
       .find((c: string) => c.includes('hook-drift-check.sh'));
-    expect(command).toContain('exit 0');
-    expect(command!.indexOf('exit 0')).toBeLessThan(command!.indexOf('hook-drift-check.sh'));
+    expect(command).not.toContain('[ -z');
+    expect(command).toBe('"${CLAUDE_PLUGIN_ROOT}"/scripts/hook-drift-check.sh');
   });
 
   it('exists and is executable', () => {

@@ -17,12 +17,11 @@
 # at all — a warm session must not re-check on every launch.
 set -uo pipefail
 
-# Belt-and-suspenders: the hooks.json command already guards an unset
-# CLAUDE_PLUGIN_ROOT, but keep the warm a no-op if it is somehow absent here.
-[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || exit 0
-
-# Shared version lookup (plugin_version / semver_of / pin_dir).
-. "${CLAUDE_PLUGIN_ROOT}/scripts/hook-common.sh"
+# Source the shared resolver from this script's own directory — the plugin's
+# scripts/ — never from a host environment variable. plugin_root() self-locates
+# the plugin root, so an unset or wrong CLAUDE_PLUGIN_ROOT is a non-event.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+. "${SCRIPT_DIR}/hook-common.sh"
 
 # Nothing safe to warm if the manifest version can't be read: warming @latest
 # could pin a different version than resolve_code_audit's fallback would fetch.

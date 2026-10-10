@@ -18,7 +18,7 @@ import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runPhaseModel } from '../src/phase/phaseModel.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
-import { detectDialect } from '../src/languages/sql/dialectDetection.js';
+import { buildResolutionEnvironment } from '../src/graph/resolutionEnvironment.js';
 import { identifyHandle } from '../src/analyzers/handleIdentification.js';
 import { buildBindingEnv, type RootResolutionEnv } from '../src/analyzers/receiverRoot.js';
 import { extractR3Sites } from '../src/analyzers/provenance.js';
@@ -46,7 +46,7 @@ async function main() {
   await initParsers();
 
   const files = await discoverFiles(projectRoot, { extensions: ALL_EXTENSIONS });
-  const sqlDialect = detectDialect(projectRoot).dialect;
+  const sqlDialect = buildResolutionEnvironment(projectRoot).sqlDialect;
   const result = await runPhaseModel(files, new Map(), { projectRoot, workerCount: 1, sqlDialect });
 
   const dbUnproven = result.unprovenQueryReceivers.filter((u) => u.root === 'db');

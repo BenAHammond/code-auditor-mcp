@@ -167,6 +167,15 @@ export function isNodeBuiltin(specifier: string): boolean {
 export const JS_GLOBALS: ReadonlySet<string> = (() => {
   const names = new Set<string>();
   for (const name of Object.getOwnPropertyNames(globalThis)) {
+    // `localStorage` is the one global whose getter has a side effect: Node 22+
+    // emits an `ExperimentalWarning` (and, under `--experimental-webstorage`,
+    // throws) when it is read without `--localstorage-file`. It returns
+    // `undefined` in that state, so it would never enter the set anyway — skip
+    // it by name rather than evaluate it and pollute stderr (the hook's
+    // 0B-stderr contract turns any stray line into a blocking error). Every
+    // other global — including the other accessor globals (`sessionStorage`,
+    // `process`, `Buffer`, `crypto`, `fs`, …) — is evaluated normally.
+    if (name === 'localStorage') continue;
     let value: unknown;
     try {
       value = (globalThis as Record<string, unknown>)[name];

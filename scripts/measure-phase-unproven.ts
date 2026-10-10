@@ -13,8 +13,7 @@ import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runPhaseModel } from '../src/phase/phaseModel.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
-import { detectDialect } from '../src/languages/sql/dialectDetection.js';
-import { readDeclaredTypePackages } from '../src/graph/importClassification.js';
+import { buildResolutionEnvironment } from '../src/graph/resolutionEnvironment.js';
 import { assertCorpusPinned } from './corpus-pins.js';
 
 const projectRoot = process.argv[2];
@@ -43,18 +42,18 @@ async function main() {
   await initParsers();
 
   const files = await discoverFiles(projectRoot, { extensions: ALL_EXTENSIONS });
-  const sqlDialect = detectDialect(projectRoot).dialect;
-  // Thread the declared-type-package set (the Fix 2 input) exactly as the
-  // production audit does (`auditRunner` → `readDeclaredTypePackages`); without
-  // it the measurement undercounts `not-handle` — every Fix 2 site (a declared
-  // non-DB package like `vitest`/`hono`) reads as `unproven` and pollutes the
-  // cannot-fire surface.
-  const declaredTypePackages = readDeclaredTypePackages(projectRoot);
-  const result = await runPhaseModel(files, new Map(), { projectRoot, workerCount: 1, sqlDialect, declaredTypePackages });
+  // The complete resolution environment, exactly as the production audit builds
+  // it (`auditRunner` → `buildResolutionEnvironment`). Threading the full set —
+  // not just the dialect — keeps this measurement on the same inputs the runner
+  // ships; the declared-type-package set in particular is what closes the
+  // `not-handle` arm (a declared non-DB package like `vitest`/`hono` otherwise
+  // reads as `unproven` and pollutes the cannot-fire surface).
+  const resolution = buildResolutionEnvironment(projectRoot);
+  const result = await runPhaseModel(files, new Map(), { projectRoot, workerCount: 1, sqlDialect: resolution.sqlDialect, declaredTypePackages: resolution.declaredTypePackages });
 
   const unproven = result.unprovenQueryReceivers;
   const unresolved = result.unresolvedQuerySites;
-  console.log(`dialect: ${sqlDialect ?? '(null)'}`);
+  console.log(`dialect: ${resolution.sqlDialect ?? '(null)'}`);
   console.log(`phase unprovenQueryReceivers: ${unproven.length}`);
   console.log(`phase unresolvedQuerySites:   ${unresolved.length}`);
 

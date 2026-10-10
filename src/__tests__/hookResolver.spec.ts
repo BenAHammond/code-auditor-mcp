@@ -128,6 +128,21 @@ function resolveDetail(layout: Layout): { stdout: string; stderr: string } {
   return { stdout: r.stdout.trim(), stderr: r.stderr ?? '' };
 }
 
+/** Run resolve_code_audit with CLAUDE_PLUGIN_ROOT absent (or set to `bogusRoot`),
+ * sourcing hook-common.sh by its absolute path — as the hook scripts now do — so
+ * plugin_root() must self-locate rather than read the host variable. Returns the
+ * emitted command. */
+function resolveSelfLocating(layout: Layout, bogusRoot?: string): string {
+  const cleanPath = `${layout.bin}:/usr/bin:/bin`;
+  const hookCommonAbs = join(layout.base, 'plugin', 'scripts', 'hook-common.sh');
+  const script = `unset CLAUDE_PROJECT_DIR\n. "${hookCommonAbs}"\nresolve_code_audit\n`;
+  const env: NodeJS.ProcessEnv = { ...process.env, XDG_CACHE_HOME: layout.cache, PATH: cleanPath };
+  if (bogusRoot === undefined) delete env.CLAUDE_PLUGIN_ROOT;
+  else env.CLAUDE_PLUGIN_ROOT = bogusRoot;
+  const r = spawnSync('bash', ['-c', script], { env, encoding: 'utf8' });
+  return r.stdout.trim();
+}
+
 /** Resolve and return only the emitted command. */
 function resolve(layout: Layout): string {
   return resolveDetail(layout).stdout;
@@ -205,5 +220,21 @@ describe('resolve_code_audit — pinned-install fallback (Spec 59)', () => {
     const out = resolve(layout);
     expect(out).toBe('npx -y -p code-auditor-mcp@latest code-audit');
     expect(out).not.toContain('^');
+  });
+
+  it('self-location: resolves to the pinned bin when CLAUDE_PLUGIN_ROOT is unset (no env-var dependency)', () => {
+    // Sourced by absolute path, with the host variable absent — plugin_root() must
+    // derive the root from its own location, not from an environment we don't
+    // control. The absence of the variable must be a complete non-event.
+    const layout = setup({ manifest: '9.9.9' });
+    expect(resolveSelfLocating(layout)).toBe(pinnedBin(layout, '9.9.9'));
+  });
+
+  it('self-location: still resolves from its own location when CLAUDE_PLUGIN_ROOT points at a wrong path', () => {
+    // The override is honored only when it is a real plugin (scripts/hook-common.sh
+    // present); a wrong path is ignored and the root is self-located. A hostile or
+    // stale value must not be able to redirect — or disable — the hook.
+    const layout = setup({ manifest: '9.9.9' });
+    expect(resolveSelfLocating(layout, '/nonexistent/wrong/plugin')).toBe(pinnedBin(layout, '9.9.9'));
   });
 });

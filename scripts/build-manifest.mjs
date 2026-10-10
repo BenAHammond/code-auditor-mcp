@@ -23,7 +23,7 @@
  * just the files as they now are.
  */
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -35,6 +35,41 @@ const version = String(pkg.version || '0.0.0');
 
 const pluginRoot = path.join(__dirname, '..', 'plugin');
 const manifestPath = path.join(pluginRoot, '.claude-plugin', 'manifest.json');
+
+/**
+ * Assert the layout the hooks depend on. Every hook self-locates the plugin root
+ * as the grand-parent of its own directory: `plugin_root()` in hook-common.sh
+ * resolves `<root>` from `<root>/scripts/hook-common.sh`, and hooks.json launches
+ * the sibling scripts in that same `scripts/` dir. That derivation is only correct
+ * while `scripts/hook-common.sh` sits exactly one level below the plugin root, so a
+ * reorganization that moves, renames, or nests `scripts/` — or that relocates the
+ * hook scripts out of it — must fail the build here rather than silently ship a
+ * hook that can no longer find itself.
+ */
+function assertLayout(root) {
+  const required = [
+    'scripts/hook-common.sh',
+    'scripts/hook-audit.sh',
+    'scripts/hook-self-audit.sh',
+    'scripts/hook-warm.sh',
+    'scripts/hook-drift-check.sh',
+    'hooks/hooks.json',
+  ];
+  for (const rel of required) {
+    const full = path.join(root, rel);
+    if (!existsSync(full) || !statSync(full).isFile()) {
+      process.stderr.write(
+        `build:manifest FAILED: plugin layout invariant broken — expected "${rel}" at ` +
+        `"<plugin-root>/${rel}", but it is not a regular file there. The hooks self-locate ` +
+        `the plugin root from <plugin-root>/scripts/hook-common.sh; move or rename scripts/ ` +
+        `and the derivation breaks.\n`
+      );
+      process.exit(1);
+    }
+  }
+}
+
+assertLayout(pluginRoot);
 
 /** Recursively hash every file under `dir`, keyed by its `base`-relative path. */
 function walk(dir, base, files = {}) {

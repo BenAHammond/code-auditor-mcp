@@ -9,7 +9,7 @@ import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runPhaseModel } from '../src/phase/phaseModel.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
-import { detectDialect } from '../src/languages/sql/dialectDetection.js';
+import { buildResolutionEnvironment } from '../src/graph/resolutionEnvironment.js';
 import { assertCorpusPinned } from './corpus-pins.js';
 
 const projectRoot = process.argv[2];
@@ -23,7 +23,7 @@ async function main() {
   initializeLanguages();
   await initParsers();
   const files = await discoverFiles(projectRoot, { extensions: ALL_EXTENSIONS });
-  const sqlDialect = detectDialect(projectRoot).dialect;
+  const sqlDialect = buildResolutionEnvironment(projectRoot).sqlDialect;
   const result = await runPhaseModel(files, new Map(), { projectRoot, workerCount: 1, sqlDialect });
   const relOf = (p: string) => p.replace(projectRoot, '').replace(/^\//, '');
   for (const u of result.unresolvedQuerySites) {

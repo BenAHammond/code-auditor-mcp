@@ -1,16 +1,16 @@
 {
-  "version": "5.0.1",
+  "version": "5.0.2",
   "files": {
-    ".claude-plugin/plugin.json": "3703d82b6985618b4d93577d72542790d36b38bf9ffd84a8a84c5f200ab5add9",
+    ".claude-plugin/plugin.json": "1b950b987f07b25990f29959dc696fd1323dc4dfdda367e2c21fb32638e083be",
     "README.md": "6e51516ead6c7d0b4e77629e071e139b899d30a47838e8721c0d534eb733ad45",
-    "hooks/hooks.json": "4480d9d4fe80dbeb8fc8dacb0a6c67a46f45bf4610b42718876ed4a01935e7b1",
-    "scripts/hook-audit.sh": "5286ee058a73ce9cf3a2fdbb325b8835ae70d85436365d691e95ad6c52bcb84c",
-    "scripts/hook-common.sh": "e6a7b8da6a5e5d528c297c9ab381c77a1d360a6813775ef85342ff200d07a020",
-    "scripts/hook-drift-check.sh": "6fcb897fc5fe6814e9a4cae3138532e6783bb44044c549f89fbfe8eb44580e44",
-    "scripts/hook-self-audit.sh": "4b218f754ca466052da16b0578e2889bdff1abf16d7cbc27a259f71e332af392",
-    "scripts/hook-warm.sh": "9923fe1434e5579abebae868772aba1e53d25d7392b4181ccd4a41dc3692dd55",
+    "hooks/hooks.json": "28c4d7e87f1bb0daae8d9c714a196c39809039509568cf89a67c0377090f7211",
+    "scripts/hook-audit.sh": "25353d88a020d71586bb52ec6800438ab1f500e987c639837be52529fe2dc5fe",
+    "scripts/hook-common.sh": "85fd91c7a3817c01557383aadeff578696a9400698806d2d310ffd1caa954e06",
+    "scripts/hook-drift-check.sh": "fdf1f8098d9dda8911daedfd4b038c310c8383da57938a6737131cd33cb9492e",
+    "scripts/hook-self-audit.sh": "1a19f4ddec4cf66d9feb97999e70eb664817b0d6dd811f498d3cdef2f26d63b2",
+    "scripts/hook-warm.sh": "3d0fa8d811a26eda29c1a4dcbd88e6861eef93425355c87d6fe72356b3e7b5b3",
     "skills/code-auditor/SKILL-RULE-KINDS.md": "be1bbe1b56b19dc112c2657c1f5984f6f704b2ac9c1c0f78a561a58b110d508a",
     "skills/code-auditor/SKILL-SEARCH.md": "95d2df4474995bc5b18e14cc55ac55fb828024541463f109239567e2aa5ab7b0",
-    "skills/code-auditor/SKILL.md": "f120c4b45fe38deeeb2f76ea74df763e87269a15defa6c0508413a41972447ec"
+    "skills/code-auditor/SKILL.md": "a66b4849ffa98adac0817e6ef0712e6b5e1fa292ceaa094717795aeb7299b9a6"
   }
 }

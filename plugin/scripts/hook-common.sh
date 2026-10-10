@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Shared helpers for the code-auditor PostToolUse hooks.
 #
-# Sourced by hook-audit.sh and hook-self-audit.sh. CLAUDE_PLUGIN_ROOT is
-# guaranteed set before either hook runs (the hooks.json guard exits 1 when it
-# is unset).
+# Sourced by hook-audit.sh, hook-self-audit.sh, hook-warm.sh, and
+# hook-drift-check.sh. The plugin root is derived from where THIS file lives —
+# `<plugin>/scripts/hook-common.sh`, so the root is its grand-parent — never
+# from a host environment variable. `CLAUDE_PLUGIN_ROOT` is honored only as a
+# validated override (see plugin_root below), so an unset or wrong value can
+# never decide whether the tool runs.
 #
 # Two rules enforced here are the fix for "the hook died quietly" (three times:
 # unset CLAUDE_PLUGIN_ROOT, a stale global binary, a removed CLI flag):
@@ -30,6 +33,26 @@
 #
 # The sourcing hook runs with `set -euo pipefail`.
 
+# plugin_root — the plugin's install root.
+#
+# This file ships at `<plugin>/scripts/hook-common.sh`, so the plugin root is the
+# grand-parent of its own location. That fixed, known-at-build-time offset is the
+# single source of truth: every path a hook needs (the manifest, the bundled CLI
+# sibling) is derived from here, not read from a host variable that may be unset.
+# `CLAUDE_PLUGIN_ROOT` is honored only when it actually points at a plugin — it
+# must contain this same `scripts/hook-common.sh` — so a stale or wrong value
+# never shadows the real location, and an absent one is a non-event.
+plugin_root() {
+  local here root
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+  root="$(dirname "${here}")"
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/scripts/hook-common.sh" ]; then
+    printf '%s' "${CLAUDE_PLUGIN_ROOT}"
+    return
+  fi
+  printf '%s' "${root}"
+}
+
 # hook_log_dir / hook_log_file / hook_log — the hook's diagnostic log.
 #
 # The PostToolUse hook must never write stderr: the host may block on stderr
@@ -55,7 +78,7 @@ hook_log() {
 # manifest version. A stale candidate is warned about and skipped, so a mismatched
 # binary no longer turns the hook into a hard failure.
 #
-# 1. The plugin's bundled CLI (`${CLAUDE_PLUGIN_ROOT}/../dist/cli.js` ships in the
+# 1. The plugin's bundled CLI (`$(plugin_root)/../dist/cli.js` ships in the
 #    same npm package, so it usually matches) — but a marketplace checkout has no
 #    npm-paired dist/, and a locally built one can be stale, so it is
 #    version-checked like everything else.
@@ -66,9 +89,10 @@ hook_log() {
 # 3. Project-local install (consumer project's own node_modules) — if compatible.
 # 4. Global install / PATH — if compatible.
 resolve_code_audit() {
-  local candidate
-  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ -f "${CLAUDE_PLUGIN_ROOT}/../dist/cli.js" ]; then
-    candidate="${CLAUDE_PLUGIN_ROOT}/../dist/cli.js"
+  local candidate root
+  root="$(plugin_root)"
+  if [ -f "${root}/../dist/cli.js" ]; then
+    candidate="${root}/../dist/cli.js"
     if cli_is_compatible "${candidate}"; then
       echo "${candidate}"
       return
@@ -165,7 +189,7 @@ plugin_version() {
     return
   fi
   __CODE_AUDITOR_PLUGIN_VERSION="$(
-    node -e "const fs=require('fs');const p=process.env.CLAUDE_PLUGIN_ROOT;for(const f of [p+'/.claude-plugin/plugin.json', p+'/plugin.json']){try{const v=JSON.parse(fs.readFileSync(f,'utf8')).version;if(v){process.stdout.write(v);break}}catch(e){}}" 2>/dev/null
+    node -e 'const fs=require("fs");const p=process.argv[1];for(const f of [p+"/.claude-plugin/plugin.json", p+"/plugin.json"]){try{const v=JSON.parse(fs.readFileSync(f,"utf8")).version;if(v){process.stdout.write(v);break}}catch(e){}}' "$(plugin_root)" 2>/dev/null
   )"
   __CODE_AUDITOR_PLUGIN_VERSION_RESOLVED=1
   printf '%s' "${__CODE_AUDITOR_PLUGIN_VERSION}"
@@ -220,7 +244,7 @@ assert_compatible() {
   # bundled sibling, a project-local install, a global on PATH) are NOT
   # path-guaranteed — the resolver's `cli_is_compatible` already version-checked
   # them, and the full check below remains the loud backstop for any of them.
-  if [ -n "${CLAUDE_PLUGIN_ROOT:-}" ] && [ "${bin}" = "$(pin_dir)/node_modules/.bin/code-audit" ]; then
+  if [ "${bin}" = "$(pin_dir)/node_modules/.bin/code-audit" ]; then
     return 0
   fi
   pv="$(plugin_version)"

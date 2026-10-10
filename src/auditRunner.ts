@@ -47,9 +47,8 @@ import { isMcpDebugEnabled, logMcpDebug, logMcpInfo } from './mcpDiagnostics.js'
 import { loadBaseline, matchFindings, hashBaseline } from './baseline.js';
 import { applyDismissals } from './dismissals.js';
 import { computeImpact, LATENCY_BUDGET_MS } from './graph/blastRadius.js';
-import { readTsconfigAliases, readPackageEntryPoints, readDeclaredTypePackages, DEFAULT_VIRTUAL_MODULES } from './graph/importClassification.js';
-import { normalizeDialect, type Dialect } from './mcp-tools/discoveryQueries.js';
-import { detectDialect } from './languages/sql/dialectDetection.js';
+import { buildResolutionEnvironment } from './graph/resolutionEnvironment.js';
+import { type Dialect } from './mcp-tools/discoveryQueries.js';
 
 // Import universal analyzers
 import { initializeLanguages } from './languages/index.js';
@@ -750,16 +749,12 @@ function buildPipelineAnalyzerConfig(
   // better-sqlite3/D1 → sqlite, mysql2 → mysql). A null dialect means the SQL
   // facts `cannot-fire` — and `sqlDialectReason` names *why* (undetermined or
   // ambiguous) so the abstention is visible rather than silent.
-  const detection = mergedOptions.databaseType
-    ? (() => {
-        const explicit = normalizeDialect(mergedOptions.databaseType as string);
-        return explicit
-          ? { dialect: explicit, reason: null as string | null }
-          : { dialect: null as Dialect | null, reason: `dialect undetermined (unsupported databaseType '${mergedOptions.databaseType}')` };
-      })()
-    : detectDialect(root);
-  const sqlDialect: Dialect | null = detection.dialect;
-  const sqlDialectReason: string | null = detection.reason;
+  const resolution = buildResolutionEnvironment(root, {
+    databaseType: mergedOptions.databaseType as string | undefined,
+    importVirtualModules: mergedOptions.importVirtualModules,
+  });
+  const sqlDialect: Dialect | null = resolution.sqlDialect;
+  const sqlDialectReason: string | null = resolution.sqlDialectReason;
   // Spec 62 Amendment B — the missing-org-filter Stage-4 reducer reads the
   // data-access config namespace, so it inherits the data-access analyzer's
   // config rather than a fresh empty namespace.
@@ -823,10 +818,10 @@ function buildPipelineAnalyzerConfig(
     _provenanceTiming: provenanceTiming,
     files,
     corpusFiles,
-    importVirtualModules: mergedOptions.importVirtualModules ?? DEFAULT_VIRTUAL_MODULES,
-    tsconfigAliases: readTsconfigAliases(root),
-    packageEntryPoints: readPackageEntryPoints(root).entryPaths,
-    declaredTypePackages: readDeclaredTypePackages(root),
+    importVirtualModules: resolution.importVirtualModules,
+    tsconfigAliases: resolution.tsconfigAliases,
+    packageEntryPoints: resolution.packageEntryPoints,
+    declaredTypePackages: resolution.declaredTypePackages,
     // Spec 70 R1 — surfaced under `_infra` so `runPipeline` can hand the named
     // dialect to the phase model's data-access producer without reading the
     // data-access namespace.

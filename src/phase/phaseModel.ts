@@ -486,55 +486,79 @@ async function buildFacts(
     facts.set('unread-style-sources', [...unread, ...content]);
   }
 
-  // Spec 70 2c — the fifth receiver consumer (a plain reduction, not a registry
-  // fact kind): re-derive the unproven query-shaped call sites from the raw
-  // `data-access-calls-candidates` fact + the `receiver-provenance` fixed point,
-  // and surface the fixed point's unresolved imports. Both replace the deleted
-  // pre-pass's `unprovenQueryReceivers` / `unresolvedImports` halves; they exist
-  // only to feed the `cannot-fire` coverage diagnostic (re-homed in the caller),
-  // never a rule's declared facts.
+  const coverage = deriveCoverageDiagnostics(facts, infra, handleVerdictCache, ambientInterfaceFields);
+
+  return {
+    facts,
+    incompleteFacts,
+    oracleShortfalls,
+    unprovenQueryReceivers: coverage.unprovenQueryReceivers,
+    unresolvedImports: coverage.unresolvedImports,
+    unresolvedQuerySites: coverage.unresolvedQuerySites,
+    unparseableSql: coverage.unparseableSql,
+  };
+}
+
+/**
+ * Spec 70 2c — the fifth receiver consumer (a plain reduction, not a registry
+ * fact kind): re-derive the coverage diagnostics from the raw facts + the
+ * `receiver-provenance` fixed point. All four halves exist only to feed the
+ * `cannot-fire` coverage diagnostic (re-homed in the caller), never a rule's
+ * declared facts.
+ */
+function deriveCoverageDiagnostics(
+  facts: Map<FactKind, unknown>,
+  infra: PhaseInfra | undefined,
+  handleVerdictCache: Map<string, HandleVerdict | null>,
+  ambientInterfaceFields: ReadonlyMap<string, ReadonlyMap<string, string>> | undefined,
+): {
+  unprovenQueryReceivers: UnprovenQueryReceiver[];
+  unresolvedImports: UnresolvedImportFact[];
+  unresolvedQuerySites: UnresolvedQuerySite[];
+  unparseableSql: Array<UnparseableSql & { file: string }>;
+} {
   let unprovenQueryReceivers: UnprovenQueryReceiver[] = [];
   let unresolvedImports: UnresolvedImportFact[] = [];
   let unresolvedQuerySites: UnresolvedQuerySite[] = [];
   let unparseableSql: Array<UnparseableSql & { file: string }> = [];
   const receiverProvenanceFact = facts.get('receiver-provenance') as ReceiverProvenanceFact | undefined;
-  if (receiverProvenanceFact) {
-    unresolvedImports = [...receiverProvenanceFact.unresolvedImports];
-    // The shared resolution tail the three corpus reductions below rehydrate from.
-    const resolutionBase = {
-      withinFacts: (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
-      provenance: receiverProvenanceFact,
-      activityFacts: (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
-      sqlDialect: infra?.sqlDialect ?? null,
-      declaredTypePackages: infra?.declaredTypePackages,
-      ambientInterfaceFields,
-      projectRoot: infra?.projectRoot,
-      tsconfig: infra?.tsconfigAliases,
-    };
-    unprovenQueryReceivers = classifyUnprovenQueryReceivers(
-      (facts.get('data-access-calls-candidates') as DataAccessCallCandidate[] | undefined) ?? [],
-      { ...resolutionBase, verdictCache: handleVerdictCache },
-    );
-    // Spec 70 1b — the `unresolved-query` half (a third coverage signal, alongside
-    // the two above): re-derive the re-admitted unresolvable-SQL DB-calls from the
-    // raw `schema-usage-candidates` fact + the provenance fixed point. Only runs
-    // when `schema-usage` was needed (its raw fact is present); otherwise empty.
-    const schemaUsageCandidates = facts.get('schema-usage-candidates') as SchemaUsageCandidatesFact[] | undefined;
-    if (schemaUsageCandidates) {
-      unresolvedQuerySites = classifyUnresolvedQuerySites(schemaUsageCandidates, resolutionBase);
-      // Spec 70 R2 — the `unparseable` half (the `unresolved-query` sibling):
-      // re-derive the re-admitted static-SQL arguments the named dialect could not
-      // parse, from the same raw fact + fixed point. Threads `sqlDialectReason` so
-      // a dialect-undetermined corpus reports the legacy `why`, not the generic
-      // fallback string.
-      unparseableSql = classifyUnparseableSql(schemaUsageCandidates, {
-        ...resolutionBase,
-        sqlDialectReason: infra?.sqlDialectReason ?? null,
-      });
-    }
+  if (!receiverProvenanceFact) {
+    return { unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql };
   }
-
-  return { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql };
+  unresolvedImports = [...receiverProvenanceFact.unresolvedImports];
+  // The shared resolution tail the three corpus reductions below rehydrate from.
+  const resolutionBase = {
+    withinFacts: (facts.get('within-file-provenance') as WithinFileProvenanceFact[] | undefined) ?? [],
+    provenance: receiverProvenanceFact,
+    activityFacts: (facts.get('receiver-activity') as ReceiverActivityFact[] | undefined) ?? [],
+    sqlDialect: infra?.sqlDialect ?? null,
+    declaredTypePackages: infra?.declaredTypePackages,
+    ambientInterfaceFields,
+    projectRoot: infra?.projectRoot,
+    tsconfig: infra?.tsconfigAliases,
+  };
+  unprovenQueryReceivers = classifyUnprovenQueryReceivers(
+    (facts.get('data-access-calls-candidates') as DataAccessCallCandidate[] | undefined) ?? [],
+    { ...resolutionBase, verdictCache: handleVerdictCache },
+  );
+  // Spec 70 1b — the `unresolved-query` half (a third coverage signal, alongside
+  // the two above): re-derive the re-admitted unresolvable-SQL DB-calls from the
+  // raw `schema-usage-candidates` fact + the provenance fixed point. Only runs
+  // when `schema-usage` was needed (its raw fact is present); otherwise empty.
+  const schemaUsageCandidates = facts.get('schema-usage-candidates') as SchemaUsageCandidatesFact[] | undefined;
+  if (schemaUsageCandidates) {
+    unresolvedQuerySites = classifyUnresolvedQuerySites(schemaUsageCandidates, resolutionBase);
+    // Spec 70 R2 — the `unparseable` half (the `unresolved-query` sibling):
+    // re-derive the re-admitted static-SQL arguments the named dialect could not
+    // parse, from the same raw fact + fixed point. Threads `sqlDialectReason` so
+    // a dialect-undetermined corpus reports the legacy `why`, not the generic
+    // fallback string.
+    unparseableSql = classifyUnparseableSql(schemaUsageCandidates, {
+      ...resolutionBase,
+      sqlDialectReason: infra?.sqlDialectReason ?? null,
+    });
+  }
+  return { unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql };
 }
 
 /**

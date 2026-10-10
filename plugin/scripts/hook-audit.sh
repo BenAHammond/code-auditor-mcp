@@ -16,8 +16,11 @@
 #   failure surfaces on the next explicit audit, never on the edit.
 set -euo pipefail
 
-# Shared resolver + compatibility pinning (see hook-common.sh).
-. "${CLAUDE_PLUGIN_ROOT}/scripts/hook-common.sh"
+# Shared resolver + compatibility pinning (see hook-common.sh). Source it from
+# this script's own directory — the plugin's scripts/ — never from a host
+# environment variable.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+. "${SCRIPT_DIR}/hook-common.sh"
 
 # Read event JSON from stdin
 event="$(cat)"

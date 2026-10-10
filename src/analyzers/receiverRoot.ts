@@ -890,6 +890,8 @@ export function isDbShapedRoot(root: string, env: RootResolutionEnv, opts?: { th
  * or `/x`). The Fix 2 / Fix 1 discriminant: a bare package name is a *package*
  * the project declares (or an unrecognized one reached by resolution); a
  * relative/alias path is an in-repo file, whose export chain is not walked here.
+ * @param specifier the module specifier to strip
+ * @returns the bare package name, or `null` when `specifier` is not a bare package
  */
 export function barePackageName(specifier: string): string | null {
   if (!specifier) return null;

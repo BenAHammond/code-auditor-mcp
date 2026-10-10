@@ -18,20 +18,24 @@
 # single source of truth; the fix is to reinstall (or restore the file).
 set -uo pipefail
 
-# The hooks.json command already guards an unset CLAUDE_PLUGIN_ROOT, but keep
-# this a no-op if it is somehow absent here.
-[ -n "${CLAUDE_PLUGIN_ROOT:-}" ] || exit 0
+# Source the shared resolver from this script's own directory — the plugin's
+# scripts/ — never from a host environment variable. plugin_root() self-locates
+# the plugin root, so an unset or wrong CLAUDE_PLUGIN_ROOT is a non-event.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+. "${SCRIPT_DIR}/hook-common.sh"
+
+ROOT="$(plugin_root)"
 
 # The manifest ships at .claude-plugin/manifest.json; a few installs flatten the
 # plugin.json to the plugin root, so check both locations (mirrors
 # hook-common.sh's plugin_version).
 manifest=""
-for f in "${CLAUDE_PLUGIN_ROOT}/.claude-plugin/manifest.json" "${CLAUDE_PLUGIN_ROOT}/manifest.json"; do
+for f in "${ROOT}/.claude-plugin/manifest.json" "${ROOT}/manifest.json"; do
   if [ -f "$f" ]; then manifest="$f"; break; fi
 done
 [ -n "${manifest}" ] || exit 0
 
-MANIFEST_PATH="${manifest}" PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}" node <<'NODE'
+MANIFEST_PATH="${manifest}" PLUGIN_ROOT="${ROOT}" node <<'NODE'
 const fs = require('fs');
 const crypto = require('crypto');
 const path = require('path');

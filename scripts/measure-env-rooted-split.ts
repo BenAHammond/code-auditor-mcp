@@ -30,7 +30,7 @@ import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { LanguageRegistry } from '../src/languages/LanguageRegistry.js';
 import { parseFile } from '../src/languages/adapterBridge.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
-import { detectDialect } from '../src/languages/sql/dialectDetection.js';
+import { buildResolutionEnvironment } from '../src/graph/resolutionEnvironment.js';
 import {
   buildBindingEnv,
   extractInterfaceFields,
@@ -119,7 +119,7 @@ async function main() {
   const registry = LanguageRegistry.getInstance();
   const files = await discoverFiles(projectRoot, { extensions: ALL_EXTENSIONS });
   const tsFiles = files.filter((f) => TS_EXTS.has(path.extname(f)));
-  const sqlDialect: Dialect | null = detectDialect(projectRoot).dialect;
+  const sqlDialect: Dialect | null = buildResolutionEnvironment(projectRoot).sqlDialect;
 
   const sites: EnvSite[] = [];
 

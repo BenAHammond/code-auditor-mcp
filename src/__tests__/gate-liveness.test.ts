@@ -37,7 +37,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -178,6 +178,12 @@ describe('assert_compatible — liveness', () => {
   function runAssertCompatible(fakeVersion: string | null): { status: number; stdout: string; stderr: string } {
     const dir = mkdtempSync(join(tmpdir(), 'ca-assert-compat-'));
     try {
+      // plugin_root() honors CLAUDE_PLUGIN_ROOT only when it points at a real
+      // plugin (it must contain scripts/hook-common.sh); give the temp dir that
+      // file so the override takes and plugin_version reads this dir's
+      // plugin.json (9.9.9), not the source tree's.
+      mkdirSync(join(dir, 'scripts'), { recursive: true });
+      writeFileSync(join(dir, 'scripts', 'hook-common.sh'), '');
       writeFileSync(join(dir, 'plugin.json'), '{"version":"9.9.9"}');
       const bin = join(dir, 'fakebin');
       if (fakeVersion === null) {

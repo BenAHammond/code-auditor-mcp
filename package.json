@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "5.0.1",
+  "version": "5.0.2",
   "description": "Enforces architectural invariants and code quality rules inside your AI agent's edit loop.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

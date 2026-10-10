@@ -2,6 +2,49 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.0.2]
+
+### The plugin hooks self-locate — no `CLAUDE_PLUGIN_ROOT` env dependency
+
+The PostToolUse and SessionStart hooks read the plugin root from the
+`CLAUDE_PLUGIN_ROOT` environment variable, which the host does not guarantee, and
+an unset value made them bail. The hooks now derive the root from their own
+location — the grand-parent of `scripts/hook-common.sh` — so an unset or wrong
+`CLAUDE_PLUGIN_ROOT` is a non-event. The variable is honored only as a validated
+override: it must point at a plugin that actually contains
+`scripts/hook-common.sh`, so a stale value cannot redirect or disable a hook. The
+inline `${CLAUDE_PLUGIN_ROOT}` in `hooks.json` is Claude Code's load-time
+substitution, not an environment read, so it is unchanged. The build now fails if
+that layout invariant breaks — a moved or renamed `scripts/` would otherwise ship
+a hook that cannot find itself — and the resolution is verified against a real
+install.
+
+### One constructor derives the whole resolution environment
+
+The inputs that resolve imports, receivers, and SQL — tsconfig aliases, package
+entry points, declared type packages, the detected SQL dialect, and the
+virtual-module list — were derived twice: once in `auditRunner`, and again,
+piecemeal, in each measurement script. A script that forgot a field measured a
+thinner environment than the runner ships. `buildResolutionEnvironment(root)`
+now derives the complete set from a project root once, and both the runner and
+every measurement script consume it.
+
+### Data-access receiver resolution
+
+- Ambient interface-field receivers now resolve when SQL fails to parse, instead
+  of falling back to a name-only guess.
+- The evidence gate admits query-shaped receivers, and declared non-DB packages
+  are proven `not-handle` rather than left `unproven`.
+
+### Reporting, daemon, and distribution
+
+- Reporting headlines the unproven-site and held-out coverage counts.
+- The daemon guards its entry point by realpath so the npm `.bin` symlink boots
+  it correctly.
+- The server declares a remote streamable-http endpoint; the package description
+  is shortened to the registry's 100-character limit and synced, with expanded
+  keywords and a glama ownership manifest.
+
 ## [5.0.1]
 
 ### The hook is silent — never stderr, never a blocking exit

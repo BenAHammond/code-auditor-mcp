@@ -76,7 +76,7 @@
       }
     },
     "data-access-calls-candidates": {
-      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one raw, provenance-free candidate per query-shaped call (the extract half of the `data-access-calls` collapse — the handle verdict, injection gate, and per-site SQL parse are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = the large majority of calls/templates that are not DB/ORM-shaped. Re-pinned 2026-10-08 after the Spec-70 receiver-resolution work (heritage resolution, tsconfig-path bare-specifier resolution, import-kind resolution) admitted more DB-provenanced query-shaped calls: actual rose (openstatus 36262→53297, recall-protocol 31074→52302) and the residual shrank accordingly. Re-pinned again 2026-10-08 after the node-type correctness sweep (Tier 1/2/3 structural node reads + Tier A/B dead node-type fixes): blitz −295 and openstatus −592 are the Tier-2 precision gain — builderWriteVerb/hasOrmFilterShape/extractOrmTables now read the callee member chain instead of regexing the whole source text, so a `.insertInto(…)`/`.where(…)` inside a string argument no longer reads as a chain member; hhra-org +178 and recall-protocol +1192 are the Tier A/B dead-branch recoveries — `template_literal`→`template_string` and the corrected dead type literals now admit template-string/query-shaped calls the producer previously missed. Corpora unchanged at their pinned SHAs.",
+      "composition": "Oracle counts `call_expression` + `template_string` nodes; the producer emits one raw, provenance-free candidate per query-shaped call (the extract half of the `data-access-calls` collapse — the handle verdict, injection gate, and per-site SQL parse are re-folded corpus-side once the `receiver-provenance` fixed point supplies the seed). Residual = the large majority of calls/templates that are not DB/ORM-shaped. Re-pinned 2026-10-08 after the Spec-70 receiver-resolution work (heritage resolution, tsconfig-path bare-specifier resolution, import-kind resolution) admitted more DB-provenanced query-shaped calls: actual rose (openstatus 36262→53297, recall-protocol 31074→52302) and the residual shrank accordingly. Re-pinned again 2026-10-08 after the node-type correctness sweep (Tier 1/2/3 structural node reads + Tier A/B dead node-type fixes): blitz −295 and openstatus −592 are the Tier-2 precision gain — builderWriteVerb/hasOrmFilterShape/extractOrmTables now read the callee member chain instead of regexing the whole source text, so a `.insertInto(…)`/`.where(…)` inside a string argument no longer reads as a chain member; hhra-org +178 and recall-protocol +1192 are the Tier A/B dead-branch recoveries — `template_literal`→`template_string` and the corrected dead type literals now admit template-string/query-shaped calls the producer previously missed. Corpora unchanged at their pinned SHAs. Re-pinned 2026-10-09 for the 5.0.2 receiver-resolution fixes (ambient interface-field resolution, declared non-DB package proof, evidence-on-site): blitz +1 file / +2 actual / +3 expected.",
       "corpora": {
         "hhra-org": {
           "files": 422,
@@ -84,9 +84,9 @@
           "actual": 9778
         },
         "blitz": {
-          "files": 308,
-          "expected": 7557,
-          "actual": 5474
+          "files": 309,
+          "expected": 7560,
+          "actual": 5476
         },
         "openstatus": {
           "files": 1323,

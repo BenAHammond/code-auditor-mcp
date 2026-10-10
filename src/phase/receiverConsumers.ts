@@ -34,7 +34,7 @@ import type {
   WithinFileProvenanceFact,
 } from './types.js';
 import type { ProvenanceEvidence, R3Site } from '../analyzers/provenance.js';
-import type { Binding, RootResolutionEnv, SpecifierResolution, HeritageFieldResolver } from '../analyzers/receiverRoot.js';
+import { barePackageName, type Binding, type RootResolutionEnv, type SpecifierResolution, type HeritageFieldResolver } from '../analyzers/receiverRoot.js';
 import type { TsWithinFileProvenanceExtract } from '../analyzers/tsExpressionDescriptor.js';
 import { classifyBuildProvenance, evidenceFromFact, rehydrateWithinFileProvenance, bindingFromFact } from './receiverProvenance.js';
 import { DEFAULT_SCHEMA_CONFIG } from '../analyzers/universal/schema/config.js';
@@ -58,7 +58,6 @@ import {
 import { rawInsertColumnsFromAst } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import type { GoResolutionEnv, GoBinding } from '../languages/go/goResolution.js';
 import { describeUnprovenReceiver, resolveSpecifier, makeHeritageResolver, type TsconfigPathMap, type UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
-import { barePackageName } from '../analyzers/receiverRoot.js';
 
 // ── Specifier resolution (Spec 70 B1) ────────────────────────────────────────
 
