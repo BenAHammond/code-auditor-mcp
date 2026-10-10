@@ -81,6 +81,8 @@ One skill, one CLI, one MCP server. Every agent gets the same audit engine — t
 | Other SKILL.md tools | `code-audit install --agent agents` | No | Yes | 2026-07-19 |
 | ZCode | `code-audit install --agent zcode` | No (plugin-scoped) | Yes | 2026-09-10 |
 
+**MCP config generation covers a wider set than skill install.** The MCP server's `generate` tool writes a client config file for any of `claude`, `codex`, `cursor`, `gemini`, `copilot`, `continue`, `awsq` (AWS Q Developer), `codeium` (Codeium/Windsurf), `vscode`, `cline`, and `zcode`. Four of those — **Continue**, **AWS Q Developer**, **Codeium/Windsurf**, and **Cline** — are MCP-only: they have no file-based skill or hook path, so they connect through the `generate` tool rather than `code-audit install`.
+
 Hook behavior: **Blocking** means the diff-scoped `changed` gate is tripped — an invariant rule that declares `gating: true` (a binary, per-rule flag, independent of severity) blocks the edit from landing (the agent sees the violation and fixes inline). **Advisory** means violations are reported through the strongest available feedback channel but the edit has already occurred. Cursor's `afterFileEdit` hook is fire-and-forget with no output consumption. MCP is available everywhere for shell-less use.
 
 ## Findings: Deterministic vs Advisory
