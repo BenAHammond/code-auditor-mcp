@@ -473,7 +473,7 @@ function insertDeclarations(
       // selector context so styles/undefined-class can resolve names via an
       // indexed `class_name IN (...)` lookup instead of a full-corpus scan.
       if (d.context) {
-        for (const m of d.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
+        for (const m of d.context.matchAll(/\.([a-zA-Z_-][a-zA-Z0-9_-]+)/g)) {
           stmts.insertClass.run(m[1], filePath);
         }
       }

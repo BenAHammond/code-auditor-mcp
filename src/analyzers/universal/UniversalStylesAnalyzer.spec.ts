@@ -60,7 +60,7 @@ function insertDecl(fields: DeclFields): number {
   // any class selectors in `context` so undefined-class resolves via the
   // `style_defined_classes` table exactly as it does in production.
   if (fields.context) {
-    for (const m of fields.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
+    for (const m of fields.context.matchAll(/\.([a-zA-Z_-][a-zA-Z0-9_-]+)/g)) {
       db.rawSql.run('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
         [m[1], fields.file_path ?? 'src/test.css']);
     }
