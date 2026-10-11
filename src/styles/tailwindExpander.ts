@@ -707,14 +707,35 @@ function resolveColorValue(value: string, tokens: TailwindThemeTokens): string |
 }
 
 function resolveSpacingValue(value: string, tokens: TailwindThemeTokens, property?: string): string | null {
-  // A utility resolves against the scale its property uses, never through an
-  // unrelated scale. box-shadow (shadow-*) reads a boxShadow scale or resolves
-  // to nothing — it must not fall through the spacing → fontSize → borderRadius
-  // chain below, which would report a value that appears nowhere in the source
-  // as a shadow (e.g. shadow-md → calc(var(--radius) - 2px)).
-  if (property === 'box-shadow') return null;
+  // A utility resolves against the scale its own property uses, or resolves to
+  // nothing — it must never fall through the spacing → fontSize → borderRadius
+  // chain and report a value that appears nowhere in the source for that
+  // property (e.g. shadow-md → calc(var(--radius) - 2px) as a box-shadow, or
+  // rounded-md borrowing the fontSize "md"). Each non-spacing property
+  // dispatches to its own scale here; only spacing-scale properties fall through
+  // to the generic block below.
+  switch (property) {
+    case 'font-size':
+      return tokens.fontSize[value] ?? null;
+    case 'border-radius':
+    case 'border-top-left-radius':
+    case 'border-top-right-radius':
+    case 'border-bottom-right-radius':
+    case 'border-bottom-left-radius':
+      return tokens.borderRadius[value] ?? null;
+    // Properties with no dedicated token scale (boxShadow, lineHeight,
+    // letterSpacing, and fontFamily are absent from TailwindThemeTokens):
+    // resolve to nothing rather than a value borrowed from an unrelated scale.
+    case 'box-shadow':
+    case 'line-height':
+    case 'letter-spacing':
+    case 'font-family':
+      return null;
+    default:
+      break;
+  }
 
-  // Direct match in spacing tokens
+  // Spacing-scale properties (margin/padding/gap/width/height/inset/…).
   if (tokens.spacing[value]) return tokens.spacing[value];
 
   // Try as a raw px value (used by arbitrary spacing in non-arbitrary classes)
@@ -723,13 +744,7 @@ function resolveSpacingValue(value: string, tokens: TailwindThemeTokens, propert
     return `${num * 4}px`; // Default Tailwind: 1 unit = 4px
   }
 
-  // Try font-size
-  if (tokens.fontSize[value]) return tokens.fontSize[value];
-
-  // Try border-radius
-  if (tokens.borderRadius[value]) return tokens.borderRadius[value];
-
-  // Auto, full, screen, min, max, fit keywords
+  // Auto, full, screen, min, max, fit, none keywords
   if (['auto', 'full', 'screen', 'min', 'max', 'fit', 'none'].includes(value)) {
     return value;
   }
