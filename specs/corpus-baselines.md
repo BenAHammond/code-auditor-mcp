@@ -1531,7 +1531,7 @@ one headline item:
   "2"). The phase-model path now resolves and near-miss-suggests the full markup class
   surface. **This is the single largest movement in the corpus and is recorded as a
   migrated-surface effect, not a precision win** — it is flagged for follow-up review
-  rather than silently accepted.
+  rather than silently accepted. *Disposition below ("Disposition — …").*
 - **knex `cross-domain::read-never-written` 2 → 14 (+12)** and the appearance of
   `table-naming-convention` (0 → 6), `too-many-queries` (0 → 3), `reserved-word` (0 → 2)
   — schema/cross-domain facts now flow through the phase model where the legacy path
@@ -1541,6 +1541,64 @@ one headline item:
   handle-identification seam, `0dc8dfc` / `25e8bde`).
 - **blitz `schema::unknown-table` 7 → 0 (−7)** — the `.test-d.ts` test-file scoping now
   applies on blitz's type-test fixtures.
+
+### Disposition — `styles/undefined-class` recall-protocol +302 (sampled 2026-10-11)
+
+The +302 was flagged above for follow-up. Sampled, not flagged: the phase-model audit
+was re-run against the pinned clone (`c007f6ed`) and all 304 `styles/undefined-class`
+findings dumped to their `file:line` + message. **Verdict: the new surface is *admitting
+classes it cannot prove*, not surfacing real undefined classes. Zero of the 304 are real
+undefined classes.**
+
+Every one of the 304 is a legitimate Tailwind utility / theme-token / component class.
+The distinct-class histogram is unambiguous (nothing but Tailwind + custom classes):
+
+```
+ 92 font-bold   44 p-4   35 p-3   13 p-6   10 p-5   10 h-8    8 p-2
+  7 right-0      7 p-0    6 left-0  5 w-8    5 sticky  5 pl-3   4 pl-4
+  4 md:p-6       4 h-5    3 w-5    3 pl-5   3 lg:sticky       3 bg-ow-orange
+ … (pl-8, p-8, md:p-4, right-2, left-3, grow, contents, bg-primary,
+    first-letter:font-display, frost, fp-footer__col, …) — 45 distinct classes total
+```
+
+`font-bold`, `p-4`, `sticky`, `left-0`, `grow`, `contents` are core Tailwind utilities;
+`bg-ow-orange` / `bg-primary` / `first-letter:font-display` are `@theme` tokens
+(`--color-ow-orange` `global.css:54`, `--color-primary` `:669`, `--font-display` `:101`);
+`fp-footer__col` is a BEM component class defined in `PrismFooter.astro:126`'s `<style>`
+block. All are defined and used correctly in the corpus.
+
+**Root cause — two layers, both in the resolver, neither in the markup producer:**
+
+1. **The Tailwind expander is inited with no project root.** `undefinedClassRule.analyze`
+   calls `expander.init({ projectRoot: undefined, useProjectConfig: true, … })`
+   (`src/phase/rules/styles.ts:1132`). With no root and no `tailwind.config.js` — recall-protocol
+   is **Tailwind v4**, configured CSS-first via `@import "tailwindcss"` + `@theme` in
+   `src/styles/global.css`, no `tailwind.config.js` — `expander.resolve("p-4")` returns
+   `valid: false` for *every* utility. The markup producer faithfully extracted the right
+   classes; the rule just cannot prove them valid, so it falls through to the suggester.
+
+2. **The near-miss suggester garbage-matches a polluted `defined-classes` catalog.**
+   `defined-classes` includes single-letter fragments split out of compound selectors in
+   embedded `<style>` blocks (e.g. `RpMark.astro:111` `.rp-letters .p` → a "defined class"
+   named `p`). Edit distance ≤ 2 then maps every utility to a fragment: `p-4` → `p`,
+   `h-8` → `8`, `pl-8` → `plan`, `sticky` → `tick`, `left-0` → `left`,
+   `font-bold` → `font-body`. These suggestions are noise, not near-miss typos.
+
+The legacy "2" was the *more accurate* surface: the legacy resolver's Tailwind probe was
+disabled on recall, so it reported only the two genuine near-miss typos against custom
+classes and routed everything else to `undefined-class-not-found`. The phase-model path
+drops the `undefined-class-not-found` diagnostic (Spec 68 §15) and instead force-fits the
+unprovable classes through the near-miss ladder.
+
+**Recommendation (not implemented — this is a disposition):** stop near-miss-suggesting
+a class when the expander has no config to validate against. Concretely, in priority
+order: (a) pass `projectRoot` through `ctx` and read Tailwind v4 CSS-first `@theme` /
+`@import` config so real utilities resolve `valid`; or (b) when the expander is unproven
+(no root, no config, no compile-probe), treat Tailwind-utility-shaped tokens
+(`<prefix>-<scale>` / known core utilities) as unprovable and emit them as an
+`undefined-class-not-found`-style coverage diagnostic, not a `severe` finding. Either
+removes the 302-noise without touching the markup producer — the producer is correct;
+the resolver's confidence accounting is the defect.
 
 ### Three-rule dispositions (the rules this re-measure was asked to settle)
 
