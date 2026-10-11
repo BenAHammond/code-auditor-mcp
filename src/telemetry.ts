@@ -24,6 +24,7 @@ import {
   getInstallId,
   getTelemetryOptIn,
   setTelemetryOptIn,
+  hasTelemetryDecision,
   PRIVACY_MESSAGE,
   resolveTelemetryEndpoint,
 } from './installConfig.js';
@@ -267,6 +268,7 @@ export interface TelemetryStatus {
   enabled: boolean;
   endpoint: string;
   installId: string | null;
+  decided: boolean;
   message: string;
 }
 
@@ -285,6 +287,7 @@ export function telemetryStatus(dir?: string): TelemetryStatus {
     enabled: optIn.enabled,
     endpoint: optIn.endpoint,
     installId: optIn.enabled ? getInstallId(dir) : null,
+    decided: hasTelemetryDecision(dir),
     message: PRIVACY_MESSAGE,
   };
 }
@@ -304,6 +307,7 @@ export function telemetryEnable(endpointInput?: string, dir?: string): Telemetry
     enabled: true,
     endpoint,
     installId: getInstallId(dir),
+    decided: true,
     message: PRIVACY_MESSAGE,
   };
 }

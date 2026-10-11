@@ -131,3 +131,15 @@ export function setTelemetryOptIn(optIn: TelemetryOptIn, dir?: string): void {
     { mode: 0o600 },
   );
 }
+
+/**
+ * Whether the user has made an opt-in decision — i.e. a `telemetry.json` exists,
+ * regardless of whether it records enabled or disabled. False means the user has
+ * never been asked, so the installer/SKILL should offer the choice once.
+ *
+ * @param dir - Optional config directory override (for tests).
+ * @returns True when a telemetry decision has been recorded.
+ */
+export function hasTelemetryDecision(dir?: string): boolean {
+  return existsSync(path.join(configDir(dir), TELEMETRY_FILENAME));
+}
