@@ -35,6 +35,10 @@ const thresholds: ReadonlyMap<string, ThresholdValues> = new Map([
   ['parameter-count', { maxParametersPerMethod: 2 }],
 ]);
 
+/** A benign absolute root for slice runs that never touch the filesystem —
+ *  required by `PhaseInfra.projectRoot` but irrelevant to `parameter-count`. */
+const FIXTURE_ROOT = '/tmp/codeauditor-fixture';
+
 describe('Spec 68 §16.8 — per-file failure isolation', () => {
   it('a throwing producer records one file incomplete and leaves its neighbors intact', async () => {
     let calls = 0;
@@ -45,6 +49,7 @@ describe('Spec 68 §16.8 — per-file failure isolation', () => {
       ],
       thresholds,
       {
+        projectRoot: FIXTURE_ROOT,
         enabledRules: new Set(['parameter-count']),
         beforeProcess: (kind, file) => {
           if (kind === 'file-symbols' && file === 'a.ts') {
@@ -77,7 +82,7 @@ describe('Spec 68 §16.8 — per-file failure isolation', () => {
         { path: 'x.xyz', content: 'this is not valid typescript\n' },
       ],
       thresholds,
-      { enabledRules: new Set(['parameter-count']) },
+      { projectRoot: FIXTURE_ROOT, enabledRules: new Set(['parameter-count']) },
     );
 
     const incomplete = result.incompleteFacts.get('file-symbols');

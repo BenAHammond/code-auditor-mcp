@@ -116,6 +116,7 @@ describe('Spec 70 dry-pair persist (seed → persist → producer → diverging-
     const fact = CORPUS_PRODUCERS['clone-pair-history'].process({}, { indexHandle: db.indexHandle });
     const rule = dryRules.find((r) => r.id === 'dry/diverging-clone')!;
     const findings = (await rule.analyze({
+      projectRoot: '/tmp/codeauditor-fixture',
       facts: {
         'imports': [],
         'string-literals': [],
@@ -152,6 +153,7 @@ describe('Spec 70 dry-pair persist (seed → persist → producer → diverging-
     const fact = CORPUS_PRODUCERS['clone-pair-history'].process({}, { indexHandle: db.indexHandle });
     const rule = dryRules.find((r) => r.id === 'dry/diverging-clone')!;
     const findings = (await rule.analyze({
+      projectRoot: '/tmp/codeauditor-fixture',
       facts: {
         'imports': [],
         'string-literals': [],

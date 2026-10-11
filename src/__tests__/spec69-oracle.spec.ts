@@ -102,7 +102,7 @@ describe('Spec 69 R1 criterion 2 — per-file shortfall recording', () => {
         },
       ],
       new Map(),
-      { enabledRules: new Set(['parameter-count']) },
+      { projectRoot: '/tmp/codeauditor-fixture', enabledRules: new Set(['parameter-count']) },
     );
     const sf = result.oracleShortfalls.find((s) => s.processor === 'file-symbols.typescript');
     expect(sf, 'a class with methods should produce a positive file-symbols residual').toBeDefined();

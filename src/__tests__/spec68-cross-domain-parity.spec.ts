@@ -334,6 +334,7 @@ async function parityMultiTableWrite(seeds: Seed[], txnTableMax: number): Promis
   }));
 
   const fresh = multiTableWriteRule.analyze({
+    projectRoot: '/tmp/codeauditor-fixture',
     facts: { 'schema-usage': facts, 'call-graph': readCallGraph(), 'batch-functions': [] },
     formats: ['typescript', 'tsx', 'javascript'],
     thresholds: { schemaLifecycle: { txnTableMax } },
@@ -529,6 +530,7 @@ async function parityNoValidatorReachable(
   }));
 
   const fresh = noValidatorReachableRule.analyze({
+    projectRoot: '/tmp/codeauditor-fixture',
     facts: { 'schema-usage': facts, 'call-graph': readCallGraph() },
     formats: ['typescript', 'tsx', 'javascript'],
     thresholds: { validatorBypass: vb },
@@ -736,6 +738,7 @@ async function parityUncoveredRisk(
   });
 
   const fresh = uncoveredRiskRule.analyze({
+    projectRoot: '/tmp/codeauditor-fixture',
     facts: { 'call-graph': readCallGraph(), 'hotspot': readHotspot(), 'coverage': readCoverage() },
     formats: ['typescript', 'tsx', 'javascript'],
     thresholds: { coverage },

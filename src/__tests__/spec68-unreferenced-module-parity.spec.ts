@@ -100,6 +100,7 @@ describe('Spec 68 unreferenced-module parity (new analyze(ctx) === old reducer)'
     // the rule.
     const reachability = CORPUS_PRODUCERS['reachability'].process({ 'file-imports': flat });
     const fresh = unreferencedModuleRule.analyze({
+      projectRoot: '/tmp/codeauditor-fixture',
       facts: { 'file-imports': flat, 'reachability': reachability },
       formats: ['typescript', 'tsx', 'javascript', 'go'],
       thresholds: {},
@@ -120,6 +121,7 @@ describe('Spec 68 unreferenced-module parity (new analyze(ctx) === old reducer)'
     }
     const reachability = CORPUS_PRODUCERS['reachability'].process({ 'file-imports': flat });
     const files = unreferencedModuleRule.analyze({
+      projectRoot: '/tmp/codeauditor-fixture',
       facts: { 'file-imports': flat, 'reachability': reachability },
       formats: ['typescript', 'tsx', 'javascript', 'go'],
       thresholds: {},
@@ -167,6 +169,7 @@ describe('Spec 68 unreferenced-module — unproven disposition (computed specifi
     }
     // The rule withholds its dead-code findings while the graph is unresolved.
     const findings = unreferencedModuleRule.analyze({
+      projectRoot: '/tmp/codeauditor-fixture',
       facts: { 'file-imports': flat, 'reachability': reachability },
       formats: ['typescript', 'tsx', 'javascript', 'go'],
       thresholds: {},
@@ -181,6 +184,7 @@ describe('Spec 68 unreferenced-module — unproven disposition (computed specifi
     const reachability = CORPUS_PRODUCERS['reachability'].process({ 'file-imports': flat });
     expect(computeUnprovenModules(flat, reachability)).toEqual([]);
     const findings = unreferencedModuleRule.analyze({
+      projectRoot: '/tmp/codeauditor-fixture',
       facts: { 'file-imports': flat, 'reachability': reachability },
       formats: ['typescript', 'tsx', 'javascript', 'go'],
       thresholds: {},

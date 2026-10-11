@@ -30,6 +30,10 @@ const thresholds: ReadonlyMap<string, ThresholdValues> = new Map([
   ['parameter-count', { maxParametersPerMethod: 2 }],
 ]);
 
+/** A benign absolute root for slice runs that never touch the filesystem —
+ *  required by `PhaseInfra.projectRoot` but irrelevant to `parameter-count`. */
+const FIXTURE_ROOT = '/tmp/codeauditor-fixture';
+
 describe('Spec 68 §16.5 — phase ordering (seeded slow processor)', () => {
   it('does not begin analysis until the slow processor has completed', async () => {
     const events: string[] = [];
@@ -40,6 +44,7 @@ describe('Spec 68 §16.5 — phase ordering (seeded slow processor)', () => {
       ],
       thresholds,
       {
+        projectRoot: FIXTURE_ROOT,
         enabledRules: new Set(['parameter-count']),
         beforeProcess: async (kind, file) => {
           if (kind !== 'file-symbols') return;
@@ -82,6 +87,7 @@ describe('Spec 68 §16.5 — phase ordering (seeded slow processor)', () => {
       ],
       thresholds,
       {
+        projectRoot: FIXTURE_ROOT,
         enabledRules: new Set(['parameter-count']),
         beforeProcess: async (kind, file) => {
           events.push(`process:${kind}:${file}`);

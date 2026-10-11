@@ -127,8 +127,11 @@ export interface PhaseModelResult {
  * the legacy reducer did.
  */
 export interface PhaseInfra {
-  /** Absolute project root (Tailwind config + alias/entry resolution). */
-  projectRoot?: string;
+  /** Absolute project root (Tailwind config + alias/entry resolution). Required:
+   *  the compiler must find every construction site, so a caller that forgets the
+   *  root is a type error rather than a silent `undefined` reaching a rule's
+   *  config loader. */
+  projectRoot: string;
   /** True for a scoped (changed/files/git) run. Gates the full-project unread
    *  dialect walk (`.less`/`.styl`/`.sass`) to full runs only — the same
    *  `if (!scoped)` the legacy `findUnreadStyleFiles` walk carried. Absent in
@@ -210,13 +213,13 @@ export interface PhaseInfra {
  *
  * @param filePaths - The absolute file paths to read and run through the model.
  * @param thresholdsByRule - The resolved per-rule threshold map.
- * @param infra - The optional corpus-level inputs (project root, index, workers).
+ * @param infra - The corpus-level inputs (project root, index, workers).
  * @returns The migrated rules' findings and the per-file fact completeness map.
  */
 export async function runPhaseModel(
   filePaths: readonly string[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
-  infra?: PhaseInfra,
+  infra: PhaseInfra,
 ): Promise<PhaseModelResult> {
   if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
 
@@ -282,7 +285,7 @@ export async function runPhaseModel(
  *
  * @param files - The already-read input files to parse, process, and analyze.
  * @param thresholdsByRule - The resolved per-rule threshold map.
- * @param infra - The optional corpus-level inputs (project root, index, workers).
+ * @param infra - The corpus-level inputs (project root, index, workers).
  * @param unread - The traverse phase's walk-level unread-source reasons (dialect,
  *   read-failure, unknown-extension), merged into the `unread-style-sources`
  *   fact ahead of the corpus producer's table-derived content-level reasons.
@@ -291,7 +294,7 @@ export async function runPhaseModel(
 export async function runPhaseModelOverFiles(
   files: readonly InputFile[],
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
-  infra?: PhaseInfra,
+  infra: PhaseInfra,
   unread: readonly UnreadStyleSourceFact[] = [],
 ): Promise<PhaseModelResult> {
   const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql, unprovenModules } = await buildFacts(files, infra, unread);
@@ -713,7 +716,7 @@ async function processFile(
 async function analyzeAll(
   facts: Map<FactKind, unknown>,
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
-  infra?: PhaseInfra,
+  infra: PhaseInfra,
 ): Promise<Finding[]> {
   await infra?.beforeAnalyze?.();
   const findings: Finding[] = [];
@@ -725,6 +728,7 @@ async function analyzeAll(
       facts: ruleFacts,
       formats: rule.needs.formats,
       thresholds: thresholdsByRule.get(rule.id) ?? {},
+      projectRoot: infra.projectRoot,
     };
     // Spec 38 R2 — per-rule timing on the phase path (the legacy `withRuleTiming`
     // wrappers no longer run for migrated rules). Records the full async analyze

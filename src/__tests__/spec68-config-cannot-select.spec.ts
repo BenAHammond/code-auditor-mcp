@@ -34,6 +34,10 @@ beforeAll(async () => {
 
 const THREE_PARAM_FN = 'function combine(a, b, c) {\n  return a + b + c;\n}\n';
 
+/** A benign absolute root for slice runs that never touch the filesystem —
+ *  required by `PhaseInfra.projectRoot` but irrelevant to `parameter-count`. */
+const FIXTURE_ROOT = '/tmp/codeauditor-fixture';
+
 describe('Spec 68 §16.10 — config cannot select', () => {
   it('enabledMigratedRules is the full migrated set, with no config key in the path', () => {
     const enabled = enabledMigratedRules();
@@ -54,13 +58,14 @@ describe('Spec 68 §16.10 — config cannot select', () => {
 
   it('different threshold maps produce the same set of rules in coverage', async () => {
     const files = [{ path: 'a.ts', content: THREE_PARAM_FN }];
-    const empty = await runPhaseModelOverFiles(files, new Map());
+    const empty = await runPhaseModelOverFiles(files, new Map(), { projectRoot: FIXTURE_ROOT });
     const configured = await runPhaseModelOverFiles(
       files,
       new Map<string, ThresholdValues>([
         ['parameter-count', { maxParametersPerMethod: 2 }],
         ['function-length', { maxLinesPerMethod: 3 }],
       ]),
+      { projectRoot: FIXTURE_ROOT },
     );
 
     const emptyCoverage = deriveCoverage({
@@ -91,14 +96,14 @@ describe('Spec 68 §16.10 — config cannot select', () => {
     const noConfig = await runPhaseModelOverFiles(
       [{ path: 'a.ts', content: THREE_PARAM_FN }],
       new Map(),
-      { enabledRules: new Set(['parameter-count']) },
+      { projectRoot: FIXTURE_ROOT, enabledRules: new Set(['parameter-count']) },
     );
     expect(noConfig.findings.filter((f) => f.ruleId === 'parameter-count')).toHaveLength(0);
 
     const tuned = await runPhaseModelOverFiles(
       [{ path: 'a.ts', content: THREE_PARAM_FN }],
       new Map<string, ThresholdValues>([['parameter-count', { maxParametersPerMethod: 2 }]]),
-      { enabledRules: new Set(['parameter-count']) },
+      { projectRoot: FIXTURE_ROOT, enabledRules: new Set(['parameter-count']) },
     );
     expect(tuned.findings.filter((f) => f.ruleId === 'parameter-count')).toHaveLength(1);
   });

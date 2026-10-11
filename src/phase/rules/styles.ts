@@ -1130,7 +1130,7 @@ export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
     const expander = getTailwindExpander();
     const cfg = resolveUndefinedClassConfig(ctx.thresholds);
     await expander.init({
-      projectRoot: undefined,
+      projectRoot: ctx.projectRoot,
       useProjectConfig: true,
       customClasses: cfg.tailwindClasses ? new Set(cfg.tailwindClasses) : undefined,
     });

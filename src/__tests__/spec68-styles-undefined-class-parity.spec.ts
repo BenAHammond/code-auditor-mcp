@@ -6,10 +6,10 @@
  * (`style_class_usage` + `style_defined_classes`) plus a Tailwind compile-probe.
  * The migrated rule reads the `style-declarations` fact's `classUsage` and the
  * corpus `defined-classes` fact, then resolves candidates through the shared
- * `getTailwindExpander()` singleton with `projectRoot: undefined` — the same
- * config the legacy reducer passed (the probe never initializes), so `resolve()`
- * degrades to the user's `tailwindClasses` custom-set + bare utilities +
- * structural patterns on both paths.
+ * `getTailwindExpander()` singleton with the threaded `ctx.projectRoot` (a
+ * no-Tailwind root, so the probe never validates — the same config the legacy
+ * reducer passed), so `resolve()` degrades to the user's `tailwindClasses`
+ * custom-set + bare utilities + structural patterns on both paths.
  *
  * The parity test seeds the two tables (plus one `style_declarations` row so the
  * legacy `analyze()` does not early-return), runs the legacy `analyze`, re-reads
@@ -33,6 +33,13 @@ import type { Violation } from '../types.js';
 let db: CodeIndexDB;
 let _usageId = 0;
 let _definedId = 0;
+
+/** A project root with no Tailwind config and no `@theme` CSS, so the shared
+ *  `getTailwindExpander()` singleton degrades to bare utilities + the custom set
+ *  on both the legacy and the phase path — the same config both get in the real
+ *  audit runner. Threaded (not `undefined`) to prove `ctx.projectRoot` reaches
+ *  the expander's config loader. */
+const PARITY_ROOT = '/tmp/no-tailwind-project';
 
 /** One class-usage seed — the camelCase fact and the snake_case DB row derive from it. */
 interface UsageSeed {
@@ -101,7 +108,7 @@ async function parity(usages: UsageSeed[], defined: Array<{ className: string; f
   // undefined-class finding (other detectors may fire on the seed declaration, but
   // they are not the rule under test).
   const analyzer = new UniversalStylesAnalyzer();
-  const legacy = await analyzer.analyze(['page.tsx', 'a.css'], { indexHandle: db.indexHandle, tailwindClasses });
+  const legacy = await analyzer.analyze(['page.tsx', 'a.css'], { indexHandle: db.indexHandle, tailwindClasses, projectRoot: PARITY_ROOT });
   const old = legacy.violations
     .filter((v: Violation) => v.rule === 'styles/undefined-class')
     .map((v: Violation) => key({ file: v.file, line: v.line, column: v.column, rule: v.rule, severity: v.severity }))
@@ -150,6 +157,7 @@ async function parity(usages: UsageSeed[], defined: Array<{ className: string; f
     },
     formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'],
     thresholds: tailwindClasses ? { tailwindClasses } : {},
+    projectRoot: PARITY_ROOT,
   })) as readonly Finding[];
 
   const nu = fresh

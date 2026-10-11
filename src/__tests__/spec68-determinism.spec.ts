@@ -30,6 +30,10 @@ const thresholds: ReadonlyMap<string, ThresholdValues> = new Map([
   ['parameter-count', { maxParametersPerMethod: 2 }],
 ]);
 
+/** A benign absolute root for slice runs that never touch the filesystem —
+ *  required by `PhaseInfra.projectRoot` but irrelevant to `parameter-count`. */
+const FIXTURE_ROOT = '/tmp/codeauditor-fixture';
+
 // Insertion order is shuffled on purpose; the file-sorted merge must dominate.
 const corpus = [
   { path: 'zeta.ts', content: threeParam('zetaFn') },
@@ -47,10 +51,12 @@ const corpus = [
 describe('Spec 68 §6.4 — determinism across worker counts', () => {
   it('one worker and eight produce the identical findings array, in order', async () => {
     const serial = await runPhaseModelOverFiles(corpus, thresholds, {
+      projectRoot: FIXTURE_ROOT,
       enabledRules: new Set(['parameter-count']),
       workerCount: 1,
     });
     const parallel = await runPhaseModelOverFiles(corpus, thresholds, {
+      projectRoot: FIXTURE_ROOT,
       enabledRules: new Set(['parameter-count']),
       workerCount: 8,
     });
@@ -65,6 +71,7 @@ describe('Spec 68 §6.4 — determinism across worker counts', () => {
 
   it('the findings are file-sorted, not completion-ordered', async () => {
     const result = await runPhaseModelOverFiles(corpus, thresholds, {
+      projectRoot: FIXTURE_ROOT,
       enabledRules: new Set(['parameter-count']),
       workerCount: 8,
     });
@@ -76,10 +83,12 @@ describe('Spec 68 §6.4 — determinism across worker counts', () => {
 
   it('the parse drop is recorded incomplete identically at both widths', async () => {
     const serial = await runPhaseModelOverFiles(corpus, thresholds, {
+      projectRoot: FIXTURE_ROOT,
       enabledRules: new Set(['parameter-count']),
       workerCount: 1,
     });
     const parallel = await runPhaseModelOverFiles(corpus, thresholds, {
+      projectRoot: FIXTURE_ROOT,
       enabledRules: new Set(['parameter-count']),
       workerCount: 8,
     });

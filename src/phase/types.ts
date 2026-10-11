@@ -1987,6 +1987,12 @@ export type AnalysisContext<N extends Needs> = {
   readonly facts: { readonly [K in N['facts'][number]]: FactShapes[K] };
   readonly formats: N['formats'];
   readonly thresholds: ThresholdValues;
+  /** The absolute project root, threaded from {@link PhaseInfra}. Required — a
+   *  rule that resolves project-local config (Tailwind v4 CSS theme, tsconfig
+   *  aliases, package entry points) must never receive an `undefined` root it has
+   *  to paper over. Making it non-optional lets the compiler surface every
+   *  construction site that would otherwise hand the rule a hole. */
+  readonly projectRoot: string;
 };
 
 /** One finding, in the unified shape §7 converges on (one `ruleId` field). */
