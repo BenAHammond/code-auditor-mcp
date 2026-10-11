@@ -2,6 +2,26 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.1.0]
+
+### Anonymous telemetry opt-in is offered exactly once
+
+The opt-in for anonymous dismissal feedback now records *whether a decision has
+been made*, separately from what that decision is. `telemetry status` (and the
+mirroring MCP tool) returns a new `decided` flag — false only until the user has
+run `telemetry enable` or `telemetry disable`. The installer prints a one-line
+nudge after a real install when `decided` is false, and the `code-auditor` SKILL
+instructs the agent to surface the privacy facts and ask once, then run
+`enable`/`disable` to record the choice. A user who has already decided is never
+asked again.
+
+### `code-audit request-rule` and the rule-request intake
+
+New `request-rule` command submits a rule request (title, symptom, signal, plus a
+firing and clean example) to the feedback service's bearer-guarded `/rule-requests`
+endpoint, for defects no existing rule flags. The service dedupes by content hash,
+caps the body size, and rate-limits per IP and globally.
+
 ## [5.0.2]
 
 ### The plugin hooks self-locate — no `CLAUDE_PLUGIN_ROOT` env dependency
