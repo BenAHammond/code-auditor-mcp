@@ -13,7 +13,7 @@ import { createAuditRunner } from './auditRunner.js';
 import { promises as fs } from 'fs';
 import { createInterface } from 'readline';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
-import { PACKAGE_VERSION } from './constants.js';
+import { PACKAGE_VERSION, DEFAULT_RULE_REQUEST_BASE_URL } from './constants.js';
 import inquirer from 'inquirer';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { initParsers } from './languages/index.js';
@@ -23,7 +23,7 @@ import { getFilesProcessed, getFactsConsumed, isVisitorStatus, isReducerStatus }
 import { createBaselineFromFindings, saveBaseline, loadBaseline, diffBaselines } from './baseline.js';
 import { fingerprint, buildFingerprintInput } from './fingerprint.js';
 import { buildDismissalEntry, upsertDismissal } from './dismissals.js';
-import { resolveTelemetryConfig, signatureForFinding, buildTelemetryPayload, formatTelemetryPreview, sendTelemetry, languageHint } from './telemetry.js';
+import { resolveTelemetryConfig, signatureForFinding, buildTelemetryPayload, formatTelemetryPreview, sendTelemetry, languageHint, telemetryStatus, telemetryEnable, telemetryDisable, postJson } from './telemetry.js';
 import { getInstallId } from './installConfig.js';
 import { computeGatingDecision } from './enforcement/gate.js';
 import { BLOCKING_SEVERITIES, SEVERITIES, type Severity, type AuditScope, type SearchOptions, type AuditResult } from './types.js';
@@ -1466,7 +1466,7 @@ program
   .description('Dismiss one finding by fingerprint — a written reason is required')
   .requiredOption('--reason <reason>', 'Why this finding is dismissed (required — a dismissal without a reason is a config error)')
   .option('-p, --path <path>', OPTION_PROJECT_PATH, process.cwd())
-  .option('--telemetry-endpoint <url>', 'Feedback service endpoint override (defaults to the opt-in endpoint recorded by the telemetry tool)')
+  .option('--telemetry-endpoint <url>', 'Feedback service endpoint override (defaults to the opt-in endpoint recorded by the `code-audit telemetry` command)')
   .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (fingerprintArg: string, options: Record<string, any>) => {
     try {
@@ -1504,9 +1504,9 @@ program
       const dismissals = upsertDismissal(projectRoot, entry);
 
       // Spec 57 — opt-in telemetry. Nothing is sent unless the user opted in via
-      // the `telemetry` MCP tool (default OFF) AND an endpoint is configured. The
-      // payload is printed for review before sending; any send failure is silent
-      // and never affects the dismissal or the exit code.
+      // the `code-audit telemetry enable` command (default OFF) AND an endpoint is
+      // configured. The payload is printed for review before sending; any send
+      // failure is silent and never affects the dismissal or the exit code.
       const telemetry = resolveTelemetryConfig({ endpoint: options.telemetryEndpoint });
       if (telemetry.enabled && telemetry.endpoint) {
         const signature = signatureForFinding(
@@ -1549,6 +1549,166 @@ program
         console.log(chalk.green(`\n✓ Dismissed ${chalk.bold(entry.rule)} @ ${entry.symbol || entry.file} — "${entry.reason}"`));
         console.log(chalk.gray(`  ${dismissals.entries.length} dismissal(s) recorded in .codeauditor.dismissals.json.`));
         console.log(chalk.gray(`  The finding is still counted in every report, but excluded from the gate.`));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+// Telemetry opt-in (Spec 57) — status/enable/disable call the same three
+// functions as the telemetry MCP tool (telemetry.ts), so the CLI and the MCP
+// tool can never disagree about what is enabled or what a submission contains.
+const telemetry = program
+  .command('telemetry')
+  .description('Manage anonymous dismissal feedback opt-in (default OFF). Actions: status, enable, disable.');
+
+telemetry
+  .command('status')
+  .description('Show whether anonymous dismissal feedback is enabled, its endpoint, and the anonymous install ID.')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
+  .action(async (options: Record<string, any>) => {
+    const s = telemetryStatus();
+    if (options.json) {
+      process.stdout.write(JSON.stringify(s, null, 2) + '\n');
+    } else {
+      console.log(chalk.bold(s.enabled ? 'Telemetry: enabled' : 'Telemetry: disabled'));
+      if (s.enabled) {
+        console.log(chalk.gray(`  endpoint:    ${s.endpoint}`));
+        console.log(chalk.gray(`  install ID:  ${s.installId}`));
+      } else {
+        console.log(chalk.gray('  endpoint:    (none — enable with `code-audit telemetry enable`)'));
+      }
+      console.log(chalk.gray(`\n${s.message}`));
+    }
+  });
+
+telemetry
+  .command('enable')
+  .description('Opt in to anonymous dismissal feedback. Defaults to the built-in service endpoint. Generates the anonymous install ID on first use.')
+  .option('--endpoint <url>', 'Optional ingest URL. Defaults to the built-in service endpoint.')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
+  .action(async (options: Record<string, any>) => {
+    try {
+      const s = telemetryEnable(options.endpoint);
+      if (options.json) {
+        process.stdout.write(JSON.stringify(s, null, 2) + '\n');
+      } else {
+        console.log(chalk.green('✓ Telemetry enabled.'));
+        console.log(chalk.gray(`  endpoint:    ${s.endpoint}`));
+        console.log(chalk.gray(`  install ID:  ${s.installId}`));
+        console.log(chalk.gray(`\n${s.message}`));
+      }
+    } catch (error) {
+      console.error(chalk.red('Error:'), error);
+      process.exit(1);
+    }
+  });
+
+telemetry
+  .command('disable')
+  .description('Turn off anonymous dismissal feedback. The endpoint is remembered; nothing further is sent.')
+  .option('--json', OPTION_OUTPUT_AS_JSON)
+  .action(async (options: Record<string, any>) => {
+    const s = telemetryDisable();
+    if (options.json) {
+      process.stdout.write(JSON.stringify(s, null, 2) + '\n');
+    } else {
+      console.log(chalk.green('✓ Telemetry disabled.'));
+      console.log(chalk.gray(s.message));
+    }
+  });
+
+// Accumulate a repeatable option (commander's default keeps only the last value).
+function collectOption(value: string, previous: string[]): string[] {
+  return [...(previous ?? []), value];
+}
+
+// Request a new rule (rule-request intake). POSTs to the docs site's HTTP tool
+// API, which validates and forwards to the shared feedback service. The CLI does
+// no own validation: it reads the example files, sends them with the client
+// surface, and prints whatever the server decides (receipt id, or field errors).
+program
+  .command('request-rule')
+  .description('Submit a request for a new Code Auditor rule (an unflagged defect class)')
+  .requiredOption('--title <title>', 'Short rule title (10-120 chars)')
+  .requiredOption('--symptom <text>', 'Symptom this rule should catch (40-2000 chars)')
+  .requiredOption('--signal <text>', 'Signal/pattern the rule should look for (40-2000 chars)')
+  .option('--language <lang>', 'Language the rule applies to (repeatable)', collectOption, [])
+  .option('--fires <path>', 'Example file that SHOULD be flagged (repeatable)', collectOption, [])
+  .option('--clean <path>', 'Example file that should NOT be flagged (repeatable)', collectOption, [])
+  .option('--endpoint <url>', `Docs API base URL (default ${DEFAULT_RULE_REQUEST_BASE_URL})`)
+  .option('--json', OPTION_OUTPUT_AS_JSON)
+  .action(async (options: Record<string, any>) => {
+    try {
+      const readFiles = async (paths: string[]): Promise<Array<{ path: string; content: string }>> => {
+        const out: Array<{ path: string; content: string }> = [];
+        for (const p of paths) {
+          out.push({ path: p, content: await fs.readFile(resolve(p), 'utf-8') });
+        }
+        return out;
+      };
+
+      const [firingExample, cleanExample] = await Promise.all([
+        readFiles(options.fires ?? []),
+        readFiles(options.clean ?? []),
+      ]);
+
+      const body = {
+        title: options.title,
+        symptom: options.symptom,
+        signal: options.signal,
+        languages: options.language ?? [],
+        firingExample,
+        cleanExample,
+        toolVersion: PACKAGE_VERSION,
+      };
+
+      const base = (options.endpoint ?? DEFAULT_RULE_REQUEST_BASE_URL).replace(/\/+$/, '');
+      const url = `${base}/api/tools/request_rule`;
+
+      const result = await postJson(url, body, {
+        timeoutMs: 5000,
+        headers: { 'x-code-auditor-client': 'cli' },
+      });
+
+      if (result.error) {
+        console.error(chalk.red('Error:'), result.error);
+        process.exit(1);
+      }
+
+      if (!result.ok) {
+        const res = result.body as {
+          error?: string;
+          message?: string;
+          fields?: Record<string, string[]>;
+          retryAfterSeconds?: number;
+        };
+        if (res?.fields) {
+          console.error(chalk.red(`Error: request rejected (${res.error ?? 'validation failed'})`));
+          for (const [field, msgs] of Object.entries(res.fields)) {
+            console.error(chalk.gray(`  ${field}: ${msgs.join('; ')}`));
+          }
+        } else if (res?.retryAfterSeconds !== undefined) {
+          console.error(chalk.red(`Error: rate limited — retry in ${res.retryAfterSeconds}s`));
+        } else {
+          console.error(chalk.red(`Error: ${res?.message ?? res?.error ?? `HTTP ${result.status}`}`));
+        }
+        process.exit(1);
+      }
+
+      const out = result.body as {
+        id: string;
+        duplicateSubmission: boolean;
+        existingRuleMatches: string[];
+      };
+      if (options.json) {
+        process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+      } else {
+        console.log(chalk.green(`✓ Rule request submitted${out.duplicateSubmission ? ' (duplicate — already received)' : ''}`));
+        console.log(chalk.gray(`  receipt id: ${out.id}`));
+        const matches = out.existingRuleMatches ?? [];
+        console.log(chalk.gray(`  existingRuleMatches: ${matches.length ? matches.join(', ') : '(none)'}`));
       }
     } catch (error) {
       console.error(chalk.red('Error:'), error);

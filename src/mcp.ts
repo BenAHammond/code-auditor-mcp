@@ -81,7 +81,7 @@ import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { resolveConfigGenerateDir } from './config/configGeneratePath.js';
-import { getInstallId, getTelemetryOptIn, setTelemetryOptIn, PRIVACY_MESSAGE, resolveTelemetryEndpoint } from './installConfig.js';
+import { telemetryStatus, telemetryEnable, telemetryDisable } from './telemetry.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
 import { resolveMcpDevLogPath } from './dataPaths.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
@@ -1294,15 +1294,7 @@ function registerTelemetryTool(registry: ToolRegistry): void {
         name: 'status',
         description: 'Show whether anonymous dismissal feedback is enabled, its endpoint, and the anonymous install ID.',
         parameters: [],
-        handler: async () => {
-          const optIn = getTelemetryOptIn();
-          return {
-            enabled: optIn.enabled,
-            endpoint: optIn.endpoint,
-            installId: optIn.enabled ? getInstallId() : null,
-            message: PRIVACY_MESSAGE,
-          };
-        },
+        handler: async () => telemetryStatus(),
       },
       {
         name: 'enable',
@@ -1315,26 +1307,13 @@ function registerTelemetryTool(registry: ToolRegistry): void {
             description: 'Optional ingest URL. Defaults to the built-in service endpoint.',
           },
         ],
-        handler: async (args) => {
-          const endpoint = resolveTelemetryEndpoint(args.endpoint as string | undefined);
-          setTelemetryOptIn({ enabled: true, endpoint });
-          return {
-            enabled: true,
-            endpoint,
-            installId: getInstallId(),
-            message: PRIVACY_MESSAGE,
-          };
-        },
+        handler: async (args) => telemetryEnable(args.endpoint as string | undefined),
       },
       {
         name: 'disable',
         description: 'Turn off anonymous dismissal feedback. The endpoint is remembered; nothing further is sent.',
         parameters: [],
-        handler: async () => {
-          const current = getTelemetryOptIn();
-          setTelemetryOptIn({ enabled: false, endpoint: current.endpoint });
-          return { enabled: false, message: PRIVACY_MESSAGE };
-        },
+        handler: async () => telemetryDisable(),
       },
     ],
   });

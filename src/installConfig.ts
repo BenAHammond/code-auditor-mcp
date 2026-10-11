@@ -16,9 +16,13 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { getUserConfigRoot } from './dataPaths.js';
 
-/** Privacy statement shared by the tool, SKILL, and docs. */
+/**
+ * Privacy statement shared by the tool, SKILL, and docs. Lists the exact eight
+ * fields sent by an opted-in dismissal, matching the docs privacy page so the
+ * CLI, MCP tool, and website never disagree about what leaves the machine.
+ */
 export const PRIVACY_MESSAGE =
-  'Data is anonymous, and the ID is generated locally to avoid tracking anything personal.';
+  'Anonymous opt-in feedback: each submission contains the tool version, the rule ID, the urgency level, the dismissal reason exactly as typed, a structural AST signature (grammar node types only, never their contents), a coarse language hint, a timestamp, and an anonymous install ID generated locally on your machine. Source code, identifiers, literals, file paths, and environment details are never sent.';
 
 /**
  * The default ingest endpoint (the operator's service). Shipped so opt-in is a

@@ -25,6 +25,11 @@ export const DEFAULT_SERVER_URL = `http://localhost:${DEFAULT_PORT}`;
 // MCP server name
 export const MCP_SERVER_NAME = 'code-index';
 
+// Base URL of the docs site's HTTP tool API (`/api/tools/<name>`), used by the
+// `code-audit request-rule` subcommand. A default, not a contract — overridable
+// with `--endpoint`.
+export const DEFAULT_RULE_REQUEST_BASE_URL = 'https://www.codeauditormcp.com';
+
 // Development mode detection.
 //
 // Opt-in via an explicit `--dev` flag only. It must NOT key off `NODE_ENV` or

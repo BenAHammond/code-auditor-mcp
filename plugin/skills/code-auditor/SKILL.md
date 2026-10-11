@@ -82,10 +82,26 @@ A dismissal is for *this finding is not relevant*, not for *I don't want to fix 
 
 The tool can send dismissed findings to an anonymous feedback service that collects them. It is **off by default** and is turned on only by an explicit opt-in:
 
-- `mcp__code-auditor__telemetry` `status` / `enable` / `disable` manage the opt-in. `enable` needs no arguments — it opts in against the built-in service endpoint and generates the anonymous install ID.
+- `code-audit telemetry status` / `enable` / `disable` manage the opt-in (the `mcp__code-auditor__telemetry` tool mirrors the same toggle). `enable` needs no arguments — it opts in against the built-in service endpoint and generates the anonymous install ID.
 - When opted in, each dismissal sends only the reason plus a structural shape — **no code, identifiers, or file paths**.
 
-Before enabling, tell the user the privacy facts: **data is anonymous, and the ID is generated locally to avoid tracking anything personal.** Only the reason and enough shape to reproduce the finding are sent; nothing derived from their code or environment.
+Before enabling, tell the user the privacy facts. Each submission contains: the tool version, the rule ID, the urgency level, the dismissal reason exactly as typed, a structural AST signature (grammar node types only, never their contents), a coarse language hint, a timestamp, and an anonymous install ID generated locally on your machine. Source code, identifiers, literals, file paths, and environment details are never sent, unless the user types them into the reason.
+
+### `code-audit request-rule` — request a rule for an unflagged defect
+
+When you find a *class* of defect the audit did not flag, request a new rule instead of silently working around it:
+
+```bash
+code-audit request-rule \
+  --title "Flag unbounded loops" \
+  --symptom "A loop with no exit condition hangs the process at runtime." \
+  --signal "A for-loop over a dynamic collection with no bound check." \
+  --language typescript \
+  --fires bad.ts \
+  --clean fixed.ts
+```
+
+Call `lookup_rule` or `explain_symptom` first to confirm no existing rule covers it. Provide a minimal example that *should* be flagged (`--fires`) and a corrected example that *should not* (`--clean`), each reduced to the smallest code that shows the difference, with secrets and proprietary identifiers removed. The CLI prints a receipt id so the request can be tracked.
 
 ### `code-audit config` — know the project's laws
 
@@ -235,6 +251,8 @@ The hook auto-installs the package to a cache dir on first use — no manual npm
 | Resolve file profiles | `code-audit config profiles --file <path>` |
 | Next file to fix | `code-audit next-file` |
 | Dismiss a false positive | `code-audit dismiss <fingerprint> --reason "…"` |
+| Telemetry opt-in | `code-audit telemetry status` / `enable` / `disable` |
+| Request a new rule | `code-audit request-rule` |
 | Sync index | `code-audit index sync --path .` |
 | Codebase map | `code-audit map -p .` |
 | Mine conventions | `code-audit conventions list` |

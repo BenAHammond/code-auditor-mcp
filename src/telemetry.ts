@@ -20,7 +20,13 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { parseFile } from './languages/adapterBridge.js';
 import { signatureForLocation } from './structuralSignature.js';
-import { getTelemetryOptIn } from './installConfig.js';
+import {
+  getInstallId,
+  getTelemetryOptIn,
+  setTelemetryOptIn,
+  PRIVACY_MESSAGE,
+  resolveTelemetryEndpoint,
+} from './installConfig.js';
 import type { Severity } from './types.js';
 
 // ── Payload ──────────────────────────────────────────────────────────────────
@@ -148,7 +154,8 @@ export interface TelemetryConfig {
 
 /**
  * Resolve opt-in from the user-level config (see `installConfig.ts`): OFF unless
- * the user explicitly enabled it via the `telemetry` MCP tool. `opts.endpoint` is
+ * the user explicitly enabled it via the `code-audit telemetry enable` command
+ * (or the telemetry MCP tool, which shares the same toggle). `opts.endpoint` is
  * a caller override (e.g. the local-dev `--telemetry-endpoint` flag).
  *
  * @param opts - Optional endpoint override and config directory.
@@ -171,6 +178,65 @@ export interface TelemetrySendResult {
   error?: string;
 }
 
+/** Result of a `postJson` POST: the HTTP status plus any parsed JSON body. */
+export interface JsonPostResult {
+  /** HTTP status (0 when the request never completed — network error / timeout). */
+  status: number;
+  /** Whether the response was 2xx. */
+  ok: boolean;
+  /** Parsed JSON body, or `undefined` when there is none (or it isn't JSON). */
+  body: unknown;
+  /** Error description when the request never completed. */
+  error?: string;
+}
+
+/**
+ * Shared JSON POST helper — POST `body` as JSON to `url` with a timeout, and
+ * return the HTTP status plus any parsed JSON body. A network error or timeout
+ * resolves to `{ status: 0, ok: false, error }`; it never throws. This is the
+ * single seam `sendTelemetry` (dismissal feedback) and the `request-rule` CLI
+ * subcommand both POST through, so their timeout/parse behaviour stays in sync.
+ *
+ * @param url - The endpoint to POST to.
+ * @param body - The JSON-serializable body.
+ * @param opts - Optional timeout (default 5000ms) and extra headers.
+ * @returns The status, ok flag, parsed body, and any transport error.
+ */
+export async function postJson(
+  url: string,
+  body: unknown,
+  opts: { timeoutMs?: number; headers?: Record<string, string> } = {},
+): Promise<JsonPostResult> {
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(opts.headers ?? {}) },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch {
+      parsed = undefined;
+    }
+    return { status: response.status, ok: response.ok, body: parsed };
+  } catch (error) {
+    clearTimeout(timer);
+    return {
+      status: 0,
+      ok: false,
+      body: undefined,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 /**
  * Send a payload to the feedback service. Best-effort: a missing endpoint, a
  * network failure, a timeout, or a non-2xx response all resolve to
@@ -188,26 +254,71 @@ export async function sendTelemetry(
 ): Promise<TelemetrySendResult> {
   if (!endpoint) return { sent: false };
 
-  const timeoutMs = opts.timeoutMs ?? 2000;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const result = await postJson(endpoint, payload, { timeoutMs: opts.timeoutMs ?? 2000 });
+  if (result.error) return { sent: false, error: result.error };
+  if (!result.ok) return { sent: false, error: `HTTP ${result.status}` };
+  return { sent: true };
+}
 
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (!response.ok) {
-      return { sent: false, error: `HTTP ${response.status}` };
-    }
-    return { sent: true };
-  } catch (error) {
-    clearTimeout(timer);
-    return { sent: false, error: error instanceof Error ? error.message : String(error) };
-  }
+// ── Opt-in control (status/enable/disable) ───────────────────────────────────
+
+/** The shape returned by the telemetry status/enable/disable actions. */
+export interface TelemetryStatus {
+  enabled: boolean;
+  endpoint: string;
+  installId: string | null;
+  message: string;
+}
+
+/**
+ * Report the current opt-in state. `installId` is only surfaced when enabled —
+ * reading it when off would silently generate and persist an ID the user never
+ * asked for.
+ *
+ * @param dir - Optional config directory override (for tests).
+ * @returns Whether opt-in is enabled, its endpoint, the install ID, and the
+ *   privacy message.
+ */
+export function telemetryStatus(dir?: string): TelemetryStatus {
+  const optIn = getTelemetryOptIn(dir);
+  return {
+    enabled: optIn.enabled,
+    endpoint: optIn.endpoint,
+    installId: optIn.enabled ? getInstallId(dir) : null,
+    message: PRIVACY_MESSAGE,
+  };
+}
+
+/**
+ * Opt in. `endpointInput` defaults to the built-in service endpoint; a non-https
+ * or non-URL value throws (telemetry leaves the machine, so it must be https).
+ *
+ * @param endpointInput - Optional ingest URL override.
+ * @param dir - Optional config directory override (for tests).
+ * @returns The now-enabled state, endpoint, fresh install ID, and privacy message.
+ */
+export function telemetryEnable(endpointInput?: string, dir?: string): TelemetryStatus {
+  const endpoint = resolveTelemetryEndpoint(endpointInput);
+  setTelemetryOptIn({ enabled: true, endpoint }, dir);
+  return {
+    enabled: true,
+    endpoint,
+    installId: getInstallId(dir),
+    message: PRIVACY_MESSAGE,
+  };
+}
+
+/**
+ * Opt out. The endpoint is remembered (nothing further is sent, but re-enabling
+ * without an argument keeps the last endpoint).
+ *
+ * @param dir - Optional config directory override (for tests).
+ * @returns The now-disabled state and the privacy message.
+ */
+export function telemetryDisable(dir?: string): { enabled: boolean; message: string } {
+  const current = getTelemetryOptIn(dir);
+  setTelemetryOptIn({ enabled: false, endpoint: current.endpoint }, dir);
+  return { enabled: false, message: PRIVACY_MESSAGE };
 }
 
 // ── Signature from a finding ─────────────────────────────────────────────────
