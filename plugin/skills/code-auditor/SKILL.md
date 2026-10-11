@@ -85,7 +85,12 @@ The tool can send dismissed findings to an anonymous feedback service that colle
 - `code-audit telemetry status` / `enable` / `disable` manage the opt-in (the `mcp__code-auditor__telemetry` tool mirrors the same toggle). `enable` needs no arguments — it opts in against the built-in service endpoint and generates the anonymous install ID.
 - When opted in, each dismissal sends only the reason plus a structural shape — **no code, identifiers, or file paths**.
 
-Before enabling, tell the user the privacy facts. Each submission contains: the tool version, the rule ID, the urgency level, the dismissal reason exactly as typed, a structural AST signature (grammar node types only, never their contents), a coarse language hint, a timestamp, and an anonymous install ID generated locally on your machine. Source code, identifiers, literals, file paths, and environment details are never sent, unless the user types them into the reason.
+On first contact, run `code-audit telemetry status` and read its `decided` field:
+
+- **`decided` is false** — the user has never been asked. Tell them the privacy facts (below), then ask **once** whether to opt in. Run `code-audit telemetry enable` on yes and `code-audit telemetry disable` on no — either records the decision so the question is never repeated.
+- **`decided` is true** — the user has already chosen. Never ask again; leave the setting exactly as it is.
+
+The privacy facts: each submission contains the tool version, the rule ID, the urgency level, the dismissal reason exactly as typed, a structural AST signature (grammar node types only, never their contents), a coarse language hint, a timestamp, and an anonymous install ID generated locally on your machine. Source code, identifiers, literals, file paths, and environment details are never sent, unless the user types them into the reason.
 
 ### `code-audit request-rule` — request a rule for an unflagged defect
 
