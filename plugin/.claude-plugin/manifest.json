@@ -3,7 +3,7 @@
   "files": {
     ".claude-plugin/plugin.json": "0049d3008345256ad97a9fb0abb06d14391deea5a5386f8cacbda07391d7eb43",
     "README.md": "6e51516ead6c7d0b4e77629e071e139b899d30a47838e8721c0d534eb733ad45",
-    "hooks/hooks.json": "28c4d7e87f1bb0daae8d9c714a196c39809039509568cf89a67c0377090f7211",
+    "hooks/hooks.json": "f9817f337d147bbd0e175741e57c6bd0718c64352ddbff15b5ba9357272b6725",
     "scripts/hook-audit.sh": "25353d88a020d71586bb52ec6800438ab1f500e987c639837be52529fe2dc5fe",
     "scripts/hook-common.sh": "85fd91c7a3817c01557383aadeff578696a9400698806d2d310ffd1caa954e06",
     "scripts/hook-drift-check.sh": "fdf1f8098d9dda8911daedfd4b038c310c8383da57938a6737131cd33cb9492e",
