@@ -614,7 +614,7 @@ Seven rules over the `cross-language-entities` fact + the `file-imports`/`reacha
 - **Firing condition**: `findOrphanedNodes` returns nodes passing all guards: skip `interface`/`struct`, `_`-prefixed, `isMethod`/dot-named, connected, exported, or `isNameReferenced(name, file, index)` (`DependencyGraphBuilder.ts:293-327`). Emits one finding per affected node.
 - **Input position**: `cross-language-entities` → `DependencyNode` fields + `metadata.fileReferences` (fallback `metadata.callees`).
 - **Grammar checklist**: candidates = TS `function_declaration`/`method_definition`/`variable_declarator`+`arrow_function`, Go `function_declaration`; reference index also reads `call_expression`, `jsx_opening_element`/`jsx_self_closing_element`, `identifier`, `shorthand_property_identifier`, `pair`.
-- **Coverage**: handled = scope-aware function-level orphan detection. Mishandled (intentional) = interfaces/structs, `_`-prefixed, methods/dot-names, exported entry points suppressed. Never-seen = import-only reachability.
+- **Coverage**: handled = scope-aware function-level orphan detection. Mishandled (intentional) = interfaces/structs, `_`-prefixed, methods/dot-names, exported entry points, nested functions (closures — `metadata.isNested`, lexically scoped so a flat call graph cannot prove them dead) suppressed. Never-seen = import-only reachability.
 - **Evidence**: samples = yes; parity = `spec68-dependency-graph-parity.spec.ts`; fixture = **ABSENT**; baseline = `corpus-baselines.md:144,744`; ledger = `rule-authenticity-ledger.md:101`, `severity-assignment-ledger.md:241`; `rule-replacement-ledger.md` = **ABSENT**.
 
 ### `review-orphans` (74)

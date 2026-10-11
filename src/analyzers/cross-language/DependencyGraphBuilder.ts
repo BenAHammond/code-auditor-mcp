@@ -353,6 +353,14 @@ class DependencyGraphBuilderCore {
       // both. "No call edges" is therefore not evidence of dead code for a method —
       // treating it as such produced 857 false orphans on knex alone (97% of 885).
       if (node.isMethod || node.name.includes('.')) return false;
+      // A nested function (a closure) is lexically scoped inside its enclosing
+      // function, not a module top-level symbol. Its liveness is a lexical-scope
+      // question the flat name-based call graph cannot answer — a closure is
+      // reached through forms the graph does not model (`return closure`, passing
+      // it as a value, `closure.call`/`.apply`, …) — so "no edges" is not
+      // evidence of dead code. "Defined and used inside its enclosing function"
+      // must never read as "orphaned".
+      if (node.isNested) return false;
       if (connectedNodes.has(node.id)) return false;
       if (node.exported) return false;
       if (isNameReferenced(node.name, node.file, index)) return false;
@@ -461,7 +469,8 @@ class DependencyGraphBuilderTraversal extends DependencyGraphBuilderCore {
       weight: this.calculateNodeWeight(entity),
       cluster: this.determineCluster(entity),
       exported: entity.visibility === 'public' || entity.metadata?.isExported === true,
-      isMethod: entity.metadata?.isMethod === true
+      isMethod: entity.metadata?.isMethod === true,
+      isNested: entity.metadata?.isNested === true
     }));
   }
 

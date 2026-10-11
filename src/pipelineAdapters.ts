@@ -1505,6 +1505,35 @@ function clCollectCallees(node: ASTNode, sourceCode: string): string[] {
 }
 
 /**
+ * Whether a function node is lexically nested inside another function body.
+ *
+ * A nested function (a closure) is only reachable from its enclosing scope, not
+ * from module top-level, so a flat name-based call graph cannot observe its use
+ * the way it observes a top-level symbol's callers. The cross-language entity
+ * extractor records this flag so orphan detection can treat a closure's "no
+ * connections" as unproven rather than as evidence of dead code. Go named
+ * functions are never nested (Go only admits anonymous function *literals*
+ * inside a body, and those are not `function_declaration` nodes), so this is a
+ * TS/JS-family signal.
+ */
+function clIsNestedFunction(node: ASTNode): boolean {
+  let p: ASTNode | null = node.parent ?? null;
+  while (p) {
+    const t = p.type;
+    if (
+      t === 'function_declaration' ||
+      t === 'method_definition' ||
+      t === 'arrow_function' ||
+      t === 'function_expression'
+    ) {
+      return true;
+    }
+    p = p.parent ?? null;
+  }
+  return false;
+}
+
+/**
  * Collect every reference name in a file's AST, independent of entity
  * boundaries. Orphan detection needs the complete same-file reference set —
  * `clCollectCallees` only walks the bodies of *extracted* entities, so a
@@ -1778,6 +1807,7 @@ function clExtractTSEntities(
         isMethod: node.type === 'method_definition',
       });
       entity.metadata!.fileReferences = fileReferences;
+      entity.metadata!.isNested = clIsNestedFunction(node);
       out.push(entity);
       return;
     }
@@ -1799,6 +1829,7 @@ function clExtractTSEntities(
         complexity: calculateComplexity(node),
       });
       entity.metadata!.fileReferences = fileReferences;
+      entity.metadata!.isNested = clIsNestedFunction(node);
       out.push(entity);
       return;
     }

@@ -955,6 +955,7 @@ export type Entity = {
     callees?: string[];
     isMethod?: boolean;
     isExported?: boolean;
+    isNested?: boolean;
     fileReferences?: string[];
     fields?: ReadonlyArray<{ name: string; type?: string; isExported?: boolean; tag?: string }>;
   };

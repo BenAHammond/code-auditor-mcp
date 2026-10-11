@@ -298,6 +298,7 @@ export interface DependencyNode {
   cluster?: string;                      // Logical grouping
   exported?: boolean;                    // Public/exported — called from outside the graph
   isMethod?: boolean;                    // method_definition — dispatched via `this.`/receiver, invisible to the name-only call graph
+  isNested?: boolean;                    // lexically scoped inside another function — a flat call graph cannot model its use
 }
 
 export interface DependencyEdge {
