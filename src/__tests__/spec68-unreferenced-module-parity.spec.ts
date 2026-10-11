@@ -29,6 +29,7 @@ import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { parseFile } from '../languages/adapterBridge.js';
 import { PRODUCERS, CORPUS_PRODUCERS } from '../phase/producers.js';
 import { unreferencedModuleRule } from '../phase/rules/unreferencedModule.js';
+import { computeUnprovenModules, hasUnresolvedDynamicImports } from '../phase/reachability.js';
 import { createDependencyGraphReducer } from '../pipelineAdapters.js';
 import type { ParsedFile, Entity, FileImportsFact } from '../phase/types.js';
 import type { Violation } from '../types.js';
@@ -125,5 +126,65 @@ describe('Spec 68 unreferenced-module parity (new analyze(ctx) === old reducer)'
     }).map((f) => f.file).sort();
 
     expect(files).toEqual(['/fixture/lib/dead.ts', '/fixture/lib/plain.ts']);
+  });
+});
+
+describe('Spec 68 unreferenced-module — unproven disposition (computed specifier)', () => {
+  // A corpus where one file carries a computed-specifier dynamic import. Its
+  // target cannot be resolved, so the two would-be-dead modules become
+  // `unproven` instead of findings.
+  const DYNAMIC_FIXTURE: ReadonlyArray<{ path: string; source: string }> = [
+    { path: '/fixture/lib/dead.ts', source: 'export function deadFn() { return 1; }' },
+    { path: '/fixture/lib/plain.ts', source: 'export function plainFn() { return 2; }' },
+    { path: '/fixture/main.ts', source: 'export function run() { return 1; }' },
+    {
+      path: '/fixture/loader.ts',
+      source: "const spec = './dynamic-target';\nimport(spec).then((m) => m.default);",
+    },
+  ];
+
+  function factsFor(): { flat: FileImportsFact[]; reachability: ReturnType<typeof CORPUS_PRODUCERS['reachability']['process']> } {
+    const flat: FileImportsFact[] = [];
+    for (const { path, source } of DYNAMIC_FIXTURE) {
+      const produced = produce(path, source);
+      flat.push({ file: path, imports: produced.imports, hasExports: produced.hasExports, unresolvedDynamicImports: produced.unresolvedDynamicImports });
+    }
+    const reachability = CORPUS_PRODUCERS['reachability'].process({ 'file-imports': flat });
+    return { flat, reachability };
+  }
+
+  it('detects the unresolved dynamic import in the graph', async () => {
+    const { flat } = factsFor();
+    expect(hasUnresolvedDynamicImports(flat)).toBe(true);
+  });
+
+  it('reports the would-be-dead modules as unproven (with the reason), not findings', async () => {
+    const { flat, reachability } = factsFor();
+    const unproven = computeUnprovenModules(flat, reachability).map((m) => m.file).sort();
+    expect(unproven).toEqual(['/fixture/lib/dead.ts', '/fixture/lib/plain.ts']);
+    for (const m of computeUnprovenModules(flat, reachability)) {
+      expect(m.reason).toContain('computed specifier');
+    }
+    // The rule withholds its dead-code findings while the graph is unresolved.
+    const findings = unreferencedModuleRule.analyze({
+      facts: { 'file-imports': flat, 'reachability': reachability },
+      formats: ['typescript', 'tsx', 'javascript', 'go'],
+      thresholds: {},
+    });
+    expect(findings).toEqual([]);
+  });
+
+  it('keeps the dead-code finding when no computed specifier exists', async () => {
+    const flat: FileImportsFact[] = [
+      { file: '/fixture/lib/dead.ts', imports: [], hasExports: true, unresolvedDynamicImports: [] },
+    ];
+    const reachability = CORPUS_PRODUCERS['reachability'].process({ 'file-imports': flat });
+    expect(computeUnprovenModules(flat, reachability)).toEqual([]);
+    const findings = unreferencedModuleRule.analyze({
+      facts: { 'file-imports': flat, 'reachability': reachability },
+      formats: ['typescript', 'tsx', 'javascript', 'go'],
+      thresholds: {},
+    });
+    expect(findings.map((f) => f.file)).toEqual(['/fixture/lib/dead.ts']);
   });
 });

@@ -1466,6 +1466,22 @@ export type ReachabilityFact = {
 };
 
 /**
+ * A module `unreferenced-module` could not prove dead. It has no resolved
+ * importer, but the corpus's import graph carries at least one computed-specifier
+ * dynamic import (`import(someVar)` / `require(filepath)`), whose target cannot be
+ * resolved — so *any* module could be its target and the "no importer" conclusion
+ * is unsound. This is an `unproven` disposition (a coverage diagnostic, never a
+ * dead-code finding): `reason` names the dropped evidence — a computed specifier
+ * could not be resolved.
+ */
+export type UnprovenModule = {
+  file: string;
+  /** The finding anchor line (file-level disposition, like the dead-code finding). */
+  line: number;
+  reason: string;
+};
+
+/**
  * One Go type declaration (a named struct or a named interface), as the
  * `type-declarations` producer projects it (§9). The serializable projection of
  * the Go binary's `Struct`/`Interface` extracts — the name, 1-based start line,

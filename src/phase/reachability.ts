@@ -15,7 +15,7 @@
  */
 
 import { classifyImportSpecifier, DEFAULT_VIRTUAL_MODULES } from '../graph/importClassification.js';
-import type { FileImportsFact, ReachabilityFact } from './types.js';
+import type { FileImportsFact, ReachabilityFact, UnprovenModule } from './types.js';
 
 /**
  * True when the file path matches a test-file convention (`.test.`/`.spec.`/
@@ -123,4 +123,46 @@ export function computeReachability(
     plain[fp] = [...importers].sort();
   }
   return { importersOf: plain, packageEntryPoints: [...packageEntries] };
+}
+
+/** The reason `unreferenced-module` reports a module as `unproven` rather than dead. */
+const UNPROVEN_REASON =
+  'A computed specifier could not be resolved, so this module may be imported dynamically and is not provably dead code.';
+
+/**
+ * True when the corpus's import graph carries at least one computed-specifier
+ * dynamic import (`import(someVar)` / `require(filepath)`). Such an import cannot
+ * become a resolved edge, so its target is unknown — which makes the
+ * "imported by nothing" conclusion unsound for *every* module. `unreferenced-module`
+ * reads this flag to withhold a dead-code finding in that case.
+ */
+export function hasUnresolvedDynamicImports(fileImports: readonly FileImportsFact[]): boolean {
+  return fileImports.some((f) => f.unresolvedDynamicImports.length > 0);
+}
+
+/**
+ * The modules `unreferenced-module` reports `unproven` instead of dead: a module
+ * with no resolved importer (and not a test/entry point) while the graph carries
+ * an unresolved dynamic import. Empty when the graph has no computed-specifier
+ * import — then the ordinary dead-code findings are sound and this disposition is
+ * not needed. This is the coverage-diagnostic half of the split; the rule's
+ * `analyze` reads {@link hasUnresolvedDynamicImports} to suppress the finding half.
+ */
+export function computeUnprovenModules(
+  fileImports: readonly FileImportsFact[],
+  reachability: ReachabilityFact,
+): UnprovenModule[] {
+  if (!hasUnresolvedDynamicImports(fileImports)) return [];
+  const entrySet = new Set(reachability.packageEntryPoints);
+  const importersOf = reachability.importersOf;
+
+  const out: UnprovenModule[] = [];
+  for (const info of fileImports) {
+    if (!info.hasExports) continue;
+    if (isTestFile(info.file)) continue;
+    if (isEntryPointFile(info.file) || entrySet.has(info.file)) continue;
+    if ((importersOf[info.file]?.length ?? 0) > 0) continue;
+    out.push({ file: info.file, line: 1, reason: UNPROVEN_REASON });
+  }
+  return out;
 }

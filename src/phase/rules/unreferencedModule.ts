@@ -19,7 +19,7 @@
 
 import type { RuleDefinition, Finding, FileImportsFact, ReachabilityFact } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
-import { isTestFile, isEntryPointFile } from '../reachability.js';
+import { isTestFile, isEntryPointFile, hasUnresolvedDynamicImports } from '../reachability.js';
 
 type UnreferencedModuleNeeds = {
   readonly formats: readonly ['typescript', 'tsx', 'javascript', 'go'];
@@ -43,6 +43,15 @@ export const unreferencedModuleRule: RuleDefinition<UnreferencedModuleNeeds> = {
   analyze(ctx): Finding[] {
     const imports: readonly FileImportsFact[] = ctx.facts['file-imports'];
     const reachability: ReachabilityFact = ctx.facts['reachability'];
+
+    // A computed-specifier dynamic import (`import(someVar)` / `require(filepath)`)
+    // cannot be resolved into an edge, so "imported by nothing" is unsound for
+    // every module while one exists. The corpus-side `computeUnprovenModules`
+    // (reachability.ts) surfaces those modules as `unproven` coverage diagnostics;
+    // the rule's half is to withhold the dead-code finding so it is never reported
+    // as a definite defect alongside that uncertainty.
+    if (hasUnresolvedDynamicImports(imports)) return [];
+
     const entrySet = new Set(reachability.packageEntryPoints);
     const importersOf = reachability.importersOf;
 

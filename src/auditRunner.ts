@@ -991,6 +991,20 @@ async function applyPhaseModelSplit(inputs: {
     // self-check, unchanged from the deleted `buildPipelineResult` loop.
     receiverDiagnostics = await buildReceiverDiagnostics(phaseResult.unprovenQueryReceivers, phaseResult.unresolvedImports, phaseResult.unresolvedQuerySites, phaseResult.unparseableSql, root);
 
+    // Spec 68 §8 — `unreferenced-module`'s unproven modules: a module with no
+    // resolved importer while the graph carries a computed-specifier dynamic
+    // import. The rule withholds the dead-code finding for these; this surfaces
+    // the disposition (with its reason) as a coverage diagnostic instead.
+    for (const m of phaseResult.unprovenModules) {
+      receiverDiagnostics.push({
+        analyzerName: 'dependency-graph',
+        kind: 'unresolved-dynamic-import',
+        message: m.reason,
+        file: m.file,
+        line: m.line,
+      });
+    }
+
     // Strip the migrated rules' legacy emission from every analyzer result.
     let strippedCount = 0;
     for (const result of Object.values(analyzerResults)) {

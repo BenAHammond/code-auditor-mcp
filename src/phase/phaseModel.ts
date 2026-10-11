@@ -39,15 +39,18 @@ import type {
   ExportSymbolFact,
   FactKind,
   FileFactKind,
+  FileImportsFact,
   Finding,
   ImportSpecifiersFact,
   OracleShortfall,
+  ReachabilityFact,
   ReceiverActivityFact,
   ReceiverProvenanceFact,
   RuleDefinition,
   SchemaUsageCandidatesFact,
   ThresholdValues,
   StyleDeclarationsFile,
+  UnprovenModule,
   UnreadStyleSourceFact,
   UnresolvedImportFact,
   UnresolvedQuerySite,
@@ -60,6 +63,7 @@ import type { HandleVerdict } from '../analyzers/handleIdentification.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites, classifyUnparseableSql } from './receiverConsumers.js';
 import { computeAmbientInterfaceFields } from './receiverProvenance.js';
+import { computeUnprovenModules } from './reachability.js';
 import { withRuleTiming, withRuleTimingAsync } from '../analyzers/ruleTiming.js';
 
 /**
@@ -104,6 +108,13 @@ export interface PhaseModelResult {
    *  so the caller can group per file as the legacy visitor did. Empty when
    *  `schema-usage` was not needed. */
   unparseableSql: readonly (UnparseableSql & { file: string })[];
+  /** Spec 68 §8 — the modules `unreferenced-module` could not prove dead: no
+   *  resolved importer while the graph carries a computed-specifier dynamic import.
+   *  Surfaced as an `unresolved-dynamic-import` coverage diagnostic in the caller
+   *  (never a dead-code finding — the rule withholds those when this is non-empty).
+   *  Empty when `unreferenced-module` was not active or the graph has no computed
+   *  specifier. */
+  unprovenModules: readonly UnprovenModule[];
 }
 
 /**
@@ -207,10 +218,10 @@ export async function runPhaseModel(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra?: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [] };
+  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [] };
+  if (active.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -283,7 +294,7 @@ export async function runPhaseModelOverFiles(
   infra?: PhaseInfra,
   unread: readonly UnreadStyleSourceFact[] = [],
 ): Promise<PhaseModelResult> {
-  const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql } = await buildFacts(files, infra, unread);
+  const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql, unprovenModules } = await buildFacts(files, infra, unread);
   const findings = await analyzeAll(facts, thresholdsByRule, infra);
   return {
     findings,
@@ -293,6 +304,7 @@ export async function runPhaseModelOverFiles(
     unresolvedImports,
     unresolvedQuerySites,
     unparseableSql,
+    unprovenModules,
   };
 }
 
@@ -338,7 +350,7 @@ async function buildFacts(
   files: readonly InputFile[],
   infra?: PhaseInfra,
   unread: readonly UnreadStyleSourceFact[] = [],
-): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[]; unprovenQueryReceivers: UnprovenQueryReceiver[]; unresolvedImports: UnresolvedImportFact[]; unresolvedQuerySites: UnresolvedQuerySite[]; unparseableSql: Array<UnparseableSql & { file: string }> }> {
+): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[]; unprovenQueryReceivers: UnprovenQueryReceiver[]; unresolvedImports: UnresolvedImportFact[]; unresolvedQuerySites: UnresolvedQuerySite[]; unparseableSql: Array<UnparseableSql & { file: string }>; unprovenModules: UnprovenModule[] }> {
   const projectRoot = infra?.projectRoot;
   const active = activeRules(infra?.enabledRules);
   const needed = neededFactKinds(active);
@@ -488,6 +500,15 @@ async function buildFacts(
 
   const coverage = deriveCoverageDiagnostics(facts, infra, handleVerdictCache, ambientInterfaceFields);
 
+  // Spec 68 §8 — the `unreferenced-module` unproven surface: modules with no
+  // resolved importer while the graph has a computed-specifier dynamic import.
+  // Derived from the same facts the rule reads, so it stays consistent with the
+  // rule's withhold-the-finding half. Absent facts degrade to `[]`.
+  const unprovenModules = computeUnprovenModules(
+    (facts.get('file-imports') as FileImportsFact[] | undefined) ?? [],
+    (facts.get('reachability') as ReachabilityFact | undefined) ?? { importersOf: {}, packageEntryPoints: [] },
+  );
+
   return {
     facts,
     incompleteFacts,
@@ -496,6 +517,7 @@ async function buildFacts(
     unresolvedImports: coverage.unresolvedImports,
     unresolvedQuerySites: coverage.unresolvedQuerySites,
     unparseableSql: coverage.unparseableSql,
+    unprovenModules,
   };
 }
 
