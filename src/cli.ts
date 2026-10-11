@@ -3505,6 +3505,13 @@ program
         hooks: options.hooks,
         list: options.list,
       });
+      // Nudge an undecided user toward the one-time telemetry choice. Only after
+      // a real install (not `--list`), and never once they've already decided.
+      if (!options.list && !telemetryStatus().decided) {
+        console.log(
+          'Anonymous dismissal feedback is off. Run `code-audit telemetry enable` to opt in, or `code-audit telemetry disable` to decline.',
+        );
+      }
     } catch (error) {
       console.error(chalk.red('Error:'), error);
       process.exit(1);
