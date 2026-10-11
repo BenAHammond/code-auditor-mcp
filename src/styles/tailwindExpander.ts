@@ -398,7 +398,7 @@ function expandStandard(
   // Resolve the value
   const resolvedValue = mapping.colorValue
     ? resolveColorValue(value, tokens)
-    : resolveSpacingValue(value, tokens);
+    : resolveSpacingValue(value, tokens, mapping.property);
 
   if (!resolvedValue) {
     // Try ROUNDED_SCALE for border-radius utilities
@@ -706,7 +706,14 @@ function resolveColorValue(value: string, tokens: TailwindThemeTokens): string |
   return null;
 }
 
-function resolveSpacingValue(value: string, tokens: TailwindThemeTokens): string | null {
+function resolveSpacingValue(value: string, tokens: TailwindThemeTokens, property?: string): string | null {
+  // A utility resolves against the scale its property uses, never through an
+  // unrelated scale. box-shadow (shadow-*) reads a boxShadow scale or resolves
+  // to nothing — it must not fall through the spacing → fontSize → borderRadius
+  // chain below, which would report a value that appears nowhere in the source
+  // as a shadow (e.g. shadow-md → calc(var(--radius) - 2px)).
+  if (property === 'box-shadow') return null;
+
   // Direct match in spacing tokens
   if (tokens.spacing[value]) return tokens.spacing[value];
 
