@@ -690,6 +690,11 @@ function parseStyleObjectExpression(expr: string): Array<{ property: string; val
  * whose argument is a `template_string` — the WASM grammar emits no
  * `tagged_template_expression` node. Guard on the template argument so a plain
  * function call never reaches the tag-match below.
+ *
+ * @param node The candidate `call_expression` node to test.
+ * @param sourceCode The raw TS/JS source, used to slice the template literal.
+ * @returns The cleaned CSS body with `${…}` expressions replaced by a
+ *   `dynamic` placeholder, or null when `node` is not a CSS-in-JS template.
  */
 function collectCssInJsBody(node: ASTNode, sourceCode: string): string | null {
   if (node.type !== 'call_expression') return null;
@@ -724,6 +729,10 @@ function collectCssInJsBody(node: ASTNode, sourceCode: string): string | null {
  * Collect every CSS-in-JS template body in a TS/JS AST, in source order. Shared
  * by the defined-class harvest (`harvestCssInJsStyleClasses`), which routes each
  * body through the CSS parser rather than the line-splitting declaration path.
+ *
+ * @param ast The parsed TS/JS AST to walk for CSS-in-JS templates.
+ * @param sourceCode The raw TS/JS source, used to slice each template body.
+ * @returns Every CSS-in-JS template body in source order.
  */
 export function collectCssInJsBlocks(ast: AST, sourceCode: string): string[] {
   const bodies: string[] = [];
