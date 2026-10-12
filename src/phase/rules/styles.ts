@@ -964,11 +964,12 @@ const zIndexSingleton: RuleDefinition<StylesNeeds> = {
 // and near-miss are in-memory over that fact — the same full-catalog scan the
 // legacy suggester ran (`createDefinedClassSuggester` loads the whole table once).
 //
-// The compile-probe is the one piece that does not cross: the rule's
-// `AnalysisContext` has no `projectRoot`, so `expander.init` never builds the
-// probe and `resolve()` degrades to `customClasses` + `BASE_UTILITIES` +
-// structural patterns — identical to the legacy path under the production
-// reducer (which also passed no `projectRoot`).
+// The compile-probe crosses too, now that `AnalysisContext` carries the threaded
+// `projectRoot` (A1): `expander.init` builds the probe, `validateBatch` populates
+// its cache, and `resolve()` reads that cache. The fail-open guard mirrors the
+// legacy `initTailwindProbe` — when the probe cannot validate (no tailwindcss
+// available) but Tailwind is present on disk, the detector suppresses its
+// findings rather than shipping "class not found" on an authority-free resolver.
 
 /** Suggests the nearest defined class (within edit distance 2) for one name. */
 type DefinedClassSuggester = (name: string) => { name: string; filePath: string } | null;
@@ -1134,6 +1135,24 @@ export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
       useProjectConfig: true,
       customClasses: cfg.tailwindClasses ? new Set(cfg.tailwindClasses) : undefined,
     });
+
+    // Fail-open (Spec 22 R1.3) — when the compile-probe cannot validate (no
+    // tailwindcss available to compile against) but Tailwind is present on disk
+    // (v4 CSS-first `@import "tailwindcss"` / `@theme`), a "class not found"
+    // claim has no authority and must not ship. The legacy path reports an
+    // `undefined-class-disabled` coverage diagnostic here; the phase rule has no
+    // diagnostic channel yet (§15), so it suppresses the findings outright.
+    if (expander.configFailed && expander.hasTailwindConfig) {
+      return [];
+    }
+
+    // Batch-probe the genuinely undefined names (mirrors the legacy
+    // `detectUndefinedClasses` step 3): `resolve()` only reads the probe cache,
+    // so without this the compile-probe never runs and every utility resolves
+    // invalid, sending them all to the near-miss suggester.
+    if (unresolved.length > 0 && expander.probeReady) {
+      await expander.validateBatch(unresolved.map((u) => u.className));
+    }
 
     const findings = flagUnresolvedClasses(unresolved, expander, makeFinding, suggestDefinedClass(definedClasses));
 
