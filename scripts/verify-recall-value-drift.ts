@@ -10,84 +10,81 @@
  * reading its baseline from `bench/baselines/recall-value-drift.json`.
  *
  * recall-protocol is READ-ONLY reference (it is the validation corpus this
- * project measures against); this script only *reads* it and writes its index to
- * a throwaway temp dir. It SKIPs (exit 0) when the corpus is absent, so CI
- * without the corpus stays green — the gate only bites where the corpus exists.
+ * project measures against). This gate never measures the live working tree — it
+ * materializes a clean, pinned snapshot (`corpus-pins.ts#materializeCorpusSnapshot`),
+ * failing closed (exit 2) on a present-but-unpinned corpus, then audits the
+ * snapshot. It SKIPs (exit 0) when the corpus is absent, so CI without the
+ * corpus stays green. The audit writes its index to a throwaway temp dir, never
+ * into the snapshot.
  */
 
-import { mkdtemp, rm, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
 import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runAudit } from '../src/auditRunner.js';
 import { extractDriftPairs, compareToBaseline } from './verify-recall-value-drift-core.mjs';
+import { resolveCorpusDir, materializeCorpusSnapshot } from './corpus-pins.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(__dirname, '..');
 const BASELINE_PATH = join(APP_ROOT, 'bench', 'baselines', 'recall-value-drift.json');
 
-/** Resolve the recall-protocol corpus dir, or null to skip the gate. */
-async function resolveCorpusDir(): Promise<string | null> {
-  // An explicit override is authoritative: if it is set but not a directory, the
-  // gate SKIPs rather than silently falling back to a sibling that happens to
-  // exist (a stale override must not re-point the measurement at the wrong repo).
-  if (process.env.RECALL_PROTOCOL_DIR) {
-    const s = await stat(process.env.RECALL_PROTOCOL_DIR).catch(() => null);
-    return s?.isDirectory() ? resolve(process.env.RECALL_PROTOCOL_DIR) : null;
-  }
-  // Default sibling: code-auditor/app → ../../recall-protocol = playground/recall-protocol.
-  const sibling = resolve(APP_ROOT, '..', '..', 'recall-protocol');
-  const s = await stat(sibling).catch(() => null);
-  return s?.isDirectory() ? sibling : null;
-}
-
 async function main(): Promise<number> {
   const baseline = JSON.parse(await readFile(BASELINE_PATH, 'utf8'));
-  const corpusDir = await resolveCorpusDir();
-  if (!corpusDir) {
-    console.log('SKIP: recall-protocol not found (set RECALL_PROTOCOL_DIR) — value-drift=3 gate not run');
+  const corpusName: string = baseline.corpus;
+
+  const live = await resolveCorpusDir(corpusName);
+  if (!live) {
+    console.log(`SKIP: ${corpusName} not found (set CORPUS_ROOT) — value-drift=${baseline.expectedCount} gate not run`);
     return 0;
   }
 
   initializeLanguages();
   await initParsers();
 
-  // Fresh index — isolate from the shared dev cache. #256 (styles
-  // index-state-dependence) means a warm cache can serve stale style facts, so
-  // a re-measure must start from an empty index or it asserts yesterday's data.
-  const dataDir = await mkdtemp(join(tmpdir(), 'ca-vd-gate-'));
-  process.env.CODE_AUDITOR_DATA_DIR = dataDir;
+  // Fail closed: a present-but-unpinned corpus exits 2 here, before auditing.
+  const snap = await materializeCorpusSnapshot(corpusName);
   try {
-    // value-drift reads only the style_* tables, which the styles collector
-    // populates during its pass. Spec 68 §15 removed analyzer selection, so the
-    // full migrated set runs; the gate still reads only the `styles` bucket.
-    // indexFunctions off: the gate needs no function index.
-    const result = await runAudit({
-      projectRoot: corpusDir,
-      indexFunctions: false,
-      writeToLedger: false,
-    });
-    const ar = (result.analyzerResults as Record<string, any>)['styles'];
-    const violations = (ar?.violations ?? []) as Array<{ rule?: string; message?: string }>;
-    const pairs = extractDriftPairs(violations);
-    const drift = compareToBaseline(pairs, baseline);
+    // Fresh index — isolate from the shared dev cache. #256 (styles
+    // index-state-dependence) means a warm cache can serve stale style facts, so
+    // a re-measure must start from an empty index or it asserts yesterday's data.
+    const dataDir = await mkdtemp(join(tmpdir(), 'ca-vd-gate-'));
+    process.env.CODE_AUDITOR_DATA_DIR = dataDir;
+    try {
+      // value-drift reads only the style_* tables, which the styles collector
+      // populates during its pass. Spec 68 §15 removed analyzer selection, so the
+      // full migrated set runs; the gate still reads only the `styles` bucket.
+      // indexFunctions off: the gate needs no function index.
+      const result = await runAudit({
+        projectRoot: snap.dir,
+        indexFunctions: false,
+        writeToLedger: false,
+      });
+      const ar = (result.analyzerResults as Record<string, any>)['styles'];
+      const violations = (ar?.violations ?? []) as Array<{ rule?: string; message?: string }>;
+      const pairs = extractDriftPairs(violations);
+      const drift = compareToBaseline(pairs, baseline);
 
-    console.log(`recall-protocol styles/value-drift: ${pairs.length} finding(s)`);
-    for (const p of pairs) console.log(`  ${p.drift} → ${p.canonical} (ΔE ${p.deltaE76})`);
+      console.log(`${corpusName} styles/value-drift: ${pairs.length} finding(s)`);
+      for (const p of pairs) console.log(`  ${p.drift} → ${p.canonical} (ΔE ${p.deltaE76})`);
 
-    if (drift.length) {
-      console.error('\nvalue-drift baseline DRIFT:');
-      for (const d of drift) console.error(`  ${d}`);
-      return 1;
+      if (drift.length) {
+        console.error('\nvalue-drift baseline DRIFT:');
+        for (const d of drift) console.error(`  ${d}`);
+        return 1;
+      }
+      console.log(`value-drift baseline intact (${baseline.expectedCount} genuine near-identical pairs).`);
+      return 0;
+    } finally {
+      delete process.env.CODE_AUDITOR_DATA_DIR;
+      await rm(dataDir, { recursive: true, force: true });
     }
-    console.log(`value-drift baseline intact (${baseline.expectedCount} genuine near-identical pairs).`);
-    return 0;
   } finally {
-    delete process.env.CODE_AUDITOR_DATA_DIR;
-    await rm(dataDir, { recursive: true, force: true });
+    await snap.cleanup();
   }
 }
 

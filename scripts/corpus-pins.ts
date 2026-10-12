@@ -12,7 +12,9 @@
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { promises as fsp } from 'node:fs';
 
 /**
  * A corpus pin: the commit SHA (provenance) plus a content hash that proves the
@@ -26,7 +28,7 @@ export interface CorpusPin {
   readonly content: string;
 }
 
-function loadPins(): Record<string, CorpusPin> {
+export function loadPins(): Record<string, CorpusPin> {
   const pinsPath = path.join(
     path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'),
     'specs',
@@ -131,8 +133,8 @@ function dirtyFiles(root: string): string[] {
  * with a reason. It must be impossible to run a measurement against an unpinned
  * tree and report a number.
  */
-export function assertCorpusPinned(projectRoot: string): void {
-  const corpusName = path.basename(path.resolve(projectRoot));
+export function assertCorpusPinned(projectRoot: string, nameOverride?: string): void {
+  const corpusName = nameOverride ?? path.basename(path.resolve(projectRoot));
 
   let pins: Record<string, CorpusPin>;
   try {
@@ -203,4 +205,97 @@ export function assertCorpusPinned(projectRoot: string): void {
   }
 
   console.log(`corpus pinned at ${pinned.sha} ✓ (content ${pinned.content} matches)`);
+}
+
+/**
+ * Resolve a corpus's live checkout on disk (a sibling of `app`, or under the
+ * `CORPUS_ROOT` override), or null when it is absent. The live checkout is only
+ * a *source* of the pinned SHA — a measurement never runs against it directly,
+ * because it may carry uncommitted work.
+ */
+export async function resolveCorpusDir(name: string): Promise<string | null> {
+  const override = process.env.CORPUS_ROOT;
+  const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const base = override ?? path.resolve(appRoot, '..', '..');
+  const dir = path.resolve(base, name);
+  try {
+    const st = await fsp.stat(dir);
+    return st.isDirectory() ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract the stderr text from an `execSync` throw (its `.stderr` field). */
+function execErrorDetail(e: unknown): string {
+  if (e && typeof e === 'object' && 'stderr' in e) {
+    const s = (e as { stderr?: unknown }).stderr;
+    const text = typeof s === 'string' ? s : Buffer.isBuffer(s) ? s.toString('utf8') : '';
+    return text.trim();
+  }
+  return String(e);
+}
+
+/**
+ * Materialize a clean, pinned checkout of one corpus for measurement, or fail
+ * closed (exit 2). This is the gate-entry point every corpus-reading gate must
+ * pass through before measuring:
+ *
+ *   1. The corpus must be pinned (`specs/corpus-pins.json` has a `{sha, content}`
+ *      entry) — otherwise `✗ CORPUS NOT PINNED`, exit 2.
+ *   2. A fresh clone is checked out at the pinned SHA, so the measurement reads
+ *      the *pinned bytes*, never the live tree's uncommitted work.
+ *   3. {@link assertCorpusPinned} is then run against the snapshot — the same
+ *      fail-closed assertion the pin mechanism defines — so the snapshot cannot
+ *      be measured through unless it reconstructs the pin exactly.
+ *
+ * The snapshot is a throwaway clone under the OS temp dir; callers must invoke
+ * the returned `cleanup` (best-effort, on both success and failure).
+ */
+export async function materializeCorpusSnapshot(
+  name: string,
+): Promise<{ dir: string; cleanup(): Promise<void> }> {
+  const live = await resolveCorpusDir(name);
+  if (!live) {
+    console.error(`✗ CORPUS ABSENT — '${name}' not found (set CORPUS_ROOT to the playground dir).`);
+    process.exit(2);
+  }
+  const pin = loadPins()[name];
+  if (!pin) {
+    console.error(
+      `✗ CORPUS NOT PINNED — no pin for '${name}' in specs/corpus-pins.json. ` +
+        'Record its HEAD SHA + content hash before measuring; an unpinned tree is not a measurement.',
+    );
+    process.exit(2);
+  }
+
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), `ca-corpus-${name}-`));
+  const cleanup = async () => {
+    try {
+      await fsp.rm(tmp, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  };
+
+  try {
+    execSync(`git clone --no-checkout --quiet -- "${live}" "${tmp}"`, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    await cleanup();
+    throw new Error(`could not clone '${name}' from ${live}: ${execErrorDetail(e)}`);
+  }
+  try {
+    execSync(`git checkout --detach --force --quiet ${pin.sha}`, {
+      cwd: tmp,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    await cleanup();
+    throw new Error(`could not check out pinned SHA ${pin.sha} for '${name}': ${execErrorDetail(e)}`);
+  }
+
+  assertCorpusPinned(tmp, name);
+  return { dir: tmp, cleanup };
 }

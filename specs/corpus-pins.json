@@ -15,6 +15,10 @@
     "sha": "e25d54bcb707714a17f5a5744eba5c4246bb4d1d",
     "content": "bf724ec9d325b90b4e4a74fb9ddb2608d07fe96f"
   },
+  "openstatus": {
+    "sha": "444a06b851fc3d88bbfd5291c4d036045e6841ca",
+    "content": "49d117f56055c5f5d88d630a39fbe119596709dd"
+  },
   "primer-css": {
     "sha": "48826969ac851a46c4efc514db39b845f4f2cc39",
     "content": "f90db060da705deba524982191fc177e2bc5b8a0"

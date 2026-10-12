@@ -15,14 +15,21 @@
  * Pin it: the next unseen idiom, or an extractor regression that silently stops
  * admitting a real builder, moves a number here instead of a quiet report.
  *
- * The corpora are READ-ONLY reference; this script only *reads* them. It SKIPs
- * (exit 0) per absent corpus, so CI without the corpora stays green — the gate
- * only bites where the corpus exists (the same contract as
- * verify-recall-value-drift).
+ * The corpora are READ-ONLY reference. This gate never measures a live working
+ * tree — it materializes a clean, pinned snapshot of each corpus
+ * (`corpus-pins.ts#materializeCorpusSnapshot`), failing closed (exit 2) on a
+ * present-but-unpinned corpus, then measures the snapshot. It SKIPs (exit 0) an
+ * *absent* corpus so CI without the corpora stays green.
+ *
+ * The corpus set is derived from this gate's own baseline — the keys of
+ * `bench/baselines/extraction-completeness.json`'s `corpora` object — not from a
+ * hand-kept name list. A corpus is in this gate iff the baseline records a gap
+ * for it; adding or removing a corpus is an edit to the baseline, never to a
+ * parallel list that can drift out of sync.
  */
 
 import { readFileSync } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initializeLanguages } from '../src/languages/index.js';
@@ -35,13 +42,11 @@ import { discoverFiles, TYPESCRIPT_EXTENSIONS, JAVASCRIPT_EXTENSIONS } from '../
 import type { AST, ASTNode } from '../src/languages/types.js';
 import type { LanguageAdapter } from '../src/languages/LanguageAdapter.js';
 import { compareCompleteness } from './verify-extraction-completeness-core.mjs';
+import { resolveCorpusDir, materializeCorpusSnapshot } from './corpus-pins.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(__dirname, '..');
 const BASELINE_PATH = join(APP_ROOT, 'bench', 'baselines', 'extraction-completeness.json');
-
-/** The four TS/JS validation corpora, as siblings of app. */
-const CORPORA = ['hhra-org', 'blitz', 'openstatus', 'recall-protocol'] as const;
 
 /**
  * Independent shape sweep: a call expression is a builder anchor when the
@@ -79,7 +84,7 @@ function collectBuilderSites(
   return sites;
 }
 
-/** Measure one corpus: { builderSites, gap } where gap = sites with no extracted call. */
+/** Measure one corpus tree: { builderSites, gap } where gap = sites with no extracted call. */
 async function measureCorpus(registry: LanguageRegistry, projectRoot: string) {
   const extensions = [...TYPESCRIPT_EXTENSIONS, ...JAVASCRIPT_EXTENSIONS];
   const files = await discoverFiles(projectRoot, { extensions });
@@ -112,33 +117,32 @@ async function measureCorpus(registry: LanguageRegistry, projectRoot: string) {
   return { builderSites, gap: gaps.size };
 }
 
-/** Resolve a corpus dir, or null to skip that corpus. */
-async function resolveCorpusDir(name: string): Promise<string | null> {
-  const override = process.env.CORPUS_ROOT;
-  // Default: app → ../../<name> = playground/<name> (siblings of code-auditor).
-  const base = override ?? resolve(APP_ROOT, '..', '..');
-  const dir = resolve(base, name);
-  const s = await stat(dir).catch(() => null);
-  return s?.isDirectory() ? dir : null;
-}
-
 async function main(): Promise<number> {
   const baseline: Record<string, number> = JSON.parse(await readFile(BASELINE_PATH, 'utf8')).corpora;
   initializeLanguages();
   await initParsers();
   const registry = LanguageRegistry.getInstance();
 
+  // The corpus set is the baseline's own key set — the single source of truth.
+  const corpusSet = Object.keys(baseline);
+
   const measured: Record<string, number> = {};
   const skipped: string[] = [];
-  for (const name of CORPORA) {
-    const dir = await resolveCorpusDir(name);
-    if (!dir) {
+  for (const name of corpusSet) {
+    const live = await resolveCorpusDir(name);
+    if (!live) {
       skipped.push(name);
       continue;
     }
-    const { builderSites, gap } = await measureCorpus(registry, dir);
-    measured[name] = gap;
-    console.log(`${name}: ${builderSites} builder sites, ${gap} residual gap`);
+    // Fail closed: a present-but-unpinned corpus exits 2 here, before measuring.
+    const snap = await materializeCorpusSnapshot(name);
+    try {
+      const { builderSites, gap } = await measureCorpus(registry, snap.dir);
+      measured[name] = gap;
+      console.log(`${name}: ${builderSites} builder sites, ${gap} residual gap`);
+    } finally {
+      await snap.cleanup();
+    }
   }
 
   if (skipped.length) {

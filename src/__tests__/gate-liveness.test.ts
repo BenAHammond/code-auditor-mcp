@@ -156,24 +156,43 @@ describe('verify:gate-budget — liveness', () => {
 describe('verify:dist-fresh — liveness', () => {
   // A stale dist/cli.js must fail the gate through its own exit 1, never pass by
   // accident. This is the antidote to "the gate happened to be fresh when I ran
-  // it": it proves the failure branch is live by making dist stale on purpose
-  // (backdating dist/cli.js so every source input is newer than it), then asserts
-  // the real gate exits non-zero. Requires the compiled CLI; skip in a bare test
-  // run without a build — in the release path `verify:dist-fresh` has already
-  // asserted dist is fresh before any test runs.
-  it.skipIf(!existsSync(DIST_CLI))('exits 1 when dist/cli.js is older than a source input', () => {
+  // it": it proves the failure branch is live by making dist stale on purpose —
+  // corrupting the compiled bytes — then asserts the real gate exits non-zero.
+  // Requires the compiled CLI; skip in a bare test run without a build — in the
+  // release path `verify:dist-fresh` has already asserted dist is fresh before
+  // any test runs.
+  it.skipIf(!existsSync(DIST_CLI))('exits 1 when dist/cli.js content differs from a fresh compile', () => {
+    const before = readFileSync(DIST_CLI);
+    // A content difference, not an old mtime, is what now makes the gate stale:
+    // append a byte so dist/cli.js can no longer match a fresh compile.
+    writeFileSync(DIST_CLI, Buffer.concat([before, Buffer.from('\n// stale\n')]));
+    try {
+      const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-dist-fresh.mjs')], {
+        encoding: 'utf-8',
+      });
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('does not match a fresh compile');
+    } finally {
+      writeFileSync(DIST_CLI, before);
+    }
+  }, 60_000);
+
+  it.skipIf(!existsSync(DIST_CLI))('passes when content matches even though mtime is backdated', () => {
+    // Freshness is a content property now, so an old mtime must not read as
+    // stale. Backdate dist/cli.js to epoch (every source input is "newer"), and
+    // the gate still exits 0 because the bytes match a fresh compile.
     const before = statSync(DIST_CLI);
     utimesSync(DIST_CLI, 0, 0);
     try {
       const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-dist-fresh.mjs')], {
         encoding: 'utf-8',
       });
-      expect(res.status).toBe(1);
-      expect(res.stderr).toContain('dist/cli.js is older than');
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain('matches a fresh compile');
     } finally {
       utimesSync(DIST_CLI, before.atimeMs / 1000, before.mtimeMs / 1000);
     }
-  });
+  }, 60_000);
 });
 
 describe('verify:hook-log-path — liveness', () => {
@@ -209,7 +228,6 @@ describe('verify:version-fresh — liveness', () => {
   const VERSION_GEN = join(APP_ROOT, 'src', 'version.generated.ts');
   it('exits 1 when the version stamp drifts from its single source', () => {
     const before = readFileSync(VERSION_GEN, 'utf8');
-    const mtime = statSync(VERSION_GEN);
     // Corrupt one character: bump the stamped patch to a version package.json
     // does not carry, so the regenerated file cannot match.
     writeFileSync(VERSION_GEN, before.replace("VERSION = '", "VERSION = '9"));
@@ -221,9 +239,6 @@ describe('verify:version-fresh — liveness', () => {
       expect(res.stderr).toContain('stale generated file');
     } finally {
       writeFileSync(VERSION_GEN, before);
-      // Restore mtime: writing src/version.generated.ts bumps it past dist/cli.js,
-      // which would make the *next* `verify:dist-fresh` run fail spuriously.
-      utimesSync(VERSION_GEN, mtime.atimeMs / 1000, mtime.mtimeMs / 1000);
     }
   });
 });
@@ -394,8 +409,9 @@ describe('verify:close — a stale dist fails the chain', () => {
   // `verify:dist-fresh` gate so the test stays fast, but that gate is the real one:
   // it runs against the backdated dist, exits 1, and the runner propagates it.
   it.skipIf(!existsSync(DIST_CLI))('exits non-zero when verify:dist-fresh fails on a stale dist', () => {
-    const before = statSync(DIST_CLI);
-    utimesSync(DIST_CLI, 0, 0);
+    const before = readFileSync(DIST_CLI);
+    // Corrupt the compiled bytes (a content difference, not an old mtime).
+    writeFileSync(DIST_CLI, Buffer.concat([before, Buffer.from('\n// stale\n')]));
     try {
       const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-close.mjs')], {
         encoding: 'utf-8',
@@ -405,9 +421,9 @@ describe('verify:close — a stale dist fails the chain', () => {
       expect(res.stdout).toContain('FAIL');
       expect(res.stdout).toContain('verify:dist-fresh');
     } finally {
-      utimesSync(DIST_CLI, before.atimeMs / 1000, before.mtimeMs / 1000);
+      writeFileSync(DIST_CLI, before);
     }
-  }, 30_000);
+  }, 60_000);
 });
 
 describe('verify:close — a subset run never reads as a full pass', () => {
