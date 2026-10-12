@@ -12,10 +12,9 @@
  * recall-protocol is READ-ONLY reference (it is the validation corpus this
  * project measures against). This gate never measures the live working tree — it
  * materializes a clean, pinned snapshot (`corpus-pins.ts#materializeCorpusSnapshot`),
- * failing closed (exit 2) on a present-but-unpinned corpus, then audits the
- * snapshot. It SKIPs (exit 0) when the corpus is absent, so CI without the
- * corpus stays green. The audit writes its index to a throwaway temp dir, never
- * into the snapshot.
+ * failing closed (exit 2) on an absent or present-but-unpinned corpus, then
+ * audits the snapshot. The audit writes its index to a throwaway temp dir,
+ * never into the snapshot.
  */
 
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
@@ -27,7 +26,7 @@ import { initializeLanguages } from '../src/languages/index.js';
 import { initParsers } from '../src/languages/tree-sitter/parser.js';
 import { runAudit } from '../src/auditRunner.js';
 import { extractDriftPairs, compareToBaseline } from './verify-recall-value-drift-core.mjs';
-import { resolveCorpusDir, materializeCorpusSnapshot } from './corpus-pins.js';
+import { materializeCorpusSnapshot } from './corpus-pins.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(__dirname, '..');
@@ -36,12 +35,6 @@ const BASELINE_PATH = join(APP_ROOT, 'bench', 'baselines', 'recall-value-drift.j
 async function main(): Promise<number> {
   const baseline = JSON.parse(await readFile(BASELINE_PATH, 'utf8'));
   const corpusName: string = baseline.corpus;
-
-  const live = await resolveCorpusDir(corpusName);
-  if (!live) {
-    console.log(`SKIP: ${corpusName} not found (set CORPUS_ROOT) — value-drift=${baseline.expectedCount} gate not run`);
-    return 0;
-  }
 
   initializeLanguages();
   await initParsers();

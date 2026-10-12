@@ -17,9 +17,7 @@
  * changed. This gate therefore never measures a live working tree — it
  * materializes a clean, pinned snapshot of each corpus (see
  * `corpus-pins.ts#materializeCorpusSnapshot`), which fails closed (exit 2) on an
- * unpinned corpus, then measures the snapshot. It SKIPs (exit 0) a corpus that
- * is *absent* (CI without the corpora stays green); a corpus that is *present*
- * but unpinned is a hard failure, not a skip.
+ * absent or unpinned corpus, then measures the snapshot.
  *
  * The corpus set is derived from this gate's own baseline — the union of
  * `case.corpus` in `bench/baselines/recall-cases.json` — not from a hand-kept
@@ -53,7 +51,7 @@ import { runPhaseModel } from '../src/phase/phaseModel.js';
 import { discoverFiles, ALL_EXTENSIONS } from '../src/utils/fileDiscovery.js';
 import { buildResolutionEnvironment } from '../src/graph/resolutionEnvironment.js';
 import { compareRecallCases } from './verify-recall-cases-core.mjs';
-import { resolveCorpusDir, materializeCorpusSnapshot } from './corpus-pins.js';
+import { materializeCorpusSnapshot } from './corpus-pins.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(__dirname, '..');
@@ -133,14 +131,8 @@ async function main(): Promise<number> {
   const corpusSet = [...new Set(cases.map((c) => c.corpus))];
 
   const measured: Record<string, Record<string, Record<string, string[]>>> = {};
-  const skipped: string[] = [];
   for (const name of corpusSet) {
-    const live = await resolveCorpusDir(name);
-    if (!live) {
-      skipped.push(name);
-      continue;
-    }
-    // Fail closed: a present-but-unpinned corpus exits 2 here, before measuring.
+    // Fail closed: an absent or unpinned corpus exits 2 here, before measuring.
     const snap = await materializeCorpusSnapshot(name);
     try {
       const byKindFile = await measureCorpus(snap.dir);
@@ -154,18 +146,13 @@ async function main(): Promise<number> {
     }
   }
 
-  if (skipped.length) {
-    console.log(`SKIP: ${skipped.join(', ')} not found — cases on these corpora are not compared (set CORPUS_ROOT to the playground dir)`);
-  }
-
-  const presentCases = cases.filter((c) => !skipped.includes(c.corpus));
-  const drift = compareRecallCases(measured, presentCases);
+  const drift = compareRecallCases(measured, cases);
   if (drift.length) {
     console.error('\nrecall-cases baseline DRIFT:');
     for (const d of drift) console.error(`  ${d}`);
     return 1;
   }
-  console.log(`recall-cases intact: ${presentCases.length} named case(s) all emitted.`);
+  console.log(`recall-cases intact: ${cases.length} named case(s) all emitted.`);
   return 0;
 }
 

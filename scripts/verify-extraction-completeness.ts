@@ -17,9 +17,8 @@
  *
  * The corpora are READ-ONLY reference. This gate never measures a live working
  * tree — it materializes a clean, pinned snapshot of each corpus
- * (`corpus-pins.ts#materializeCorpusSnapshot`), failing closed (exit 2) on a
- * present-but-unpinned corpus, then measures the snapshot. It SKIPs (exit 0) an
- * *absent* corpus so CI without the corpora stays green.
+ * (`corpus-pins.ts#materializeCorpusSnapshot`), failing closed (exit 2) on an
+ * absent or present-but-unpinned corpus, then measures the snapshot.
  *
  * The corpus set is derived from this gate's own baseline — the keys of
  * `bench/baselines/extraction-completeness.json`'s `corpora` object — not from a
@@ -42,7 +41,7 @@ import { discoverFiles, TYPESCRIPT_EXTENSIONS, JAVASCRIPT_EXTENSIONS } from '../
 import type { AST, ASTNode } from '../src/languages/types.js';
 import type { LanguageAdapter } from '../src/languages/LanguageAdapter.js';
 import { compareCompleteness } from './verify-extraction-completeness-core.mjs';
-import { resolveCorpusDir, materializeCorpusSnapshot } from './corpus-pins.js';
+import { materializeCorpusSnapshot } from './corpus-pins.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = resolve(__dirname, '..');
@@ -127,14 +126,8 @@ async function main(): Promise<number> {
   const corpusSet = Object.keys(baseline);
 
   const measured: Record<string, number> = {};
-  const skipped: string[] = [];
   for (const name of corpusSet) {
-    const live = await resolveCorpusDir(name);
-    if (!live) {
-      skipped.push(name);
-      continue;
-    }
-    // Fail closed: a present-but-unpinned corpus exits 2 here, before measuring.
+    // Fail closed: an absent or unpinned corpus exits 2 here, before measuring.
     const snap = await materializeCorpusSnapshot(name);
     try {
       const { builderSites, gap } = await measureCorpus(registry, snap.dir);
@@ -143,10 +136,6 @@ async function main(): Promise<number> {
     } finally {
       await snap.cleanup();
     }
-  }
-
-  if (skipped.length) {
-    console.log(`SKIP: ${skipped.join(', ')} not found (set CORPUS_ROOT to the playground dir)`);
   }
 
   const drift = compareCompleteness(measured, baseline);
