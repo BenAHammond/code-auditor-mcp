@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { SqliteDatabase, SqliteStatement } from '../sqlite/types.js';
 import { extractDeclarations } from './styleExtractor.js';
+import { harvestDefinedClasses } from './definedClasses.js';
 import { loadTailwindConfig, tokensToStyleTokens, type TailwindConfigResult } from './tailwindConfigLoader.js';
 import {
   STYLE_MARKUP_EXTENSIONS,
@@ -472,10 +473,11 @@ function insertDeclarations(
       // Populate the defined-class catalog (Spec 45) from each declaration's
       // selector context so styles/undefined-class can resolve names via an
       // indexed `class_name IN (...)` lookup instead of a full-corpus scan.
-      if (d.context) {
-        for (const m of d.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-          stmts.insertClass.run(m[1], filePath);
-        }
+      // Markup has no CSS AST, so the shared harvest scans the selector context
+      // with the `@keyframes` at-rule as the discriminant (a keyframe percentage
+      // like `15.8%` is not a class selector).
+      for (const ref of harvestDefinedClasses([d], [], false)) {
+        stmts.insertClass.run(ref.className, ref.filePath);
       }
     }
   });

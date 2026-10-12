@@ -11,6 +11,7 @@ import { openSqlite, DB_BUSY_TIMEOUT_MS } from '../sqlite/driver.js';
 import { statSync, existsSync, readFileSync, renameSync, openSync, readSync, closeSync } from 'fs';
 import path from 'path';
 import { ContextualError } from '../mcpToolErrors.js';
+import { harvestDefinedClasses } from '../styles/definedClasses.js';
 
 const PRAGMA_TABLE_INFO_FINDINGS_LEDGER_RUNS = "PRAGMA table_info('findings_ledger_runs')";
 const PRAGMA_JOURNAL_WAL = 'journal_mode = WAL';
@@ -1153,15 +1154,19 @@ export class SchemaMigrations {
       `);
 
       const definedRows = this.db
-        .prepare('SELECT DISTINCT context, file_path FROM style_declarations WHERE context IS NOT NULL')
-        .all() as Array<{ context: string; file_path: string }>;
+        .prepare('SELECT DISTINCT context, variant_context, file_path FROM style_declarations WHERE context IS NOT NULL')
+        .all() as Array<{ context: string; variant_context: string | null; file_path: string }>;
       const insertDefined = this.db.prepare(
         'INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
       );
       const backfill = this.db.transaction(() => {
         for (const r of definedRows) {
-          for (const m of r.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-            insertDefined.run(m[1], r.file_path);
+          for (const ref of harvestDefinedClasses(
+            [{ context: r.context, variantContext: r.variant_context, filePath: r.file_path }],
+            [],
+            false,
+          )) {
+            insertDefined.run(ref.className, ref.filePath);
           }
         }
       });

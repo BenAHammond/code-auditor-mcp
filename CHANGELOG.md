@@ -20,6 +20,18 @@ the newest `HOOK RAN` record (which hook-audit.sh now writes after every
 completed run). The read is fail-open — an absent, unreadable, or malformed log
 yields no notice and never changes the audit exit code.
 
+### Keyframe percentages no longer pollute the defined-class catalog
+
+Every writer of the defined-class catalog scraped class names from a
+declaration's selector context with `/\.([a-zA-Z0-9_-]+)/g`, which admitted a
+keyframe percentage (`15.8%` → `8`) or a decimal attribute selector
+(`[data-ratio="1.5"]` → `5`) as a class name — a class name can never start with
+a digit. The catalog now derives from one shared harvest: CSS/SCSS use the
+parser's class-selector walk (keyframes excluded structurally), and markup/source
+scan the selector context with the `@keyframes` at-rule as the discriminant. The
+retired regex no longer appears anywhere in `src/`. On recall-protocol this drops
+catalog pollution from 2 (`5`/`8`) to 0 with `styles/undefined-class` unchanged.
+
 ## [5.1.0]
 
 ### Anonymous telemetry opt-in is offered exactly once

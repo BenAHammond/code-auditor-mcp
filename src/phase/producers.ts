@@ -115,6 +115,7 @@ import { extractSecurityCandidates } from './securityCandidates.js';
 import { extractStylesCss } from './stylesCss.js';
 import { extractStylesSource } from './stylesSource.js';
 import { extractStylesMarkup } from './stylesMarkup.js';
+import { harvestDefinedClasses } from '../styles/definedClasses.js';
 import { extractDataAccessCallCandidates } from './dataAccessCallsCandidates.js';
 import { extractLoopQueryRawCandidates } from './loopQueryCandidates.js';
 import { extractDynamicSql } from './dynamicSql.js';
@@ -839,10 +840,11 @@ export const CORPUS_PRODUCERS = {
   // `style-declarations` phase fact rather than the `style_defined_classes`
   // index table (Item 4 2b: style-declarations → defined-classes). Every writer
   // of `style_defined_classes` (source CSS-in-JS, compiled CSS, other extractable
-  // files) derives the class name by the SAME regex `/\.([a-zA-Z0-9_-]+)/g` over
-  // the declaration's selector `context`, so the phase fact reproduces the table
-  // byte-for-byte: group by class name, keep MIN(file_path). `context`/`filePath`
-  // are plain data already on `StylesDeclaration`.
+  // files) derives the class name by the SAME shared harvest
+  // (`harvestDefinedClasses`): the CSS/SCSS path uses the parser's class-selector
+  // walk (`classUsage`), while markup/source scan the selector `context` with the
+  // `@keyframes` at-rule as the discriminant. The phase fact reproduces the table
+  // byte-for-byte: group by class name, keep MIN(file_path).
   //
   // Parity notes: (1) the index producer's MIN(file_path) used SQLite BINARY
   // collation (UTF-8 byte order); JS `<` is UTF-16 code-unit order — identical
@@ -857,15 +859,11 @@ export const CORPUS_PRODUCERS = {
     process(facts): DefinedClassesFact[] {
       const byClass = new Map<string, string>(); // className -> MIN(file_path)
       for (const f of facts['style-declarations']) {
-        for (const d of f.declarations) {
-          const ctx = d.context;
-          if (!ctx) continue;
-          for (const m of ctx.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-            const className = m[1];
-            const fp = d.filePath;
-            const prev = byClass.get(className);
-            if (prev === undefined || fp < prev) byClass.set(className, fp);
-          }
+        const anyPath = f.declarations[0]?.filePath ?? f.classUsage[0]?.filePath;
+        const isCss = anyPath ? /\.(css|scss)$/i.test(anyPath) : false;
+        for (const { className, filePath } of harvestDefinedClasses(f.declarations, f.classUsage, isCss)) {
+          const prev = byClass.get(className);
+          if (prev === undefined || filePath < prev) byClass.set(className, filePath);
         }
       }
       return [...byClass.entries()]

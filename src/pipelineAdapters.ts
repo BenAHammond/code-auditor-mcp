@@ -76,6 +76,7 @@ import {
 } from './analyzers/orgFilterTiers.js';
 import type { CrossLanguageEntity, CrossReference } from './types/crossLanguage.js';
 import type { Dialect } from './mcp-tools/discoveryQueries.js';
+import { harvestDefinedClasses } from './styles/definedClasses.js';
 
 // ── Rule ID helpers ──────────────────────────────────────────────────────────
 
@@ -1126,11 +1127,12 @@ function insertSourceStyleFacts(
     // Insert declarations (and their defined-class catalog entries).
     for (const decl of facts.declarations) {
       runStyleWrite(stmts, 'insDecl', [decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash]);
-      if (decl.context) {
-        for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-          runStyleWrite(stmts, 'insClass', [m[1], decl.filePath]);
-        }
-      }
+    }
+    // Source (CSS-in-JS) has no literal class selectors; the catalog harvest is a
+    // no-op here, but routed through the shared helper so every writer derives the
+    // catalog the same way.
+    for (const ref of harvestDefinedClasses(facts.declarations, facts.classUsage, false)) {
+      runStyleWrite(stmts, 'insClass', [ref.className, ref.filePath]);
     }
 
     // Insert class usage.
@@ -1252,15 +1254,12 @@ export function createStylesReducer(): Stage3Reducer {
               // Insert declarations
               for (const decl of facts.declarations) {
                 runStyleWrite(stmts, 'insDecl', [decl.property, decl.rawValue, JSON.stringify(decl.normalizedValue), decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, contentHash]);
-                // Populate the defined-class catalog (Spec 45) from any class
-                // selectors in the rule's context so styles/undefined-class can
-                // resolve names via `style_defined_classes` instead of a
-                // full-corpus regex scan over every declaration.
-                if (decl.context) {
-                  for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
-                    runStyleWrite(stmts, 'insClass', [m[1], decl.filePath]);
-                  }
-                }
+              }
+              // Populate the defined-class catalog (Spec 45) from the CSS parser's
+              // class-selector harvest (`classUsage`) — keyframes and pseudo-classes
+              // are excluded structurally, so no selector scrape over `context`.
+              for (const ref of harvestDefinedClasses(facts.declarations, facts.classUsage, true)) {
+                runStyleWrite(stmts, 'insClass', [ref.className, ref.filePath]);
               }
 
               // Insert tokens

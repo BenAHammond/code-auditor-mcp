@@ -204,9 +204,10 @@ describe('Bug 4 — findSelectorStart boundary', () => {
 // ---------------------------------------------------------------------------
 // Bug 5: CSS comments as class names
 // ---------------------------------------------------------------------------
-// The regex `class_usage` extractor used `\.([a-zA-Z0-9_-]+)` which matched
-// class names inside comments. tree-sitter's CSS grammar types comment nodes
-// separately from class_name nodes, so AST extraction naturally excludes them.
+// The retired regex class extractor matched any dot-followed identifier run, so
+// it admitted class names inside comments. tree-sitter's CSS grammar types
+// comment nodes separately from class_name nodes, so AST extraction naturally
+// excludes them.
 
 describe('Bug 5 — CSS comments as class names', () => {
   it('does not extract class names from block comments', async () => {

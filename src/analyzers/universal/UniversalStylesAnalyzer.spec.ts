@@ -18,6 +18,7 @@ import { extractClassUsage } from '../../styles/styleIndexer.js';
 import { initializeLanguages, initParsers } from '../../languages/index.js';
 import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { extractDeclarationsFromCSSAst } from '../../styles/cssAstExtractor.js';
+import { harvestDefinedClasses } from '../../styles/definedClasses.js';
 import type { LanguageAdapter } from '../../languages/types.js';
 
 // ---------------------------------------------------------------------------
@@ -60,9 +61,13 @@ function insertDecl(fields: DeclFields): number {
   // any class selectors in `context` so undefined-class resolves via the
   // `style_defined_classes` table exactly as it does in production.
   if (fields.context) {
-    for (const m of fields.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
+    for (const ref of harvestDefinedClasses(
+      [{ context: fields.context, variantContext: fields.variant_context ?? null, filePath: fields.file_path ?? 'src/test.css' }],
+      [],
+      false,
+    )) {
       db.rawSql.run('INSERT OR IGNORE INTO style_defined_classes (class_name, file_path) VALUES (?, ?)',
-        [m[1], fields.file_path ?? 'src/test.css']);
+        [ref.className, ref.filePath]);
     }
   }
   return id;

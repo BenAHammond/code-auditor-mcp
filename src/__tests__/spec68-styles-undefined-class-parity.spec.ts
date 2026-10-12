@@ -130,10 +130,10 @@ async function parity(usages: UsageSeed[], defined: Array<{ className: string; f
     unresolvable: !!r.unresolvable,
   }));
   // Item 4 2b — `defined-classes` is now derived from the `style-declarations`
-  // phase fact (declaration selector `context` → class name, the same regex the
-  // legacy `style_defined_classes` writers used). Seed the fact's declarations
-  // with the class names in their `context`, mirroring what the real producer
-  // emits for a stylesheet, and pass that as the producer's upstream fact.
+  // phase fact's parser harvest (`classUsage` for CSS/SCSS, which is the same
+  // class-selector walk the legacy `style_defined_classes` writers moved to).
+  // Seed the fact's `classUsage` (a `.css` file, so the producer reads it, not
+  // the selector context) and pass that as the producer's upstream fact.
   const declarations = defined.map((d) => ({
     property: 'color',
     rawValue: 'red',
@@ -145,8 +145,15 @@ async function parity(usages: UsageSeed[], defined: Array<{ className: string; f
     variantContext: null,
     tokenRef: null,
   }));
+  const definedClassUsage = defined.map((d) => ({
+    className: d.className,
+    filePath: d.filePath,
+    line: 1,
+    mechanism: 'class' as const,
+    unresolvable: false,
+  }));
   const definedClasses = CORPUS_PRODUCERS['defined-classes'].process(
-    { 'style-declarations': [{ declarations, tokens: [], classUsage: [] }] },
+    { 'style-declarations': [{ declarations, tokens: [], classUsage: definedClassUsage }] },
     { indexHandle: db.indexHandle },
   );
 
