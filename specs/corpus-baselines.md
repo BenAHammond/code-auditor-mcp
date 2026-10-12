@@ -1807,3 +1807,234 @@ the resolver's confidence accounting is the defect.
 | knex | 606 | 635 | +29 | migration (read-never-written +12, schema-code +11, data-access +6) |
 | primer-css | 18 | 18 | 0 | — |
 | blitz | 1,040 | 1,034 | −6 | migration (unknown-table −7, too-many-queries +1) |
+
+---
+
+## Re-measure at read-only clones for all six (2026-10-12) — 5.1.2 surface
+
+This run closes the last contingent measurement: the 2026-10-11 run left knex / primer-css /
+blitz measured *in place* because their live checkouts happened to sit at their pins. A
+checkout sitting at its pin today is development scratch that can drift tomorrow; a
+validation corpus must be reproducible. All six corpora are now materialized from
+read-only, detached clones, and the machinery resolves that directory as the canonical
+source.
+
+### Mechanism — `resolveCorpusDir` now resolves the read-only clones
+
+`resolveCorpusDir` (`scripts/corpus-pins.ts`) now resolves `<playground>/corpus-readonly/<name>`
+(previously the live checkouts under `<playground>/<name>`). `assertCorpusPinned` then holds
+permanently against a clone that is never edited, rather than failing whenever the live
+checkout is mid-edit. All six clones are detached at their pins and carry zero dirty paths:
+
+| corpus | pinned SHA | clone HEAD | content hash | dirty |
+| --- | --- | --- | --- | --- |
+| recall-protocol | c007f6ed | c007f6ed | 877aebb2… | 0 |
+| hhra-org | 56bb7c87 | 56bb7c87 | 55045b31… | 0 |
+| endless-guessing | 4a0f2792 | 4a0f2792 | 9ad5bc5a… | 0 |
+| knex | e25d54bc | e25d54bc | bf724ec9… | 0 |
+| primer-css | 48826969 | 48826969 | f90db060… | 0 |
+| blitz | b18f8187 | b18f8187 | bcb539c8… | 0 |
+
+The existing checkouts under `/Users/ben/playground/` were **not touched**. `measure-corpus-counts.ts`
+is invoked with the clone path directly and re-asserts the pin before running, so the
+measurement reads pinned bytes.
+
+### Net reconciliation (5.1.2 vs 859d385)
+
+| corpus | 5.1.0 (`859d385`) | 5.1.2 (`47b4100`) | Δ | cause |
+| --- | --- | --- | --- | --- |
+| recall-protocol | 5,373 | 5,066 | −307 | `undefined-class` 304→0; `orphaned-nodes` 24→21 |
+| hhra-org | 1,126 | 1,126 | 0 | — |
+| endless-guessing | 259 | 259 | 0 | — |
+| knex | 635 | 644 | +9 | `hardcoded-secret` 1→10 |
+| primer-css | 18 | 18 | 0 | — |
+| blitz | 1,034 | 827 | −207 | `unreferenced-module` 205→0; `orphaned-nodes` 35→33 |
+
+Three corpora are byte-identical to `859d385`. The three that move do so through exactly
+four rules, each attributable to a named commit. Every other migrated rule (96 of the 97)
+is unchanged on all six corpora — including the entire styles surface (`token-bypass`,
+`off-scale`, `value-drift`, `declaration-set-similarity`), which the `2c64391` expander
+rework touched with a **zero finding-count delta** (the resolution behavior changed, the
+counts did not).
+
+### The four movements, attributed
+
+1. **recall-protocol `styles::styles/undefined-class` 304 → 0 (−304).** The +302 the
+   2026-10-11 run flagged and disposed ("admitted unprovable classes, not real undefined
+   classes — 0/304 real") is closed. `6babc21` made `projectRoot` required and threaded it
+   through `AnalysisContext`, so the Tailwind expander inits with a real root and reads the
+   CSS-first `@theme`/`@import` config; the companion styles commits (`0293941`, `3ed90b3`,
+   `4493f68`, `e3f2408`, `c165ffa`) moved the defined-class catalog onto the CSS parser and
+   stopped splitting single-letter selector fragments. The rule now emits the single
+   `undefined-class-disabled: 1` coverage diagnostic (recall-protocol carries one site whose
+   undefined-class check is disabled) instead of 304 severe findings. This is the resolution
+   of a flagged disposition, **not a new regression** — the 304 were never real undefined
+   classes.
+
+2. **blitz `dependency-graph::unreferenced-module` 205 → 0 (−205), surfaced instead as
+   `unresolved-dynamic-import: 205`.** This is `13e514a`, and it is the exact gap the
+   2026-10-11 "Three-rule disposition #3" named: a module reachable *only* through a computed
+   specifier was flagged "dead" with no exclusion. The fix withholds the whole rule when the
+   corpus carries any unresolved computed specifier (`hasUnresolvedDynamicImports`) and reports
+   the affected modules as `unproven` through the `unresolved-dynamic-import` coverage channel.
+   blitz is the only six-corpus member with computed specifiers, so only it moves. The
+   205 → 205 is a **disposition move, not a finding-count change**: those modules were never
+   provably dead; the tool now says so instead of asserting "dead". The three corpora that
+   still report `unreferenced-module` (recall 114, hhra 84, primer 1) carry zero computed
+   specifiers, so their dead-code findings remain sound.
+
+3. **`dependency-graph::orphaned-nodes` recall 24 → 21 (−3), blitz 35 → 33 (−2).**
+   `e5369ad` stopped flagging nested closures as orphaned. This is a genuine false-positive
+   reduction, orthogonal to the per-node emission question (disposition #1 below).
+
+4. **knex `secrets::hardcoded-secret` 1 → 10 (+9).** `9382ba5` removed four suppression
+   filters from `hardcoded-secret` (the minimum-length gate, the PLACEHOLDERS list, the
+   email/URL/camelCase shape tests, and the test/fixture-file skip). knex's
+   connection-string-heavy test and example fixtures were the corpus most suppressed by those
+   filters; nine sites now fire that were previously dismissed without establishing anything
+   about the site. blitz's three `hardcoded-secret` findings already passed all four filters,
+   so blitz is unchanged.
+
+### Three-rule dispositions (re-settled on the 5.1.2 surface)
+
+The 2026-10-11 dispositions were written against `859d385`; re-settled against `47b4100`:
+
+1. **`orphaned-nodes` is already per-node — zero-delta, no fix needed.** Confirmed again:
+   the rule emits one located finding per orphaned node (recall 21, blitz 33, hhra 4, knex 2 —
+   every count names individual nodes, and the template `{node}` renders one name each). The
+   premise "emits one finding whose message carries a count" names `review-orphans` (a separate
+   suggestion-type rule whose message is `{nodes}`), not `orphaned-nodes`. No change was made;
+   the only movement (−3/−2) is `e5369ad`'s unrelated nested-closure fix.
+
+2. **`token-bypass` — the `--` guard is exact; no divergence.** `matchBypassToken` returns
+   null for `property.startsWith('--')` (a custom-property *definition* site) and for
+   `property.startsWith(')` (a broken `var(` reference). The guard runs over located
+   declarations only: the CSS-in-JS path (`extractFromCSSinJS`) and inline-style path
+   (`extractFromInlineStyle`) each produce a `property` from a located declaration, and the
+   JS-object-literal path (`parseStyleObjectExpression`) excludes `-` from its key regex, so a
+   `--`-prefixed object key never reaches the guard as a false "definition site". No input
+   exists where `startsWith('--')` and "is a custom-property definition site" disagree. The
+   counts are unchanged (recall 442, blitz 16, endless 3, primer 1). No fix.
+
+3. **`unreferenced-module` — the gap was real at `859d385` and is now fixed by `13e514a`.**
+   At `859d385` the divergence existed: blitz's 205 modules reachable only through a computed
+   specifier were flagged "dead". The 2026-10-11 disposition called it a wording/assertion gap;
+   `13e514a` fixed it by routing the disclosure into the phase-model coverage channel and
+   withholding the dead-code assertion when any computed specifier is unresolved. The
+   re-measure is the evidence: blitz `unreferenced-module` 205 → 0 and `unresolved-dynamic-import`
+   0 → 205. A module reachable only through a computed specifier no longer appears in the
+   unreferenced set.
+
+### Fresh per-corpus counts (this run, 5.1.2)
+
+hhera-org, endless-guessing, and primer-css are **byte-identical to the 5.1.0 tables above**
+(1,126 / 259 / 18 findings respectively) and are not re-listed. The three changed corpora:
+
+**recall-protocol — 5,066 advisory findings (2,095 files)**
+
+| analyzer::rule | count |
+| --- | --- |
+| documentation::parameter-documentation | 1014 |
+| styles::styles/off-scale | 759 |
+| documentation::function-documentation | 574 |
+| documentation::return-documentation | 545 |
+| styles::styles/token-bypass | 442 |
+| dry::duplicate-string-literal | 371 |
+| data-access::loop-query | 178 |
+| dependency-graph::unreferenced-module | 114 |
+| react::raw-element | 111 |
+| react::performance | 95 |
+| solid::function-length | 95 |
+| dry::dry/structural-similarity | 90 |
+| documentation::method-documentation | 80 |
+| schema-code::too-many-queries | 78 |
+| conventions::conventions/usage-pair | 60 |
+| dry::duplicate-import | 58 |
+| styles::styles/mechanism-fragmentation | 52 |
+| conventions::conventions/error-handling | 51 |
+| solid::solid/method-complexity | 33 |
+| react::complexity | 29 |
+| dependency-graph::orphaned-nodes | 21 |
+| security::command-injection-risk | 22 |
+| dry::dry/similar-expression | 21 |
+| styles::styles/declaration-set-similarity | 21 |
+| schema::stale-table-reference | 17 |
+| documentation::class-documentation | 16 |
+| cross-domain::cross-domain/written-never-read | 14 |
+| data-access::sql-injection-risk | 13 |
+| cross-domain::cross-domain/read-never-written | 12 |
+| react::accessibility | 12 |
+| cross-domain::cross-domain/multi-table-write | 11 |
+| solid::parameter-count | 11 |
+| conventions::conventions/naming | 10 |
+| styles::styles/mechanism-mixing | 9 |
+| styles::styles/z-index-singleton | 7 |
+| dry::dry/duplicate | 6 |
+| conventions::conventions/import-form | 5 |
+| styles::styles/value-drift | 3 |
+| solid::solid/class-size | 2 |
+| solid::interface-size | 2 |
+| conventions::conventions/export-shape | 1 |
+| styles::styles/z-index-sprawl | 1 |
+
+Coverage diagnostics (this run): `cannot-fire` 5,489, `unresolved-query` 1,885,
+`manifest-stale` 16, `undefined-class-disabled` 1. The `undefined-class-not-found` diagnostic
+is gone from recall-protocol (it was the pre-fix disclosure of the 304).
+
+**knex — 644 advisory findings (474 files)**
+
+| analyzer::rule | count |
+| --- | --- |
+| dry::duplicate-string-literal | 517 |
+| dry::dry/structural-similarity | 18 |
+| data-access::hardcoded-connection | 16 |
+| solid::solid/class-size | 15 |
+| cross-domain::cross-domain/read-never-written | 14 |
+| solid::solid/open-closed | 11 |
+| secrets::hardcoded-secret | 10 |
+| solid::function-length | 9 |
+| data-access::sql-injection-risk | 7 |
+| data-access::loop-query | 6 |
+| schema-code::table-naming-convention | 6 |
+| solid::interface-size | 4 |
+| schema-code::too-many-queries | 3 |
+| dependency-graph::orphaned-nodes | 2 |
+| schema-code::reserved-word | 2 |
+| documentation::parameter-documentation | 1 |
+| dry::duplicate-import | 1 |
+| dry::dry/similar-expression | 1 |
+| security::command-injection-risk | 1 |
+
+**blitz — 827 advisory findings (788 files)**
+
+| analyzer::rule | count |
+| --- | --- |
+| documentation::function-documentation | 191 |
+| documentation::method-documentation | 161 |
+| styles::styles/declaration-set-similarity | 161 |
+| dry::duplicate-string-literal | 55 |
+| react::raw-element | 54 |
+| dry::duplicate-import | 44 |
+| react::performance | 37 |
+| documentation::class-documentation | 34 |
+| dependency-graph::orphaned-nodes | 33 |
+| styles::styles/token-bypass | 16 |
+| dry::dry/structural-similarity | 10 |
+| schema-code::reserved-word | 7 |
+| documentation::parameter-documentation | 4 |
+| documentation::return-documentation | 3 |
+| secrets::hardcoded-secret | 3 |
+| solid::function-length | 3 |
+| conventions::conventions/naming | 2 |
+| data-access::loop-query | 2 |
+| styles::styles/undefined-class | 2 |
+| conventions::conventions/export-shape | 1 |
+| dependency-graph::circular-dependency | 1 |
+| schema-code::too-many-queries | 1 |
+| security::dynamic-require-of-project-path | 1 |
+| solid::solid/method-complexity | 1 |
+
+Coverage diagnostics (this run): `cannot-fire` 1,327, `unresolved-query` 352,
+`unresolved-dynamic-import` 205, `manifest-stale` 17, `undefined-class-not-found` 13.
+The `unresolved-dynamic-import: 205` is the disclosure of the modules the 5.1.0 run flagged
+"dead" — now reported `unproven`.

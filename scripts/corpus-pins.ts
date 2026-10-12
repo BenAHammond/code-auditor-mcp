@@ -208,15 +208,20 @@ export function assertCorpusPinned(projectRoot: string, nameOverride?: string): 
 }
 
 /**
- * Resolve a corpus's live checkout on disk (a sibling of `app`, or under the
- * `CORPUS_ROOT` override), or null when it is absent. The live checkout is only
- * a *source* of the pinned SHA — a measurement never runs against it directly,
- * because it may carry uncommitted work.
+ * Resolve a corpus's read-only validation clone on disk (under `corpus-readonly/`,
+ * a sibling of `app`, or the `CORPUS_ROOT` override), or null when it is absent.
+ *
+ * The read-only clone — not the live development checkout — is the canonical
+ * measurement source. It sits detached at the pinned SHA and is never edited, so
+ * {@link assertCorpusPinned} holds permanently against it rather than failing
+ * whenever the development checkout (a sibling at `<playground>/<name>`) is
+ * mid-edit. A validation corpus must be reproducible; the live checkout carries
+ * uncommitted work and is development scratch, never a corpus.
  */
 export async function resolveCorpusDir(name: string): Promise<string | null> {
   const override = process.env.CORPUS_ROOT;
   const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const base = override ?? path.resolve(appRoot, '..', '..');
+  const base = override ?? path.resolve(appRoot, '..', '..', 'corpus-readonly');
   const dir = path.resolve(base, name);
   try {
     const st = await fsp.stat(dir);
@@ -255,9 +260,9 @@ function execErrorDetail(e: unknown): string {
 export async function materializeCorpusSnapshot(
   name: string,
 ): Promise<{ dir: string; cleanup(): Promise<void> }> {
-  const live = await resolveCorpusDir(name);
-  if (!live) {
-    console.error(`✗ CORPUS ABSENT — '${name}' not found (set CORPUS_ROOT to the playground dir).`);
+  const source = await resolveCorpusDir(name);
+  if (!source) {
+    console.error(`✗ CORPUS ABSENT — read-only clone for '${name}' not found (set CORPUS_ROOT to the read-only clone dir).`);
     process.exit(2);
   }
   const pin = loadPins()[name];
@@ -279,12 +284,12 @@ export async function materializeCorpusSnapshot(
   };
 
   try {
-    execSync(`git clone --no-checkout --quiet -- "${live}" "${tmp}"`, {
+    execSync(`git clone --no-checkout --quiet -- "${source}" "${tmp}"`, {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
     await cleanup();
-    throw new Error(`could not clone '${name}' from ${live}: ${execErrorDetail(e)}`);
+    throw new Error(`could not clone '${name}' from ${source}: ${execErrorDetail(e)}`);
   }
   try {
     execSync(`git checkout --detach --force --quiet ${pin.sha}`, {
