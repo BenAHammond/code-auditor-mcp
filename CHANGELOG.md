@@ -14,11 +14,15 @@ same silent disable with extra steps.
 
 Both the CLI `audit` command and the MCP `audit.run` tool now read that log and,
 when a hook-not-running condition is live, report a top-level notice that the
-hook is not enqueueing and cached findings may be stale. "Live" is decided by
-record order, not a time window: the newest `HOOK NOT RUNNING` record newer than
-the newest `HOOK RAN` record (which hook-audit.sh now writes after every
-completed run). The read is fail-open — an absent, unreadable, or malformed log
-yields no notice and never changes the audit exit code.
+hook is not enqueueing and cached findings may be stale. The notice appears when
+the newest `HOOK NOT RUNNING` record is newer than the newest `HOOK RAN` record
+(or no `HOOK RAN` record exists), and it clears when a `HOOK RAN` record is
+written at least as new as the condition — every hook script writes `HOOK RAN` on
+a completed run (hook-audit.sh and hook-self-audit.sh on exit 0 or 2;
+hook-warm.sh and hook-drift-check.sh on every path, since they never exit
+non-zero), so a recovered hook resolves its own condition. The read is fail-open —
+an absent, unreadable, or malformed log yields no notice and never changes the
+audit exit code.
 
 ### Keyframe percentages no longer pollute the defined-class catalog
 
