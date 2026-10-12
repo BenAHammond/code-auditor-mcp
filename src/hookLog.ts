@@ -14,8 +14,11 @@
  * The path here is deliberately NOT `getFallbackCacheRoot()`: that resolves to
  * `~/Library/Caches/code-auditor` on macOS, while the bash hooks always use the
  * Linux-style `${XDG_CACHE_HOME:-$HOME/.cache}` convention regardless of
- * platform. The writer and reader must agree, so this recomputes the bash
- * convention exactly (see `HOOK_LOG_DIR_TAIL`).
+ * platform. The writer and reader must agree, so the tail and file name are
+ * single-sourced: `HOOK_LOG_DIR_TAIL`/`HOOK_LOG_FILE` are imported from
+ * `hookLogPath.generated.ts`, which `scripts/write-hook-log-path.mjs` generates
+ * from the same source as `plugin/scripts/hook-log-path.sh` (the file the bash
+ * writer sources) — the two languages can never drift.
  *
  * Contract (fail-open): an absent, unreadable, or malformed log yields no
  * notice and never throws — the reader must not change the audit exit code.
@@ -24,14 +27,7 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-
-/**
- * Directory tail shared by the bash writer and this reader. Kept as a single
- * string literal (rather than `path.join('code-auditor', 'logs')`) so the
- * residue check in `hookLog.spec.ts` can assert the tail appears exactly once in
- * `src/` — a second copy would mean the writer and reader have drifted.
- */
-const HOOK_LOG_DIR_TAIL = 'code-auditor/logs';
+import { HOOK_LOG_DIR_TAIL, HOOK_LOG_FILE } from './hookLogPath.generated.js';
 
 /**
  * One record's leading timestamp: `[YYYY-MM-DDTHH:MM:SSZ]`, written by the bash
@@ -55,7 +51,7 @@ export function resolveHookLogDir(): string {
 
 /** The hook-log file path, mirroring hook-common.sh's `hook_log_file()`. */
 export function resolveHookLogPath(): string {
-  return path.join(resolveHookLogDir(), 'hook.log');
+  return path.join(resolveHookLogDir(), HOOK_LOG_FILE);
 }
 
 /** A live "hook not running" condition, when one is unresolved. */

@@ -37,6 +37,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const HOOK_COMMON = join(REPO_ROOT, 'plugin', 'scripts', 'hook-common.sh');
+const HOOK_LOG_PATH = join(REPO_ROOT, 'plugin', 'scripts', 'hook-log-path.sh');
 
 const scratchDirs: string[] = [];
 
@@ -70,6 +71,9 @@ function setup(opts: {
   mkdirSync(join(plugin, '.claude-plugin'), { recursive: true });
   mkdirSync(join(plugin, 'scripts'), { recursive: true });
   copyFileSync(HOOK_COMMON, join(plugin, 'scripts', 'hook-common.sh'));
+  // hook-common.sh sources hook-log-path.sh (the single-sourced path constants),
+  // so the fake layout must ship that sibling too.
+  copyFileSync(HOOK_LOG_PATH, join(plugin, 'scripts', 'hook-log-path.sh'));
   if (opts.manifest !== null) {
     writeFileSync(join(plugin, '.claude-plugin', 'plugin.json'), JSON.stringify({ version: opts.manifest }));
   }

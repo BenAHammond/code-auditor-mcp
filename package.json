@@ -12,8 +12,9 @@
     "code-auditor-daemon": "dist/daemon/main.js"
   },
   "scripts": {
-    "build": "pnpm run build:version && tsc && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills && pnpm run build:manifest",
+    "build": "pnpm run build:version && pnpm run build:hooklog && tsc && pnpm run build:grammars && pnpm run download:natives && pnpm run build:skills && pnpm run build:manifest",
     "build:version": "node scripts/write-version.mjs",
+    "build:hooklog": "node scripts/write-hook-log-path.mjs",
     "download:natives": "bash scripts/download-natives.sh",
     "build:grammars": "mkdir -p dist/grammars && cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm node_modules/tree-sitter-css/tree-sitter-css.wasm grammars/tree-sitter-scss.wasm dist/grammars/",
     "build:skills": "node scripts/build-skills.mjs",
