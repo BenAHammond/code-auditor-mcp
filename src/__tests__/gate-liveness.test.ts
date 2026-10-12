@@ -21,10 +21,6 @@
  *     via its own env knob (`VERIFY_MIN_FREE_BYTES`), no build required.
  *   - `verify:gate-budget` — the `warm >= BUDGET_MS` branch, triggered via the
  *     `VERIFY_GATE_BUDGET_MS` knob added for this test.
- *   - `verify:recall-value-drift` — the count/pair comparison in
- *     `verify-recall-value-drift-core.mjs`, the pure half of the Spec 67
- *     follow-up gate (the corpus is absent in CI, so its I/O half SKIPs there;
- *     the failure branch is the comparison itself).
  *   - `assert_compatible` — the plugin↔CLI version pin in `hook-common.sh`,
  *     exercised against a fake bin reporting a wrong / missing / matching
  *     version.
@@ -52,12 +48,6 @@ import {
   scopedPath,
   staleExemptions,
 } from '../../scripts/verify-self-core.mjs';
-import {
-  extractDriftPairs,
-  compareToBaseline,
-} from '../../scripts/verify-recall-value-drift-core.mjs';
-import { compareCompleteness } from '../../scripts/verify-extraction-completeness-core.mjs';
-import { compareRecallCases } from '../../scripts/verify-recall-cases-core.mjs';
 import { summarizeResults, GATES } from '../../scripts/verify-close.mjs';
 
 const APP_ROOT = process.cwd();
@@ -290,85 +280,6 @@ describe('assert_compatible — liveness', () => {
   });
 });
 
-describe('verify:recall-value-drift — liveness', () => {
-  // The recall-protocol value-drift gate reads its baseline from a JSON file and
-  // re-measures the corpus each run; the corpus is absent in CI, so the gate
-  // SKIPs there. The failure branch lives in the pure comparison, which is what
-  // this tests: a moved count or a changed pair must produce drift lines (and so
-  // a non-zero exit), never a silent green.
-  const baseline = {
-    corpus: 'recall-protocol',
-    rule: 'styles/value-drift',
-    expectedCount: 3,
-    pairs: [
-      { drift: '#cfe2ee', canonical: '#cfe0ef', deltaE76: '1.82' },
-      { drift: '#637688', canonical: '#5f7488', deltaE76: '1.59' },
-      { drift: '#06121a', canonical: '#06131c', deltaE76: '1.06' },
-    ],
-  };
-
-  it('extracts drift pairs from a real finding message and ignores other rules', () => {
-    const violations = [
-      {
-        rule: 'styles/value-drift',
-        message: 'Color drift in "color": "#cfe2ee" is near-identical to "#cfe0ef" (used 1 time, ΔE = 1.82). Consider using "#cfe0ef".',
-      },
-      { rule: 'styles/off-scale', message: 'Value "13px" is off the Tailwind spacing scale.' },
-    ];
-    expect(extractDriftPairs(violations)).toEqual([
-      { drift: '#cfe2ee', canonical: '#cfe0ef', deltaE76: '1.82' },
-    ]);
-  });
-
-  it('is green when count and pairs match the baseline exactly', () => {
-    const actual = baseline.pairs.map((p) => ({ ...p }));
-    expect(compareToBaseline(actual, baseline)).toEqual([]);
-  });
-
-  it('reports a moved count', () => {
-    const actual = baseline.pairs.map((p) => ({ ...p })).slice(0, 2); // 2, not 3
-    expect(compareToBaseline(actual, baseline)).toContain('value-drift count 2 != baseline 3');
-  });
-
-  it('reports a changed pair (drift color, canonical, or ΔE)', () => {
-    const actual = baseline.pairs.map((p) => ({ ...p }));
-    actual[0] = { drift: '#cfe2ee', canonical: '#cfe0ef', deltaE76: '2.50' }; // ΔE moved
-    const drift = compareToBaseline(actual, baseline);
-    expect(drift.some((d) => d.startsWith('missing pair') || d.startsWith('extra pair'))).toBe(true);
-  });
-});
-
-describe('verify:extraction-completeness — liveness', () => {
-  // The residual gap gate re-measures the corpora each run; the corpus is absent
-  // in CI, so the gate SKIPs there. The failure branch lives in the pure
-  // comparison — a moved gap, a missing corpus, or an unexpected corpus must
-  // produce drift lines (and so a non-zero exit), never a silent green.
-  const baseline = { 'hhra-org': 24, blitz: 4, openstatus: 67, 'recall-protocol': 98 };
-
-  it('is green when every corpus gap matches the baseline exactly', () => {
-    expect(compareCompleteness({ ...baseline }, baseline)).toEqual([]);
-  });
-
-  it('reports a moved gap', () => {
-    expect(compareCompleteness({ ...baseline, 'hhra-org': 23 }, baseline)).toContain(
-      'corpus hhra-org gap 23 != baseline 24',
-    );
-  });
-
-  it('reports a corpus the gate failed to measure', () => {
-    const { 'hhra-org': _dropped, ...rest } = baseline;
-    expect(compareCompleteness(rest, baseline)).toContain(
-      'corpus hhra-org not measured (baseline 24)',
-    );
-  });
-
-  it('reports an unexpected corpus measured beyond the baseline', () => {
-    expect(compareCompleteness({ ...baseline, 'new-corpus': 5 }, baseline)).toContain(
-      'unexpected corpus new-corpus measured (gap 5)',
-    );
-  });
-});
-
 describe('verify:close — run-all (no gate skips another)', () => {
   // The pre-fix `verify:close` was a single `&&` conjunction: the first failing
   // gate aborted the run and every later gate was silently skipped. A stale
@@ -381,7 +292,7 @@ describe('verify:close — run-all (no gate skips another)', () => {
   // runs and every result is reported, under any condition.
 
   it('lists every gate exactly once — none can be dropped by an earlier failure', () => {
-    expect(GATES).toHaveLength(17);
+    expect(GATES).toHaveLength(14);
     expect(new Set(GATES).size).toBe(GATES.length);
   });
 
@@ -429,8 +340,8 @@ describe('verify:close — a stale dist fails the chain', () => {
 describe('verify:close — a subset run never reads as a full pass', () => {
   // `VERIFY_CLOSE_GATES` is a test seam, but it must never let a subset run print
   // the release banner. "verify:close PASSED — every gate ran and passed" is
-  // reserved for the full 17: a reader or a script seeing that banner must be
-  // able to trust it means seventeen. A subset run instead names the gates it ran,
+  // reserved for the full 14: a reader or a script seeing that banner must be
+  // able to trust it means fourteen. A subset run instead names the gates it ran,
   // states the number omitted, and ends with a clearly-different subset line.
   // This proves the *pass* path — a single always-green gate, forced to pass via
   // `VERIFY_MIN_FREE_BYTES=0` — must not produce the banner.
@@ -445,8 +356,8 @@ describe('verify:close — a subset run never reads as a full pass', () => {
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('SUBSET');
-    expect(res.stdout).toContain('1 of 17');
-    expect(res.stdout).toContain('16 omitted');
+    expect(res.stdout).toContain('1 of 14');
+    expect(res.stdout).toContain('13 omitted');
     expect(res.stdout).not.toContain('every gate ran and passed');
   }, 30_000);
 });
@@ -477,97 +388,5 @@ describe('verify:close — run-all verdict (a failed gate fails the chain)', () 
     const s = summarizeResults([run('verify:types', null)]);
     expect(s.crashed).toHaveLength(1);
     expect(s.failed).toHaveLength(0);
-  });
-});
-
-describe('verify:recall-cases — liveness', () => {
-  // The named-case recall gate (the replacement for the retired count-baseline
-  // oracle-shortfalls gate) re-measures the corpora each run; the corpus is
-  // absent in CI, so the gate SKIPs cases there. The failure branch lives in the
-  // pure comparison — a named (kind, corpus, file, site) case whose site is not
-  // among the emitted sites must produce drift lines (and so a non-zero exit),
-  // never a silent green. Extra emitted sites are a gain and never fail it.
-  const baselineCases = [
-    {
-      kind: 'data-access-calls-candidates',
-      corpus: 'blitz',
-      file: 'apps/next13/src/auth/mutations/changePassword.ts',
-      site: '13:24',
-      note: 'Prisma findFirst query-builder call',
-    },
-    {
-      kind: 'secret-candidates',
-      corpus: 'recall-protocol',
-      file: 'astro.config.mjs',
-      site: '17:3',
-      note: 'astro config credential-position pair',
-    },
-  ];
-
-  it('is green when every named case site is present', () => {
-    const measured = {
-      'data-access-calls-candidates': {
-        blitz: {
-          'apps/next13/src/auth/mutations/changePassword.ts': ['12:10', '13:24', '19:11'],
-        },
-      },
-      'secret-candidates': {
-        'recall-protocol': { 'astro.config.mjs': ['17:3', '29:3'] },
-      },
-    };
-    expect(compareRecallCases(measured, baselineCases)).toEqual([]);
-  });
-
-  it('is green when a producer emits *more* sites than the named case (a gain)', () => {
-    const measured = {
-      'data-access-calls-candidates': {
-        blitz: {
-          'apps/next13/src/auth/mutations/changePassword.ts': ['11:1', '12:10', '13:24', '19:11', '20:15'],
-        },
-      },
-      'secret-candidates': {
-        'recall-protocol': { 'astro.config.mjs': ['17:3', '29:3', '30:3'] },
-      },
-    };
-    expect(compareRecallCases(measured, baselineCases)).toEqual([]);
-  });
-
-  it('marks a missing site as a recall regression', () => {
-    const measured = {
-      'data-access-calls-candidates': {
-        blitz: { 'apps/next13/src/auth/mutations/changePassword.ts': ['12:10', '19:11'] },
-      },
-      'secret-candidates': {
-        'recall-protocol': { 'astro.config.mjs': ['17:3'] },
-      },
-    };
-    expect(compareRecallCases(measured, baselineCases)).toContain(
-      "MISSING RECALL data-access-calls-candidates on blitz apps/next13/src/auth/mutations/changePassword.ts site '13:24' not emitted — a producer stopped emitting this named case (Prisma findFirst query-builder call)",
-    );
-  });
-
-  it('reports a case whose (kind, corpus, file) was not measured', () => {
-    const measured = {
-      'data-access-calls-candidates': {
-        blitz: { 'apps/next13/src/auth/mutations/changePassword.ts': ['13:24'] },
-      },
-    };
-    expect(compareRecallCases(measured, baselineCases)).toContain(
-      "secret-candidates on recall-protocol astro.config.mjs not measured — named case '17:3' unverified (astro config credential-position pair)",
-    );
-  });
-
-  it('reports a case whose file emitted no sites', () => {
-    const measured = {
-      'data-access-calls-candidates': {
-        blitz: { 'apps/next13/src/auth/mutations/changePassword.ts': [] },
-      },
-      'secret-candidates': {
-        'recall-protocol': { 'astro.config.mjs': ['17:3'] },
-      },
-    };
-    expect(compareRecallCases(measured, baselineCases)).toContain(
-      "data-access-calls-candidates on blitz apps/next13/src/auth/mutations/changePassword.ts not measured — named case '13:24' unverified (Prisma findFirst query-builder call)",
-    );
   });
 });

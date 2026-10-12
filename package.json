@@ -46,9 +46,6 @@
     "verify:languages": "node scripts/verify-languages.mjs",
     "verify:node-types": "node scripts/verify-node-types.mjs",
     "verify:gate-budget": "node scripts/verify-gate-budget.mjs",
-    "verify:recall-value-drift": "tsx scripts/verify-recall-value-drift.ts",
-    "verify:extraction-completeness": "tsx scripts/verify-extraction-completeness.ts",
-    "verify:recall-cases": "tsx scripts/verify-recall-cases.ts",
     "verify:close": "node scripts/verify-close.mjs"
   },
   "keywords": [

@@ -494,9 +494,7 @@ function isPrismaObjectForm(
  * such chain: the real misses are *variable-split* builders (the companion verb
  * lives in a prior statement, e.g. `const q = baseQuery.where(…)`), which
  * catalog resolution does not address. Gating on an under-discovered catalog
- * would just rebuild the receiver-name failure one layer up. See the
- * extraction-completeness gate (scripts/verify-extraction-completeness.ts) for
- * the pinned residual.
+ * would just rebuild the receiver-name failure one layer up.
  *
  * @param node the candidate call node to classify
  * @param adapter the language adapter used to read the callee

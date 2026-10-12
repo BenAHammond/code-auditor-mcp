@@ -74,9 +74,10 @@ import { withRuleTiming, withRuleTimingAsync } from '../analyzers/ruleTiming.js'
  */
 export interface PhaseModelResult {
   findings: Finding[];
-  /** Fact kind → the built fact array. Exposed so recall gates (verify:recall-cases)
-   *  can assert a named (kind, file, site) case is still emitted, instead of
-   *  pinning an aggregate count that goes red on every legitimate detector gain. */
+  /** Fact kind → the built fact array, the raw producer output before rules
+   *  classify it into findings. Exposed so tests can assert a producer still
+   *  emits (or, for a rejected candidate, does not emit) a fact at a site drawn
+   *  from source. */
   facts: ReadonlyMap<FactKind, unknown>;
   /** Fact kind → files whose fact is incomplete (parse dropped or producer threw). */
   incompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>>;
