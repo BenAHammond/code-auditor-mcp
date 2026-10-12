@@ -1,5 +1,5 @@
 {
-  "version": "5.1.0",
+  "version": "5.1.1",
   "files": {
     ".claude-plugin/plugin.json": "0049d3008345256ad97a9fb0abb06d14391deea5a5386f8cacbda07391d7eb43",
     "README.md": "6e51516ead6c7d0b4e77629e071e139b899d30a47838e8721c0d534eb733ad45",
@@ -12,6 +12,6 @@
     "scripts/hook-warm.sh": "22d750e8e36164920515c8370f02dd48f9f09f26bfe4a21e67de91f45b5ffef9",
     "skills/code-auditor/SKILL-RULE-KINDS.md": "be1bbe1b56b19dc112c2657c1f5984f6f704b2ac9c1c0f78a561a58b110d508a",
     "skills/code-auditor/SKILL-SEARCH.md": "95d2df4474995bc5b18e14cc55ac55fb828024541463f109239567e2aa5ab7b0",
-    "skills/code-auditor/SKILL.md": "b3175d52c3f277617f303e131536e509a17bf075ee17518615057b711ec0d13c"
+    "skills/code-auditor/SKILL.md": "03618c417215a4765ffa418ee3275b38562b6b7700a4a06e5c36d2091d6b1dcb"
   }
 }
