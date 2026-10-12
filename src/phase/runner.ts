@@ -197,6 +197,8 @@ export async function buildFileSymbols(files: readonly InputFile[]): Promise<Fil
  * @param facts - The assembled fact context (declared `needs`, union-shaped).
  * @param formats - The format union the rules may read.
  * @param thresholds - The resolved thresholds (defaults to `{}`).
+ * @param projectRoot - The optional project root threaded to rules that resolve
+ *   project-local config (the secrets rules derive a file's test-program role).
  * @returns The rules' findings over the facts.
  */
 async function analyzeWithRules(
@@ -204,10 +206,11 @@ async function analyzeWithRules(
   facts: Record<string, unknown>,
   formats: readonly Format[],
   thresholds: ThresholdValues,
+  projectRoot?: string,
 ): Promise<Finding[]> {
   const findings: Finding[] = [];
   for (const rule of rules) {
-    findings.push(...(await rule.analyze({ facts, formats, thresholds } as never)));
+    findings.push(...(await rule.analyze({ facts, formats, thresholds, projectRoot } as never)));
   }
   return findings;
 }
@@ -1019,19 +1022,22 @@ export async function buildSecretCandidates(files: readonly InputFile[]): Promis
  *
  * @param candidates - The assembled `secret-candidates` fact to analyze.
  * @param thresholds - The hardcoded-secret rule thresholds (defaults to `{}`).
+ * @param projectRoot - The optional project root the rule reads to derive each
+ *   candidate file's test-program role (skips test files).
  * @returns The hardcoded-secret rule's findings over the fact.
  */
 export async function analyzeSecrets(
   candidates: SecretCandidate[],
   thresholds: ThresholdValues = {},
+  projectRoot?: string,
 ): Promise<Finding[]> {
-  return analyzeWithRules(secretsRules, { 'secret-candidates': candidates }, ['typescript', 'tsx', 'javascript'], thresholds);
+  return analyzeWithRules(secretsRules, { 'secret-candidates': candidates }, ['typescript', 'tsx', 'javascript'], thresholds, projectRoot);
 }
 
 /** The secret-candidates slice: parse → secret-candidates → hardcoded-secret → findings. */
-export async function runSecretsSlice(files: readonly InputFile[], thresholds?: ThresholdValues): Promise<Finding[]> {
+export async function runSecretsSlice(files: readonly InputFile[], thresholds?: ThresholdValues, projectRoot?: string): Promise<Finding[]> {
   const candidates = await buildSecretCandidates(files);
-  return analyzeSecrets(candidates, thresholds);
+  return analyzeSecrets(candidates, thresholds, projectRoot);
 }
 
 // ── security-candidates slice (security-candidates → 3 defect rules) ────────

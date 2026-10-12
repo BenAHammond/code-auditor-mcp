@@ -13,11 +13,24 @@
  * `hasKnownTokenPrefix`, `isCredentialSelector`, `HARD_SYMBOL`) are re-homed
  * verbatim — copied, not imported, because the analyzer is deleted in §15 and
  * the rule must not couple the new pipeline to a class about to disappear. The
- * legacy analyzer's suppression filters — a minimum length, a placeholder word
- * list, email/URL/camelCase shape tests, and a test/fixture file skip — made a
- * finding vanish without establishing anything about the site; they are
- * deliberately not carried over. A candidate is a secret on positive evidence
- * only.
+ * legacy analyzer's *suppression* filters — a minimum length, a placeholder word
+ * list, email/URL/camelCase shape tests — made a finding vanish without
+ * establishing anything about the site; they stay gone. A candidate is a secret
+ * on positive evidence only.
+ *
+ * Two corrections (directive items 2 + 3) refine the positive evidence and the
+ * file scope without restoring a suppression:
+ *
+ *   - `looksLikeRealSecret` drops the legacy `hasUpper` term. An uppercase letter
+ *     is not entropy: the UI label `"API Key"` and the internal identifier
+ *     `"styleToken"` both carry uppercase letters yet are labels, not
+ *     credentials. A real credential carries a digit or a hard symbol (or a
+ *     known token prefix).
+ *   - A candidate whose file belongs to the tree's *declared test program* is
+ *     skipped (a hardcoded credential in a test/mock is expected). The role is
+ *     derived from the tree — the runner named in `package.json` scripts, mapped
+ *     to its own discovery convention — not the legacy path-substring heuristic
+ *     (`isTestOrFixtureFile`); see `testProgram.ts`.
  *
  * `hardcoded-connection` (the other security rule, reading `string-literals`)
  * lives in `security.ts` alongside this file; both are re-exported from
@@ -26,6 +39,7 @@
 
 import type { RuleDefinition, Finding, SecretCandidate } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
+import { resolveTestProgram } from '../testProgram.js';
 
 const META = RULE_REGISTRY['hardcoded-secret'];
 
@@ -81,17 +95,24 @@ function hasKnownTokenPrefix(value: string): boolean {
 }
 
 /** Does this literal carry positive evidence of a real credential? A known token
- *  prefix, or enough character entropy (a digit, an uppercase letter, or a hard
- *  symbol). It never dismisses a value for being short, a placeholder word, an
+ *  prefix, or enough character entropy (a digit or a hard symbol). An uppercase
+ *  letter alone is *not* entropy — a UI display string (`"API Key"`) and an
+ *  internal identifier written as a string (`"styleToken"`) both carry uppercase
+ *  letters yet are labels, not credentials; a real credential value carries a
+ *  digit or a non-separator symbol (or a known token prefix). The legacy
+ *  `hasUpper` term flagged both of those labels as secrets, which is the exact
+ *  false positive item 2/3 corrects.
+ *
+ *  The rule never dismisses a value for being short, a placeholder word, an
  *  email/URL, or a camelCase identifier — those suppressions made a finding
- *  vanish without establishing anything about the site, and are gone. */
+ *  vanish without establishing anything about the site, and stay gone. The
+ *  digit/hard-symbol/prefix test is the *positive* evidence, not a suppression. */
 function looksLikeRealSecret(value: string): boolean {
   const t = value.trim();
   if (hasKnownTokenPrefix(t)) return true;
   const hasDigit = /\d/.test(t);
-  const hasUpper = /[A-Z]/.test(t);
   const hasHardSymbol = HARD_SYMBOL.test(t);
-  return hasDigit || hasUpper || hasHardSymbol;
+  return hasDigit || hasHardSymbol;
 }
 
 /** Is this string a credential *field selector* (`#password`, `.api_key`,
@@ -141,10 +162,18 @@ function makeFinding(
 }
 
 /** Re-homes `inspectNode` + `checkCredentialCall`: classify candidates into
- *  hardcoded-secret findings. */
-function detectHardcodedSecret(candidates: readonly SecretCandidate[]): Finding[] {
+ *  hardcoded-secret findings.
+ *
+ *  A candidate whose file belongs to the project's declared test program is
+ *  skipped: a hardcoded credential inside a test fixture or mock is expected and
+ *  must not block the edit loop. The test-program role is *derived from the
+ *  tree* (the runner declared in `package.json` scripts → the runner's own
+ *  discovery convention), not a hardcoded path pattern — see `testProgram.ts`. */
+function detectHardcodedSecret(candidates: readonly SecretCandidate[], projectRoot: string | undefined): Finding[] {
+  const testProgram = resolveTestProgram(projectRoot);
   const findings: Finding[] = [];
   for (const c of candidates) {
+    if (testProgram.isTestFile(c.file)) continue;
     if (c.position === 'call') {
       // `fn('<selector>', '<secret>')` — the page.type reference case.
       if (c.args.length < 2) continue;
@@ -176,7 +205,7 @@ const hardcodedSecret: RuleDefinition<SecretNeeds> = {
   thresholds: META.thresholds,
   samples: META.samples,
   analyze(ctx): Finding[] {
-    return detectHardcodedSecret(ctx.facts['secret-candidates']);
+    return detectHardcodedSecret(ctx.facts['secret-candidates'], ctx.projectRoot);
   },
 };
 
