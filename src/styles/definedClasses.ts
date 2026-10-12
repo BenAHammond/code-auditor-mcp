@@ -14,8 +14,9 @@
  * catalog writer uses: CSS and markup use the parser harvest (markup via
  * `harvestMarkupStyleClasses`, which parses each embedded `<style>` block body
  * with the CSS parser); only TS/JS source (CSS-in-JS, which has no CSS AST)
- * scans the selector `context` with the `@keyframes` at-rule name as the
- * discriminant, so no hand-maintained at-rule skip list exists anywhere.
+ * scans the selector `context` for class names. The `@keyframes` at-rule
+ * discriminant (`isKeyframeVariant`) is live only on the migration-backfill
+ * path, not the TS/JS source path — see that function's doc.
  */
 
 export interface DefinedClassRef {
@@ -84,10 +85,21 @@ export function scanClassNamesFromSelector(selector: string): string[] {
 /**
  * True when a declaration's variant context names the `@keyframes` at-rule — the
  * one at-rule whose inner selectors are keyframe selectors rather than style-rule
- * class selectors. The markup/source scan uses it as the discriminant to skip
- * keyframe declarations. The CSS path never needs it: the parser excludes
- * keyframes structurally. The name may carry a leading `@` (CSS AST path) or not
- * (markup regex path), and may be the first or a later at-rule in the stack.
+ * class selectors. The name may carry a leading `@` and may be the first or a
+ * later at-rule in the stack.
+ *
+ * Live path: reached only from `harvestDefinedClasses`' source branch, and the
+ * only caller that can supply a non-null `variantContext` is the v11→v12
+ * backfill migration (`codeIndex/migrations.ts:1164`), which replays
+ * `style_declarations` rows whose `variant_context` came from the CSS AST
+ * extractor's at-rule context (`cssAstExtractor.ts:584` writes `@keyframes
+ * <name>`; `getVariantContext` at `cssAstExtractor.ts:64` writes the enclosing
+ * `@media`/`@supports`/`@layer` stack). The live TS/JS writers never supply
+ * one: CSS-in-JS hardcodes `variantContext: null` (`styleExtractor.ts:726`),
+ * and Tailwind and inline-style declarations carry `context: null` so they are
+ * skipped before this check. On that source path the keyframe exclusion is the
+ * `{` filter in `extractDeclarationsFromBlock` (`styleExtractor.ts:440`), not
+ * this function.
  */
 export function isKeyframeVariant(variantContext: string | null): boolean {
   if (!variantContext) return false;
@@ -103,8 +115,10 @@ export function isKeyframeVariant(variantContext: string | null): boolean {
  * definitions). Markup definitions are harvested separately by
  * `harvestMarkupStyleClasses` (the CSS parser over each `<style>` block) and are
  * not passed here. Only TS/JS source has no CSS AST, so its definitions are the
- * class names in the declarations' selector `context`, skipping keyframe
- * declarations by at-rule name.
+ * class names in the declarations' selector `context`. The `isKeyframeVariant`
+ * skip below is live only for the migration-backfill path, not the TS/JS source
+ * path (which excludes keyframes via the `{` filter in
+ * `extractDeclarationsFromBlock`).
  */
 export function harvestDefinedClasses(
   declarations: readonly ClassDeclContext[],
