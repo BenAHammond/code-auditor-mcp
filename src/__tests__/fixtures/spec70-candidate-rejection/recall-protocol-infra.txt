@@ -1,0 +1,1158 @@
+#!/usr/bin/env tsx
+
+import { execSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+
+const API = "https://api.hetzner.cloud/v1";
+const SCRIPT_DIR = dirname(resolve(process.argv[1] || "infra.ts"));
+
+type HetznerServer = {
+  id: number;
+  name: string;
+  status: string;
+  created: string;
+  public_net: { ipv4: { ip: string } };
+  server_type?: { name?: string; description?: string };
+  datacenter?: { name?: string; location?: { name?: string } };
+  labels?: Record<string, string>;
+};
+
+type HetznerFirewall = {
+  id: number;
+  name: string;
+  rules?: Array<{
+    direction: string;
+    protocol: string;
+    port?: string;
+    source_ips?: string[];
+  }>;
+  applied_to?: Array<{
+    type: string;
+    server?: { id: number };
+  }>;
+};
+
+type HetznerSshKey = {
+  id: number;
+  name: string;
+  public_key: string;
+};
+
+type InfraState = {
+  version: 1;
+  updatedAt: string;
+  resources: {
+    sshKeyId?: number;
+    firewallId?: number;
+    serverId?: number;
+    serverIp?: string;
+    serverName?: string;
+  };
+  lastRun?: {
+    command: string;
+    status: "ok" | "failed";
+    at: string;
+    note?: string;
+  };
+};
+
+type Config = {
+  token: string;
+  serverName: string;
+  firewallName: string;
+  sshKeyName: string;
+  serverType: string;
+  serverImage: string;
+  serverLocation: string;
+  labelSelector: string;
+  sshPrivateKeyPath: string;
+  sshPublicKeyPath: string;
+  statePath: string;
+  expectedLocation: string;
+  expectedServerType: string;
+};
+
+function expandHome(p: string): string {
+  return p.startsWith("~/") ? `${homedir()}/${p.slice(2)}` : p;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function run(command: string): string {
+  return execSync(command, {
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+  }).trim();
+}
+
+function loadDotEnvFile(path: string): void {
+  if (!existsSync(path)) return;
+  const content = readFileSync(path, "utf8");
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const idx = line.indexOf("=");
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    let value = line.slice(idx + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+}
+
+function getConfig(): Config {
+  loadDotEnvFile(resolve(SCRIPT_DIR, ".env"));
+
+  const token =
+    process.env.HCLOUD_TOKEN?.trim() ||
+    process.env.HETZNER_API_TOKEN?.trim() ||
+    process.env.HCLOUD_API_TOKEN?.trim() ||
+    "";
+
+  return {
+    token,
+    serverName: process.env.HCLOUD_SERVER_NAME?.trim() || "recall-protocol-vps",
+    firewallName: process.env.HCLOUD_FIREWALL_NAME?.trim() || "recall-protocol-fw",
+    sshKeyName: process.env.HCLOUD_SSH_KEY_NAME?.trim() || "recall-protocol-key",
+    serverType: process.env.HCLOUD_SERVER_TYPE?.trim() || "cx23",
+    serverImage: process.env.HCLOUD_SERVER_IMAGE?.trim() || "ubuntu-24.04",
+    serverLocation: process.env.HCLOUD_SERVER_LOCATION?.trim() || "nbg1",
+    labelSelector: "project=recall-protocol",
+    sshPrivateKeyPath: expandHome(process.env.SSH_PRIVATE_KEY_PATH?.trim() || "~/.ssh/id_ed25519"),
+    sshPublicKeyPath: expandHome(process.env.SSH_PUBLIC_KEY_PATH?.trim() || "~/.ssh/id_ed25519.pub"),
+    statePath: resolve(
+      SCRIPT_DIR,
+      process.env.INFRA_STATE_PATH?.trim() || "state/infra-state.json",
+    ),
+    expectedLocation: process.env.HCLOUD_SERVER_LOCATION?.trim() || "nbg1",
+    expectedServerType: process.env.HCLOUD_SERVER_TYPE?.trim() || "cx23",
+  };
+}
+
+async function api<T>(config: Config, path: string, opts?: RequestInit): Promise<T> {
+  const res = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: {
+      Authorization: `Bearer ${config.token}`,
+      "Content-Type": "application/json",
+      ...(opts?.headers || {}),
+    },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Hetzner API ${res.status}: ${body}`);
+  }
+  return (await res.json()) as T;
+}
+
+function defaultState(): InfraState {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    resources: {},
+  };
+}
+
+function loadState(config: Config): InfraState {
+  if (!existsSync(config.statePath)) return defaultState();
+  try {
+    const parsed = JSON.parse(readFileSync(config.statePath, "utf8")) as InfraState;
+    if (parsed.version !== 1 || !parsed.resources) return defaultState();
+    return parsed;
+  } catch {
+    return defaultState();
+  }
+}
+
+function saveState(config: Config, state: InfraState): void {
+  mkdirSync(dirname(config.statePath), { recursive: true });
+  state.updatedAt = new Date().toISOString();
+  writeFileSync(config.statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+function markRun(
+  config: Config,
+  state: InfraState,
+  command: string,
+  status: "ok" | "failed",
+  note?: string,
+): void {
+  state.lastRun = {
+    command,
+    status,
+    at: new Date().toISOString(),
+    note,
+  };
+  saveState(config, state);
+}
+
+function parseArgs(argv: string[]): {
+  command: string;
+  flags: Map<string, string>;
+  boolFlags: Set<string>;
+} {
+  const [command = "status", ...rest] = argv;
+  const flags = new Map<string, string>();
+  const boolFlags = new Set<string>();
+  for (const item of rest) {
+    if (!item.startsWith("--")) continue;
+    const eq = item.indexOf("=");
+    if (eq === -1) {
+      boolFlags.add(item.slice(2));
+    } else {
+      flags.set(item.slice(2, eq), item.slice(eq + 1));
+    }
+  }
+  return { command, flags, boolFlags };
+}
+
+async function findServer(config: Config): Promise<HetznerServer | null> {
+  const byLabel = await api<{ servers: HetznerServer[] }>(
+    config,
+    `/servers?label_selector=${encodeURIComponent(config.labelSelector)}`,
+  );
+  if (byLabel.servers.length) {
+    const sorted = [...byLabel.servers].sort((a, b) => b.created.localeCompare(a.created));
+    const running = sorted.find((s) => s.status === "running");
+    return running || sorted[0]!;
+  }
+
+  const byName = await api<{ servers: HetznerServer[] }>(
+    config,
+    `/servers?name=${encodeURIComponent(config.serverName)}`,
+  );
+  if (byName.servers.length) return byName.servers[0]!;
+  return null;
+}
+
+async function findFirewall(config: Config): Promise<HetznerFirewall | null> {
+  const byName = await api<{ firewalls: HetznerFirewall[] }>(
+    config,
+    `/firewalls?name=${encodeURIComponent(config.firewallName)}`,
+  );
+  if (byName.firewalls.length) return byName.firewalls[0]!;
+  return null;
+}
+
+async function ensureSshKey(config: Config, publicKey: string): Promise<HetznerSshKey> {
+  const normalized = publicKey.trim();
+
+  // First, match by exact public key to avoid uniqueness errors when
+  // the key exists under a different name.
+  const all = await api<{ ssh_keys: HetznerSshKey[] }>(config, "/ssh_keys");
+  const byKey = all.ssh_keys.find((k) => k.public_key.trim() === normalized);
+  if (byKey) return byKey;
+
+  // Fallback: named lookup.
+  const existing = await api<{ ssh_keys: HetznerSshKey[] }>(
+    config,
+    `/ssh_keys?name=${encodeURIComponent(config.sshKeyName)}`,
+  );
+  if (existing.ssh_keys.length) return existing.ssh_keys[0]!;
+
+  const created = await api<{ ssh_key: HetznerSshKey }>(config, "/ssh_keys", {
+    method: "POST",
+    body: JSON.stringify({
+      name: config.sshKeyName,
+      public_key: normalized,
+      labels: { project: "recall-protocol" },
+    }),
+  });
+  return created.ssh_key;
+}
+
+async function ensureFirewall(config: Config): Promise<HetznerFirewall> {
+  const existing = await findFirewall(config);
+  if (existing) {
+    const hasSshRule = (existing.rules || []).some(
+      (rule) => rule.direction === "in" && rule.protocol === "tcp" && rule.port === "22",
+    );
+    if (!hasSshRule) {
+      await api(config, `/firewalls/${existing.id}/actions/set_rules`, {
+        method: "POST",
+        body: JSON.stringify({
+          rules: [
+            {
+              direction: "in",
+              protocol: "tcp",
+              port: "22",
+              source_ips: ["0.0.0.0/0", "::/0"],
+              description: "SSH bootstrap; remove after tunnel verification",
+            },
+          ],
+        }),
+      });
+    }
+    return existing;
+  }
+
+  const created = await api<{ firewall: HetznerFirewall }>(config, "/firewalls", {
+    method: "POST",
+    body: JSON.stringify({
+      name: config.firewallName,
+      labels: { project: "recall-protocol" },
+      rules: [
+        {
+          direction: "in",
+          protocol: "tcp",
+          port: "22",
+          source_ips: ["0.0.0.0/0", "::/0"],
+          description: "SSH bootstrap; remove after tunnel verification",
+        },
+      ],
+    }),
+  });
+  return created.firewall;
+}
+
+async function ensureServer(config: Config, sshKeyId: number, firewallId: number): Promise<HetznerServer> {
+  const existing = await findServer(config);
+  if (existing) return existing;
+
+  const cloudInit = String.raw`#!/bin/bash
+set -euo pipefail
+exec > /var/log/cloud-init-script.log 2>&1
+apt-get update && apt-get upgrade -y
+curl -fsSL https://get.docker.com | sh
+systemctl enable docker && systemctl start docker
+apt-get install -y docker-compose-plugin
+mkdir -p /opt/recall-protocol/mail-api /opt/recall-protocol/renderer /opt/recall-protocol/tls /opt/recall-protocol/dkim
+touch /opt/recall-protocol/.cloud-init-done
+echo "Cloud-init complete at $(date)"
+`;
+
+  const created = await api<{ server: HetznerServer }>(config, "/servers", {
+    method: "POST",
+    body: JSON.stringify({
+      name: config.serverName,
+      server_type: config.serverType,
+      image: config.serverImage,
+      location: config.serverLocation,
+      ssh_keys: [sshKeyId],
+      firewall_ids: [firewallId],
+      user_data: cloudInit,
+      labels: { project: "recall-protocol", environment: "production" },
+    }),
+  });
+  return created.server;
+}
+
+async function ensureServerAttachedToFirewall(
+  config: Config,
+  firewallId: number,
+  serverId: number,
+): Promise<void> {
+  const detail = await api<{ firewall: HetznerFirewall }>(config, `/firewalls/${firewallId}`);
+  const attached = (detail.firewall.applied_to || []).some(
+    (resource) => resource.type === "server" && resource.server?.id === serverId,
+  );
+  if (attached) return;
+
+  // Best-effort attach: Hetzner has used multiple action routes across API surfaces.
+  // We try common variants and only warn if none succeed.
+  try {
+    await api(config, `/servers/${serverId}/actions/attach_to_firewall`, {
+      method: "POST",
+      body: JSON.stringify({ firewall: firewallId }),
+    });
+    return;
+  } catch {
+    // Try firewall-side action route next.
+  }
+
+  try {
+    await api(config, `/firewalls/${firewallId}/actions/apply_to_resources`, {
+      method: "POST",
+      body: JSON.stringify({
+        apply_to: [{ type: "server", server: { id: serverId } }],
+      }),
+    });
+    return;
+  } catch (error) {
+    console.warn(
+      `[provision] warning: could not auto-attach firewall ${firewallId} to server ${serverId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+function waitForSsh(host: string, privateKeyPath: string): void {
+  for (let i = 1; i <= 60; i += 1) {
+    try {
+      run(
+        `ssh -i ${shellQuote(privateKeyPath)} -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new root@${host} ${shellQuote(
+          "test -f /opt/recall-protocol/.cloud-init-done && echo ready",
+        )}`,
+      );
+      return;
+    } catch {
+      execSync("sleep 5");
+    }
+  }
+  throw new Error("Timed out waiting for cloud-init / SSH readiness");
+}
+
+function writeRemoteConfig(host: string, privateKeyPath: string): void {
+  const compose = String.raw`services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel run
+    env_file:
+      - .env
+    networks:
+      - internal
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+  maddy:
+    image: foxcpp/maddy:latest
+    restart: unless-stopped
+    hostname: mail.recallprotocol.com
+    ports:
+      - "25:25"
+      - "465:465"
+      - "587:587"
+    volumes:
+      - ./maddy.conf:/data/maddy.conf:ro
+      - ./tls:/etc/maddy/tls:ro
+      - ./dkim:/data/dkim:ro
+      - maddy_data:/data
+    networks:
+      - internal
+
+  mail-api:
+    image: node:22-alpine
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./mail-api:/app
+    command: sh -c "npm install --production 2>/dev/null && node server.js"
+    env_file:
+      - .secrets
+    environment:
+      - SMTP_HOST=maddy
+      - SMTP_PORT=587
+    networks:
+      - internal
+    depends_on:
+      - maddy
+
+  renderer:
+    build: ./renderer
+    restart: unless-stopped
+    env_file:
+      - .secrets
+    environment:
+      - MAX_CONCURRENT=3
+      - TIMEOUT_MS=30000
+    mem_limit: 512m
+    profiles:
+      - renderer
+    networks:
+      - internal
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    restart: unless-stopped
+    volumes:
+      - uptime_data:/app/data
+    profiles:
+      - monitoring
+    networks:
+      - internal
+
+volumes:
+  caddy_data:
+  caddy_config:
+  maddy_data:
+  uptime_data:
+
+networks:
+  internal:
+    driver: bridge
+`;
+
+  const caddy = String.raw`:8080 {
+    handle /health {
+        respond "ok" 200
+    }
+    handle /send {
+        reverse_proxy mail-api:8025
+    }
+    handle {
+        respond "not found" 404
+    }
+    log {
+        output stdout
+        format console
+    }
+}
+
+:8081 {
+    reverse_proxy renderer:3000
+}
+
+:8082 {
+    reverse_proxy uptime-kuma:3001
+}
+`;
+
+  const maddy = String.raw`hostname mail.recallprotocol.com
+state_dir /data/state
+runtime_dir /data/run
+tls file /etc/maddy/tls/cert.pem /etc/maddy/tls/key.pem
+
+smtp tcp://0.0.0.0:25 {
+    limits {
+        all rate 20 1s
+    }
+    modify {
+        dkim {
+            domains recallprotocol.com
+            selector rp1
+            key_path /data/dkim/recallprotocol_default.key
+        }
+    }
+    deliver_to &remote_queue
+}
+
+smtp tcp://0.0.0.0:587 {
+    limits {
+        all rate 20 1s
+    }
+    modify {
+        dkim {
+            domains recallprotocol.com
+            selector rp1
+            key_path /data/dkim/recallprotocol_default.key
+        }
+    }
+    deliver_to &remote_queue
+}
+
+target.queue remote_queue {
+    target &outbound_delivery
+}
+
+target.remote outbound_delivery {
+    hostname mail.recallprotocol.com
+}
+`;
+
+  const mailApiPkg = `{"type":"module","dependencies":{"hono":"^4","@hono/node-server":"^1","nodemailer":"^6"}}\n`;
+  const mailApiServer = String.raw`import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import nodemailer from "nodemailer";
+
+const app = new Hono();
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || "maddy",
+  port: parseInt(process.env.SMTP_PORT || "587", 10),
+  secure: false,
+  tls: { rejectUnauthorized: false },
+});
+const API_KEY = process.env.MAIL_API_KEY || "";
+
+app.use("*", async (c, next) => {
+  if (c.req.path === "/health") return next();
+  const auth = c.req.header("Authorization");
+  if (auth !== "Bearer " + API_KEY) return c.json({ error: "Unauthorized" }, 401);
+  await next();
+});
+
+app.get("/health", (c) => c.body("ok"));
+app.post("/send", async (c) => {
+  const { to, subject, text, html } = await c.req.json();
+  if (!to || !subject || (!text && !html)) return c.json({ error: "Missing fields" }, 400);
+  try {
+    const info = await transporter.sendMail({
+      from: '"Recall Protocol" <noreply@recallprotocol.com>',
+      to,
+      subject,
+      text,
+      html,
+    });
+    return c.json({ success: true, messageId: info.messageId });
+  } catch {
+    return c.json({ error: "Send failed" }, 500);
+  }
+});
+
+serve({ fetch: app.fetch, port: 8025 });
+`;
+
+  const rendererPkg = `{"type":"module","dependencies":{"hono":"^4","@hono/node-server":"^1","p-limit":"^6","playwright":"^1.52.0","sharp":"^0.34.5"}}\n`;
+  const rendererDockerfile = String.raw`FROM node:22-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package.json ./
+RUN npm install --production
+RUN npx playwright install chromium --with-deps
+COPY server.js ./
+EXPOSE 3000
+CMD ["node", "server.js"]
+`;
+  const rendererServer = String.raw`import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import pLimit from "p-limit";
+import { chromium } from "playwright";
+import sharp from "sharp";
+
+const app = new Hono();
+const API_KEY = process.env.RENDER_API_KEY || "";
+const MAX_CONCURRENT = Math.max(1, parseInt(process.env.MAX_CONCURRENT || "3", 10));
+const TIMEOUT_MS = Math.max(1000, parseInt(process.env.TIMEOUT_MS || "30000", 10));
+const limit = pLimit(MAX_CONCURRENT);
+const allowedDomains = ["recallprotocol.com", "localhost", "ben-a-hammond.workers.dev"];
+
+function isAllowed(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    return allowedDomains.some((d) => hostname === d || hostname.endsWith("." + d));
+  } catch {
+    return false;
+  }
+}
+
+app.use("*", async (c, next) => {
+  if (c.req.path === "/health") return next();
+  const auth = c.req.header("Authorization");
+  if (auth !== "Bearer " + API_KEY) return c.json({ error: "Unauthorized" }, 401);
+  await next();
+});
+
+app.get("/health", (c) => c.json({ status: "ok", browser: "on-demand" }));
+
+async function screenshotPng({ url, width, height }) {
+  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+  try {
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: Number(width), height: Number(height) });
+    await page.goto(url, { waitUntil: "networkidle", timeout: TIMEOUT_MS });
+    return await page.screenshot({ type: "png" });
+  } finally {
+    await browser.close();
+  }
+}
+
+app.post("/render/png", async (c) =>
+  limit(async () => {
+    const { url, width = 1200, height = 630 } = await c.req.json();
+    if (!url || !isAllowed(url)) return c.json({ error: "Invalid URL" }, 400);
+    const png = await screenshotPng({ url, width, height });
+    c.header("Content-Type", "image/png");
+    return c.body(png);
+  }),
+);
+
+app.post("/render/webp", async (c) =>
+  limit(async () => {
+    const { url, width = 1200, height = 630, quality = 82 } = await c.req.json();
+    if (!url || !isAllowed(url)) return c.json({ error: "Invalid URL" }, 400);
+    const png = await screenshotPng({ url, width, height });
+    const webp = await sharp(Buffer.from(png))
+      .webp({ quality: Math.max(1, Math.min(100, Number(quality) || 82)) })
+      .toBuffer();
+    c.header("Content-Type", "image/webp");
+    return c.body(webp);
+  }),
+);
+
+serve({ fetch: app.fetch, port: 3000 });
+`;
+
+  const remote = String.raw`set -euo pipefail
+mkdir -p /opt/recall-protocol/mail-api /opt/recall-protocol/renderer /opt/recall-protocol/tls /opt/recall-protocol/dkim
+
+cat >/etc/docker/daemon.json <<'DOCKER_DAEMON'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+DOCKER_DAEMON
+systemctl restart docker
+
+if [ ! -f /opt/recall-protocol/tls/key.pem ] || [ ! -f /opt/recall-protocol/tls/cert.pem ]; then
+  openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+    -keyout /opt/recall-protocol/tls/key.pem \
+    -out /opt/recall-protocol/tls/cert.pem \
+    -subj "/CN=mail.recallprotocol.com"
+fi
+if [ ! -f /opt/recall-protocol/dkim/recallprotocol_default.key ]; then
+  openssl genrsa -out /tmp/recallprotocol_default.rsa 2048
+  openssl pkcs8 -topk8 -nocrypt -in /tmp/recallprotocol_default.rsa -out /opt/recall-protocol/dkim/recallprotocol_default.key
+  openssl rsa -in /tmp/recallprotocol_default.rsa -pubout -outform DER | base64 -w0 > /opt/recall-protocol/dkim/recallprotocol_default.pub.b64
+  rm -f /tmp/recallprotocol_default.rsa
+fi
+
+if [ ! -f /opt/recall-protocol/.secrets ]; then
+  MAIL_API_KEY=$(openssl rand -hex 24)
+  RENDER_API_KEY=$(openssl rand -hex 24)
+  cat >/opt/recall-protocol/.secrets <<EOF
+MAIL_API_KEY=\${MAIL_API_KEY}
+RENDER_API_KEY=\${RENDER_API_KEY}
+EOF
+  chmod 600 /opt/recall-protocol/.secrets
+fi
+
+cat >/opt/recall-protocol/docker-compose.yml <<'COMPOSE'
+__COMPOSE__
+COMPOSE
+
+cat >/opt/recall-protocol/Caddyfile <<'CADDY'
+__CADDY__
+CADDY
+
+cat >/opt/recall-protocol/maddy.conf <<'MADDY'
+__MADDY__
+MADDY
+
+cat >/opt/recall-protocol/mail-api/package.json <<'MAIL_API_PKG'
+__MAIL_API_PKG__
+MAIL_API_PKG
+
+cat >/opt/recall-protocol/mail-api/server.js <<'MAIL_API_SERVER'
+__MAIL_API_SERVER__
+MAIL_API_SERVER
+
+cat >/opt/recall-protocol/renderer/package.json <<'RENDERER_PKG'
+__RENDERER_PKG__
+RENDERER_PKG
+
+cat >/opt/recall-protocol/renderer/Dockerfile <<'RENDERER_DOCKERFILE'
+__RENDERER_DOCKERFILE__
+RENDERER_DOCKERFILE
+
+cat >/opt/recall-protocol/renderer/server.js <<'RENDERER_SERVER'
+__RENDERER_SERVER__
+RENDERER_SERVER
+
+echo "provisioned /opt/recall-protocol files"
+`;
+
+  const filled = remote
+    .replace("__COMPOSE__", compose)
+    .replace("__CADDY__", caddy)
+    .replace("__MADDY__", maddy)
+    .replace("__MAIL_API_PKG__", mailApiPkg)
+    .replace("__MAIL_API_SERVER__", mailApiServer)
+    .replace("__RENDERER_PKG__", rendererPkg)
+    .replace("__RENDERER_DOCKERFILE__", rendererDockerfile)
+    .replace("__RENDERER_SERVER__", rendererServer);
+
+  run(
+    `ssh -i ${shellQuote(privateKeyPath)} -o StrictHostKeyChecking=accept-new root@${host} ${shellQuote(filled)}`,
+  );
+}
+
+function printServerStatus(server: HetznerServer | null): void {
+  if (!server) {
+    console.log("Server not found");
+    return;
+  }
+  console.log(`ID:       ${server.id}`);
+  console.log(`Server:   ${server.name}`);
+  console.log(`Status:   ${server.status}`);
+  console.log(`IP:       ${server.public_net.ipv4.ip}`);
+  console.log(
+    `Type:     ${server.server_type?.name || "unknown"} (${server.server_type?.description || "n/a"})`,
+  );
+  console.log(`Location: ${server.datacenter?.name || "unknown"}`);
+  console.log(`Created:  ${server.created}`);
+}
+
+async function cmdProvision(config: Config, state: InfraState): Promise<void> {
+  if (!config.token) throw new Error("HCLOUD_TOKEN is required");
+
+  const sshPublicKey = readFileSync(config.sshPublicKeyPath, "utf8").trim();
+
+  console.log(`[provision] ensuring ssh key: ${config.sshKeyName}`);
+  const sshKey = await ensureSshKey(config, sshPublicKey);
+  state.resources.sshKeyId = sshKey.id;
+
+  console.log(`[provision] ensuring firewall: ${config.firewallName}`);
+  const firewall = await ensureFirewall(config);
+  state.resources.firewallId = firewall.id;
+
+  console.log(`[provision] ensuring server: ${config.serverName}`);
+  const server = await ensureServer(config, sshKey.id, firewall.id);
+  state.resources.serverId = server.id;
+  state.resources.serverIp = server.public_net.ipv4.ip;
+  state.resources.serverName = server.name;
+  await ensureServerAttachedToFirewall(config, firewall.id, server.id);
+  saveState(config, state);
+
+  console.log(
+    `[provision] server id=${server.id} ip=${server.public_net.ipv4.ip} status=${server.status}`,
+  );
+  console.log("[provision] waiting for cloud-init + SSH...");
+  waitForSsh(server.public_net.ipv4.ip, config.sshPrivateKeyPath);
+  console.log("[provision] deploying remote config files...");
+  writeRemoteConfig(server.public_net.ipv4.ip, config.sshPrivateKeyPath);
+
+  console.log("[provision] complete");
+}
+
+async function cmdBootstrapTunnel(
+  config: Config,
+  state: InfraState,
+  flags: Map<string, string>,
+): Promise<void> {
+  const tunnelToken =
+    flags.get("token") ||
+    process.env.TUNNEL_TOKEN ||
+    process.env.CLOUDFLARE_TUNNEL_TOKEN ||
+    "";
+  if (!tunnelToken) {
+    throw new Error("Missing tunnel token. Pass --token=<token> or set TUNNEL_TOKEN in infra/.env.");
+  }
+
+  const host = flags.get("host") || state.resources.serverIp || (await findServer(config))?.public_net.ipv4.ip;
+  if (!host) {
+    throw new Error("Could not determine host. Pass --host=<ip> or run `infra.ts provision` first.");
+  }
+
+  console.log(`[bootstrap-tunnel] target host: ${host}`);
+  const remoteScript = `
+set -euo pipefail
+cd /opt/recall-protocol
+cat > .env <<'EOF'
+TUNNEL_TOKEN=${tunnelToken}
+EOF
+chmod 600 .env
+docker compose up -d
+docker compose ps
+`;
+  run(
+    `ssh -i ${shellQuote(config.sshPrivateKeyPath)} -o StrictHostKeyChecking=accept-new root@${host} ${shellQuote(remoteScript)}`,
+  );
+
+  const health = run("curl -sS https://mail.recallprotocol.com/health");
+  if (health !== "ok") {
+    throw new Error(`Unexpected health response: ${health}`);
+  }
+  console.log("[bootstrap-tunnel] health check passed");
+}
+
+function checkSsh(host: string, sshKeyPath: string, failures: string[], warnings: string[]): void {
+  const expectedPaths = [
+    "/opt/recall-protocol/docker-compose.yml",
+    "/opt/recall-protocol/Caddyfile",
+    "/opt/recall-protocol/maddy.conf",
+    "/opt/recall-protocol/mail-api/server.js",
+    "/opt/recall-protocol/renderer/server.js",
+    "/opt/recall-protocol/.secrets",
+    "/opt/recall-protocol/tls/cert.pem",
+    "/opt/recall-protocol/tls/key.pem",
+    "/opt/recall-protocol/dkim/recallprotocol_default.pub.b64",
+    "/opt/recall-protocol/dkim/recallprotocol_default.key",
+  ];
+
+  try {
+    const remoteScript = `
+set -euo pipefail
+for p in ${expectedPaths.map((p) => shellQuote(p)).join(" ")}; do
+  if [ ! -f "$p" ]; then
+    echo "missing:$p"
+  fi
+done
+if docker compose -f /opt/recall-protocol/docker-compose.yml config -q; then
+  echo "compose:ok"
+else
+  echo "compose:invalid"
+fi
+if [ -f /opt/recall-protocol/.env ]; then
+  echo "tunnel_env:present"
+else
+  echo "tunnel_env:missing"
+fi
+`;
+    const out = run(
+      `ssh -i ${shellQuote(sshKeyPath)} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 root@${host} ${shellQuote(remoteScript)}`,
+    );
+
+    const lines = out.split("\n").map((line) => line.trim()).filter(Boolean);
+    const missing = lines.filter((line) => line.startsWith("missing:"));
+    if (missing.length) {
+      for (const item of missing) {
+        const message = `remote file missing: ${item.slice("missing:".length)}`;
+        failures.push(message);
+        console.log(`FAIL ${message}`);
+      }
+    } else {
+      console.log("PASS all expected remote provisioned files exist");
+    }
+    if (!lines.includes("compose:ok")) {
+      failures.push("docker compose config is invalid");
+      console.log("FAIL docker compose config is invalid");
+    } else {
+      console.log("PASS docker compose config is valid");
+    }
+    if (!lines.includes("tunnel_env:present")) {
+      const message = "tunnel runtime env missing (.env); run bootstrap-tunnel after tunnel token creation";
+      warnings.push(message);
+      console.log(`WARN ${message}`);
+    } else {
+      console.log("PASS tunnel runtime env file exists (.env)");
+    }
+  } catch (error) {
+    const message = `ssh checks failed (${error instanceof Error ? error.message : String(error)})`;
+    failures.push(message);
+    console.log(`FAIL ${message}`);
+  }
+}
+
+async function cmdCheck(
+  config: Config,
+  state: InfraState,
+  boolFlags: Set<string>,
+): Promise<void> {
+  const apiOnly = boolFlags.has("api-only");
+  const withSsh = boolFlags.has("with-ssh");
+  if (apiOnly && withSsh) throw new Error("Use either --api-only or --with-ssh.");
+
+  const failures: string[] = [];
+  const warnings: string[] = [];
+  const pass = (message: string) => console.log(`PASS ${message}`);
+  const warn = (message: string) => {
+    warnings.push(message);
+    console.log(`WARN ${message}`);
+  };
+  const fail = (message: string) => {
+    failures.push(message);
+    console.log(`FAIL ${message}`);
+  };
+
+  const doSsh = withSsh || (!apiOnly && Boolean(process.env.SSH_PRIVATE_KEY_PATH));
+  console.log(`drift check mode: ${doSsh ? "api+ssh" : "api-only"}`);
+
+  const server = await findServer(config);
+  if (!server) {
+    fail(`server not found (expected label ${config.labelSelector} or name ${config.serverName})`);
+  } else {
+    pass(`server found: ${server.name} (${server.id})`);
+    state.resources.serverId = server.id;
+    state.resources.serverIp = server.public_net.ipv4.ip;
+    state.resources.serverName = server.name;
+    if (server.status !== "running") fail(`server status is ${server.status} (expected running)`);
+    else pass("server status is running");
+
+    const serverType = server.server_type?.name;
+    if (serverType && serverType !== config.expectedServerType) {
+      warn(`server type drift: got ${serverType}, expected ${config.expectedServerType}`);
+    } else {
+      pass(`server type matches expected (${config.expectedServerType})`);
+    }
+
+    const location = server.datacenter?.location?.name;
+    if (location && location !== config.expectedLocation) {
+      warn(`server location drift: got ${location}, expected ${config.expectedLocation}`);
+    } else if (location) {
+      pass(`server location matches expected (${config.expectedLocation})`);
+    }
+
+    if (server.labels?.project !== "recall-protocol") {
+      warn("server label project=recall-protocol missing");
+    } else {
+      pass("server label project=recall-protocol is present");
+    }
+  }
+
+  const firewall = await findFirewall(config);
+  if (!firewall) {
+    fail(`firewall not found (expected ${config.firewallName})`);
+  } else {
+    pass(`firewall found: ${firewall.name} (${firewall.id})`);
+    state.resources.firewallId = firewall.id;
+    const rules = firewall.rules || [];
+    if (rules.length === 0) {
+      pass("firewall has zero inbound rules (hardened)");
+    } else {
+      const allSsh = rules.every(
+        (rule) => rule.direction === "in" && rule.protocol === "tcp" && rule.port === "22",
+      );
+      const allowedMailPorts = new Set(["22", "25", "465", "587"]);
+      const allMailProfile = rules.every(
+        (rule) =>
+          rule.direction === "in" &&
+          rule.protocol === "tcp" &&
+          Boolean(rule.port) &&
+          allowedMailPorts.has(String(rule.port)),
+      );
+      if (allSsh) pass("firewall is in bootstrap mode (only tcp/22 inbound)");
+      else if (allMailProfile) pass("firewall is in mail mode (tcp/22,25,465,587)");
+      else fail("firewall has unexpected inbound rules");
+    }
+  }
+
+  if (doSsh) {
+    if (!state.resources.serverIp) fail("cannot run ssh checks because no server IP is known");
+    else checkSsh(state.resources.serverIp, config.sshPrivateKeyPath, failures, warnings);
+  } else {
+    warn("ssh checks skipped (use --with-ssh and set SSH_PRIVATE_KEY_PATH for deeper verification)");
+  }
+
+  saveState(config, state);
+  console.log("");
+  console.log("summary:");
+  console.log(`  failures: ${failures.length}`);
+  console.log(`  warnings: ${warnings.length}`);
+  if (failures.length) throw new Error("drift check failed");
+}
+
+async function cmdStatus(config: Config, state: InfraState): Promise<void> {
+  const server = await findServer(config);
+  if (server) {
+    state.resources.serverId = server.id;
+    state.resources.serverIp = server.public_net.ipv4.ip;
+    state.resources.serverName = server.name;
+    saveState(config, state);
+  }
+  printServerStatus(server);
+}
+
+async function cmdFirewall(config: Config): Promise<void> {
+  const fw = await findFirewall(config);
+  if (!fw) {
+    console.log("Firewall not found");
+    return;
+  }
+  console.log(`Firewall: ${fw.name} (id: ${fw.id})`);
+  if (!fw.rules || fw.rules.length === 0) {
+    console.log("  No inbound rules (fully locked down)");
+    return;
+  }
+  for (const rule of fw.rules) {
+    const src = rule.source_ips?.join(", ") || "(none)";
+    const port = rule.port || "(all)";
+    console.log(`  ${rule.direction} ${rule.protocol}/${port} from ${src}`);
+  }
+}
+
+async function cmdHarden(config: Config): Promise<void> {
+  const fw = await findFirewall(config);
+  if (!fw) {
+    console.log("Firewall not found");
+    return;
+  }
+  await api(config, `/firewalls/${fw.id}/actions/set_rules`, {
+    method: "POST",
+    body: JSON.stringify({ rules: [] }),
+  });
+  console.log("Firewall hardened: zero inbound rules");
+}
+
+async function cmdReboot(config: Config): Promise<void> {
+  const server = await findServer(config);
+  if (!server) {
+    console.log("Server not found");
+    return;
+  }
+  await api(config, `/servers/${server.id}/actions/reboot`, { method: "POST" });
+  console.log(`Reboot initiated for ${server.name}`);
+}
+
+async function cmdIp(config: Config): Promise<void> {
+  const server = await findServer(config);
+  if (!server) {
+    console.log("Server not found");
+    return;
+  }
+  console.log(server.public_net.ipv4.ip);
+}
+
+function printUsage(): void {
+  console.log("Usage: npm run infra -- <command> [flags]");
+  console.log("");
+  console.log("Commands:");
+  console.log("  provision");
+  console.log("  bootstrap-tunnel --token=<tunnel_token> [--host=<server_ip>]");
+  console.log("  check [--api-only|--with-ssh]");
+  console.log("  status | firewall | harden | reboot | ip");
+}
+
+async function main(): Promise<void> {
+  const config = getConfig();
+  const state = loadState(config);
+  const parsed = parseArgs(process.argv.slice(2));
+
+  if (parsed.command === "help" || parsed.command === "--help" || parsed.command === "-h") {
+    printUsage();
+    return;
+  }
+
+  if (!config.token) {
+    throw new Error("HCLOUD_TOKEN missing. Set it in infra/.env or environment.");
+  }
+
+  try {
+    switch (parsed.command) {
+      case "provision":
+        await cmdProvision(config, state);
+        break;
+      case "bootstrap-tunnel":
+        await cmdBootstrapTunnel(config, state, parsed.flags);
+        break;
+      case "check":
+        await cmdCheck(config, state, parsed.boolFlags);
+        break;
+      case "status":
+        await cmdStatus(config, state);
+        break;
+      case "firewall":
+        await cmdFirewall(config);
+        break;
+      case "harden":
+        await cmdHarden(config);
+        break;
+      case "reboot":
+        await cmdReboot(config);
+        break;
+      case "ip":
+        await cmdIp(config);
+        break;
+      default:
+        printUsage();
+        throw new Error(`Unknown command: ${parsed.command}`);
+    }
+    markRun(config, state, parsed.command, "ok");
+  } catch (error) {
+    markRun(
+      config,
+      state,
+      parsed.command,
+      "failed",
+      error instanceof Error ? error.message : String(error),
+    );
+    throw error;
+  }
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

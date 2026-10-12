@@ -1,0 +1,231 @@
+import { NextRequest, NextResponse } from 'next/server';
+import * as fs from 'fs';
+import * as path from 'path';
+import { desc, inArray } from 'drizzle-orm';
+import { requireAdminAPI } from '@/lib/middleware/adminAuth';
+import { appDb } from '@/database/services/app-db';
+import { etlRuns, etlRunSteps } from '@/database/schema';
+import { APP_DEFAULT_SAMPLES_TABLE } from '@/lib/etl/pipelineSteps';
+
+const INBOX_DIR = 'data/etl-inbox';
+const RESULT_FILE = 'etl-result.txt';
+const ERROR_FILE = 'etl-error.txt';
+
+/** One step's status, timestamp, and optional duration (from DB). */
+export interface EtlStepInfo {
+  step: string;
+  status: 'ok' | 'failed';
+  at: string; // ISO8601
+  /** Duration of this step in ms (from previous step or run start). */
+  durationMs?: number;
+}
+
+export interface EtlFolderInfo {
+  name: string;
+  hasResult: boolean;
+  hasError: boolean;
+  /** Version string for the last run (e.g. 2024_1). Use for rollback: DROP TABLE individual_samples_<version> then re-run. */
+  version?: string;
+  resultSummary?: {
+    completedAt?: string;
+    tables?: string[];
+    tableCounts?: Record<string, number>;
+    stagingCounts?: Record<string, number>;
+    steps?: EtlStepInfo[];
+    /** Total run duration in ms. */
+    durationMs?: number;
+    stepsCompletedCount?: number;
+  };
+  /** When hasError: which step failed (e.g. load_staging). */
+  failedStep?: string;
+  /** When hasError: steps that completed before failure (for diagnosis). */
+  stepsCompleted?: string[];
+  /** When hasError: timestamps for completed steps. */
+  stepTimestamps?: Record<string, string>;
+  errorMessage?: string;
+  /** Structured error (stack, name, code) for failed runs. */
+  errorDetails?: { name?: string; message?: string; stack?: string; code?: string };
+  /** Total run duration in ms (success or failure). */
+  durationMs?: number;
+  /** Number of steps that completed (0..N). */
+  stepsCompletedCount?: number;
+}
+
+/**
+ * GET /api/admin/etl/folders
+ * Returns list of immediate subfolders of data/etl-inbox with result/error file presence and parsed summary.
+ */
+export async function GET(_request: NextRequest) {
+  if (process.env.NODE_ENV !== 'development') {
+    const adminCheck = await requireAdminAPI();
+    if (adminCheck instanceof NextResponse) return adminCheck;
+    return NextResponse.json({ error: 'ETL is only available in development', folders: [] }, { status: 404 });
+  }
+
+  const inboxRoot = path.resolve(process.cwd(), INBOX_DIR);
+  if (!fs.existsSync(inboxRoot) || !fs.statSync(inboxRoot).isDirectory()) {
+    return NextResponse.json({ folders: [] });
+  }
+
+  const entries = fs.readdirSync(inboxRoot, { withFileTypes: true });
+  const folders: EtlFolderInfo[] = [];
+
+  for (const ent of entries) {
+    if (!ent.isDirectory()) continue;
+    const dirPath = path.join(inboxRoot, ent.name);
+    const resultPath = path.join(dirPath, RESULT_FILE);
+    const errorPath = path.join(dirPath, ERROR_FILE);
+    const hasResult = fs.existsSync(resultPath);
+    const hasError = fs.existsSync(errorPath);
+
+    const info: EtlFolderInfo = { name: ent.name, hasResult, hasError };
+
+    if (hasResult) {
+      try {
+        const content = fs.readFileSync(resultPath, 'utf-8');
+        const lines = content.split('\n').map((l) => l.trim()).filter(Boolean);
+        const completedAt = lines.find((l) => l.startsWith('completed_at='))?.slice('completed_at='.length);
+        const tablesLine = lines.find((l) => l.startsWith('tables='))?.slice('tables='.length);
+        const tables = tablesLine ? tablesLine.split(',').map((t) => t.trim()).filter(Boolean) : [];
+        const tableCounts: Record<string, number> = {};
+        const stagingCounts: Record<string, number> = {};
+        const steps: EtlStepInfo[] = [];
+        for (const line of lines) {
+          if (!line.includes('=')) continue;
+          if (line.startsWith('completed_at=') || line.startsWith('folder=') || line.startsWith('tables=')) continue;
+          const eq = line.indexOf('=');
+          const name = line.slice(0, eq).trim();
+          const value = line.slice(eq + 1).trim();
+          if (name.startsWith('step_') && name.endsWith('_at') && value) {
+            const stepName = name.slice(5, -3);
+            steps.push({ step: stepName, status: 'ok', at: value });
+            continue;
+          }
+          if (name.startsWith('step_') && name !== 'step_') continue; // step_foo=ok already reflected in steps via _at
+          if (name.startsWith('staging_') && /^\d+$/.test(value)) {
+            stagingCounts[name] = parseInt(value, 10);
+            continue;
+          }
+          if (name && /^\d+$/.test(value)) tableCounts[name] = parseInt(value, 10);
+        }
+        // Dedupe steps by step name (keep order by first occurrence)
+        const stepsByName = new Map<string, EtlStepInfo>();
+        for (const s of steps) {
+          if (!stepsByName.has(s.step)) stepsByName.set(s.step, s);
+        }
+        info.resultSummary = {
+          completedAt,
+          tables,
+          tableCounts,
+          stagingCounts: Object.keys(stagingCounts).length ? stagingCounts : undefined,
+          steps: stepsByName.size ? Array.from(stepsByName.values()) : undefined,
+        };
+      } catch {
+        // ignore parse errors
+      }
+    }
+    if (hasError) {
+      try {
+        const content = fs.readFileSync(errorPath, 'utf-8');
+        const errorLines = content.split('\n').map((l) => l.trim()).filter(Boolean);
+        const errorLine = errorLines.find((l) => l.startsWith('error='));
+        info.errorMessage = errorLine?.slice('error='.length).trim();
+        const stepLine = errorLines.find((l) => l.startsWith('step='));
+        info.failedStep = stepLine?.slice('step='.length).trim() || undefined;
+        const stepsCompletedLine = errorLines.find((l) => l.startsWith('steps_completed='));
+        info.stepsCompleted = stepsCompletedLine
+          ? stepsCompletedLine.slice('steps_completed='.length).split(',').map((s) => s.trim()).filter(Boolean)
+          : undefined;
+        const stepTimestamps: Record<string, string> = {};
+        for (const line of errorLines) {
+          if (line.startsWith('step_') && line.includes('_at=')) {
+            const eq = line.indexOf('=');
+            const name = line.slice(0, eq).trim();
+            const value = line.slice(eq + 1).trim();
+            if (name.endsWith('_at')) stepTimestamps[name.slice(5, -3)] = value;
+          }
+        }
+        if (Object.keys(stepTimestamps).length) info.stepTimestamps = stepTimestamps;
+      } catch {
+        info.errorMessage = info.errorMessage ?? 'Failed to read error file';
+      }
+    }
+    folders.push(info);
+  }
+
+  // Enrich from Neon when available (queryable run history)
+  try {
+    const db = appDb.getDb();
+    const folderNames = folders.map((f) => f.name);
+    if (folderNames.length === 0) return NextResponse.json({ folders });
+
+    const latestRuns = await db
+      .select()
+      .from(etlRuns)
+      .where(inArray(etlRuns.folderName, folderNames))
+      .orderBy(desc(etlRuns.completedAt));
+
+    // One run per folder (most recent per folder)
+    const runByFolder = new Map<string, (typeof latestRuns)[0]>();
+    for (const run of latestRuns) {
+      if (!runByFolder.has(run.folderName)) runByFolder.set(run.folderName, run);
+    }
+    const runIds = Array.from(runByFolder.values()).map((r) => r.id);
+    if (runIds.length === 0) return NextResponse.json({ folders });
+
+    const stepsRows = await db
+      .select()
+      .from(etlRunSteps)
+      .where(inArray(etlRunSteps.runId, runIds))
+      .orderBy(etlRunSteps.completedAt);
+    const stepsByRunId = new Map<string, typeof stepsRows>();
+    for (const row of stepsRows) {
+      const list = stepsByRunId.get(row.runId) ?? [];
+      list.push(row);
+      stepsByRunId.set(row.runId, list);
+    }
+
+    for (const info of folders) {
+      const run = runByFolder.get(info.name);
+      if (!run) continue;
+      const steps = stepsByRunId.get(run.id) ?? [];
+      const stepAt = (s: (typeof steps)[0]) => (s.completedAt instanceof Date ? s.completedAt.toISOString() : String(s.completedAt));
+
+      info.durationMs = run.durationMs ?? undefined;
+      info.stepsCompletedCount = run.stepsCompletedCount ?? undefined;
+      info.version = run.version ?? undefined;
+      if (run.success) {
+        info.resultSummary = {
+          completedAt: run.completedAt instanceof Date ? run.completedAt.toISOString() : String(run.completedAt),
+          tables: (run.tableNames as string[] | null) ?? undefined,
+          tableCounts: (run.tableCounts as Record<string, number> | null) ?? undefined,
+          stagingCounts: (run.stagingCounts as Record<string, number> | null) ?? undefined,
+          steps: steps.length
+            ? steps.map((s) => ({
+                step: s.step,
+                status: s.status as 'ok' | 'failed',
+                at: stepAt(s),
+                durationMs: s.durationMs ?? undefined,
+              }))
+            : undefined,
+          durationMs: run.durationMs ?? undefined,
+          stepsCompletedCount: run.stepsCompletedCount ?? undefined,
+        };
+        info.hasResult = true;
+        info.hasError = false;
+      } else {
+        info.failedStep = run.failedStep ?? undefined;
+        info.stepsCompleted = steps.map((s) => s.step);
+        info.stepTimestamps = steps.length ? Object.fromEntries(steps.map((s) => [s.step, stepAt(s)])) : undefined;
+        info.errorMessage = run.errorMessage ?? undefined;
+        info.errorDetails = (run.errorDetails as { name?: string; message?: string; stack?: string; code?: string } | null) ?? undefined;
+        info.hasError = true;
+        info.hasResult = false;
+      }
+    }
+  } catch {
+    // App DB optional; keep file-based info
+  }
+
+  return NextResponse.json({ folders, appDefaultSamplesTable: APP_DEFAULT_SAMPLES_TABLE });
+}

@@ -1,0 +1,188 @@
+// @ts-check
+import { defineConfig } from 'astro/config';
+import cloudflare from '@astrojs/cloudflare';
+import react from '@astrojs/react';
+import tailwindcss from '@tailwindcss/vite';
+import agentsVite from 'agents/vite';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CLASSIFICATIONS_PATH = resolve(__dirname, 'data/ability-classifications.json');
+const PROPOSED_TAGS_PATH = resolve(__dirname, 'data/proposed-tags.json');
+
+/** Forces production JSX transform when NODE_ENV is flipped during config load (Tailwind/PostCSS); see vitejs/vite#21729. */
+const fixProductionJsxDevForBuild = () => ({
+  name: 'fix-production-jsx-dev-for-build',
+  /** @param {'build' | 'serve'} command */
+  config(_config, { command }) {
+    if (command === 'build') {
+      return { esbuild: { jsxDev: false } };
+    }
+    return {};
+  },
+});
+
+/** SSR dep scan prebundles with NODE_ENV=production even in dev, folding react/jsx-dev-runtime to the prod stub (jsxDEV undefined). Force development for `astro dev` only. */
+const ssrOptimizeDepsUseDevNodeEnv = () => ({
+  name: 'ssr-optimize-deps-use-dev-node-env',
+  /** @param {'build' | 'serve'} command */
+  config(_config, { command }) {
+    if (command !== 'serve') return {};
+    return {
+      ssr: {
+        optimizeDeps: {
+          esbuildOptions: {
+            define: {
+              'process.env.NODE_ENV': JSON.stringify('development'),
+            },
+          },
+        },
+      },
+    };
+  },
+});
+
+/** Intercepts PUT /api/admin/ability/classifications in local dev and writes to
+ *  data/ability-classifications.json using Node.js fs before the request reaches
+ *  the Cloudflare adapter (workerd). Production deploys have no dev server, so
+ *  this plugin is a no-op there. */
+const classificationsDevSavePlugin = () => ({
+  name: 'classifications-dev-save',
+  configureServer(server) {
+    server.middlewares.use(async (req, res, next) => {
+      if (req.url !== '/api/admin/ability/classifications' || req.method !== 'PUT') {
+        return next();
+      }
+
+      try {
+        // Read body from the Node.js request stream
+        const chunks = [];
+        for await (const chunk of req) {
+          chunks.push(chunk);
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+
+        if (!body || typeof body.heroSlug !== 'string' || !Array.isArray(body.abilities)) {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Invalid body — expected { heroSlug, abilities }', code: 'INVALID_REQUEST' }));
+          return;
+        }
+
+        const current = JSON.parse(readFileSync(CLASSIFICATIONS_PATH, 'utf8'));
+        const other = current.abilities.filter((a) => a.heroSlug !== body.heroSlug);
+        current.abilities = [...other, ...body.abilities];
+        writeFileSync(CLASSIFICATIONS_PATH, JSON.stringify(current, null, 2) + '\n');
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ heroSlug: body.heroSlug, count: body.abilities.length }));
+      } catch (err) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          error: `Write failed: ${err instanceof Error ? err.message : String(err)}`,
+          code: 'WRITE_FAILED',
+        }));
+      }
+    });
+  },
+});
+
+/** Intercepts POST /api/admin/ability/proposed-tags in local dev and writes to
+ *  data/proposed-tags.json. Same pattern as classificationsDevSavePlugin. */
+const proposedTagsDevSavePlugin = () => ({
+  name: 'proposed-tags-dev-save',
+  configureServer(server) {
+    server.middlewares.use(async (req, res, next) => {
+      if (req.url !== '/api/admin/ability/proposed-tags' || req.method !== 'POST') {
+        return next();
+      }
+
+      try {
+        const chunks = [];
+        for await (const chunk of req) {
+          chunks.push(chunk);
+        }
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+
+        if (!body || typeof body.name !== 'string' || typeof body.category !== 'string' || typeof body.description !== 'string') {
+          res.statusCode = 400;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'Invalid body — expected { name, category, description }', code: 'INVALID_REQUEST' }));
+          return;
+        }
+
+        const current = JSON.parse(readFileSync(PROPOSED_TAGS_PATH, 'utf8'));
+        const existing = current.tags?.find((t) => t.name === body.name);
+        if (existing) {
+          // Extend usages if not already listed
+          if (body.heroSlug && body.abilityKey) {
+            const usageKey = `${body.heroSlug}:${body.abilityKey}`;
+            if (!existing.usages?.some((u) => `${u.heroSlug}:${u.abilityKey}` === usageKey)) {
+              existing.usages = [...(existing.usages ?? []), { heroSlug: body.heroSlug, abilityKey: body.abilityKey }];
+            }
+          }
+        } else {
+          current.tags = [...(current.tags ?? []), {
+            name: body.name,
+            category: body.category,
+            description: body.description,
+            proposedAt: new Date().toISOString(),
+            status: 'active',
+            usages: body.heroSlug && body.abilityKey ? [{ heroSlug: body.heroSlug, abilityKey: body.abilityKey }] : [],
+          }];
+        }
+        writeFileSync(PROPOSED_TAGS_PATH, JSON.stringify(current, null, 2) + '\n');
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ ok: true, name: body.name }));
+      } catch (err) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          error: `Write failed: ${err instanceof Error ? err.message : String(err)}`,
+          code: 'WRITE_FAILED',
+        }));
+      }
+    });
+  },
+});
+
+export default defineConfig({
+  site: process.env.PUBLIC_SITE_URL ?? "https://recallprotocol.com",
+  output: 'server',
+  adapter: cloudflare({
+    // Local dev: proxy D1/R2 bindings via wrangler (see docs/recall-protocol-setup-tasks.md)
+    platformProxy: { enabled: true },
+    // TEMP workaround for CF edge-preview regression (2026-05-18). The
+    // @cloudflare/vite-plugin tries to open an edge-preview session
+    // whenever any binding is `remote = true` (our AI binding), and CF
+    // started rejecting the upload with code 10375 because the project
+    // also declares Durable Objects (HERO_DATA, HERO_EXPERT,
+    // USER_STRATEGIST). Tracked upstream:
+    //   https://github.com/cloudflare/workers-sdk/issues/13956
+    //   https://github.com/cloudflare/workers-sdk/issues/13957
+    // Setting this disables the remote-binding proxy in dev — AI calls
+    // fall back to the local miniflare stub. Remove once upstream fix
+    // lands.
+    remoteBindings: false,
+  }),
+  integrations: [react()],
+  vite: {
+    plugins: [
+      fixProductionJsxDevForBuild(),
+      ssrOptimizeDepsUseDevNodeEnv(),
+      classificationsDevSavePlugin(),
+      proposedTagsDevSavePlugin(),
+      tailwindcss(),
+      agentsVite(),
+    ],
+    resolve: {
+      dedupe: ['react', 'react-dom'],
+    },
+  },
+});
