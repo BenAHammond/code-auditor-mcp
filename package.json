@@ -37,6 +37,7 @@
     "verify:disk-space": "node scripts/verify-disk-space.mjs",
     "verify:types": "tsc --noEmit",
     "verify:dist-fresh": "node scripts/verify-dist-fresh.mjs",
+    "verify:hook-log-path": "node scripts/verify-hook-log-path.mjs",
     "verify:clean-install": "bash scripts/verify-clean-install.sh",
     "verify:dist": "npm pack --silent && bash scripts/verify-dist.sh && rm -f code-auditor-mcp-*.tgz",
     "verify:self": "node scripts/verify-self.mjs && node scripts/verify-languages.mjs",

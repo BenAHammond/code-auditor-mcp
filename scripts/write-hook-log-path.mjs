@@ -23,11 +23,26 @@
  * The end-to-end test in `src/hookLog.spec.ts` runs the real `hook-common.sh`
  * writer and asserts the reader resolves the exact file it created.
  */
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Resolve the output root. The default is the repo root (the build-time
+// `npm run build:hooklog` path). `--out-dir <dir>` redirects both generated
+// files into a temp tree so `verify:hook-log-path` can regenerate and diff them
+// against the committed copies without touching the committed files.
+let outRoot = path.join(__dirname, '..');
+const outDirIdx = process.argv.indexOf('--out-dir');
+if (outDirIdx !== -1) {
+  const dir = process.argv[outDirIdx + 1];
+  if (!dir) {
+    console.error('write-hook-log-path: --out-dir requires a directory argument');
+    process.exit(1);
+  }
+  outRoot = path.resolve(dir);
+}
 
 // Single source of truth for the hook-log path. The directory tail is the
 // historical `${XDG_CACHE_HOME:-$HOME/.cache}/code-auditor/logs` tail; the file
@@ -46,7 +61,7 @@ if (!/^[a-z0-9.-]+$/.test(HOOK_LOG_FILE)) {
   process.exit(1);
 }
 
-const tsOut = path.join(__dirname, '..', 'src', 'hookLogPath.generated.ts');
+const tsOut = path.join(outRoot, 'src', 'hookLogPath.generated.ts');
 const tsBody =
   '// @generated — do not edit. Written by `scripts/write-hook-log-path.mjs`.\n' +
   '//\n' +
@@ -56,7 +71,7 @@ const tsBody =
   `export const HOOK_LOG_DIR_TAIL = '${HOOK_LOG_DIR_TAIL}' as const;\n` +
   `export const HOOK_LOG_FILE = '${HOOK_LOG_FILE}' as const;\n`;
 
-const shOut = path.join(__dirname, '..', 'plugin', 'scripts', 'hook-log-path.sh');
+const shOut = path.join(outRoot, 'plugin', 'scripts', 'hook-log-path.sh');
 const shBody =
   '# @generated — do not edit. Written by `scripts/write-hook-log-path.mjs`.\n' +
   '#\n' +
@@ -66,6 +81,8 @@ const shBody =
   `HOOK_LOG_DIR_TAIL='${HOOK_LOG_DIR_TAIL}'\n` +
   `HOOK_LOG_FILE='${HOOK_LOG_FILE}'\n`;
 
+mkdirSync(path.dirname(tsOut), { recursive: true });
+mkdirSync(path.dirname(shOut), { recursive: true });
 writeFileSync(tsOut, tsBody);
 writeFileSync(shOut, shBody);
 process.stdout.write(`build:hooklog → tail=${HOOK_LOG_DIR_TAIL} file=${HOOK_LOG_FILE}\n`);

@@ -28,6 +28,9 @@
  *   - `assert_compatible` — the plugin↔CLI version pin in `hook-common.sh`,
  *     exercised against a fake bin reporting a wrong / missing / matching
  *     version.
+ *   - `verify:hook-log-path` — the stale-generated-file branch, triggered by
+ *     corrupting a committed generated path file (regeneration into a temp tree
+ *     means the test never touches the single source).
  *
  * The remaining gates named in R9 — `verify:dist`, `verify:clean-install`,
  * `verify:languages`, `bench` — are packaging/install/integration operations
@@ -37,7 +40,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -169,6 +172,29 @@ describe('verify:dist-fresh — liveness', () => {
       expect(res.stderr).toContain('dist/cli.js is older than');
     } finally {
       utimesSync(DIST_CLI, before.atimeMs / 1000, before.mtimeMs / 1000);
+    }
+  });
+});
+
+describe('verify:hook-log-path — liveness', () => {
+  // A hand-edited generated hook-log path file must fail the gate through its
+  // own exit 1, never pass by accident — the same antidote the dist-fresh test
+  // applies to `dist/cli.js`. Make the committed file stale on purpose (one
+  // character), assert the real gate exits non-zero, then restore. The gate
+  // regenerates into a temp tree, so the test never rewrites the single source.
+  const HOOK_LOG_PATH_SH = join(APP_ROOT, 'plugin', 'scripts', 'hook-log-path.sh');
+  it('exits 1 when a generated file drifts from its single source', () => {
+    const before = readFileSync(HOOK_LOG_PATH_SH, 'utf8');
+    // Corrupt one character: flip the leading `h` of the file name to `x`.
+    writeFileSync(HOOK_LOG_PATH_SH, before.replace("HOOK_LOG_FILE='", "HOOK_LOG_FILE='x"));
+    try {
+      const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-hook-log-path.mjs')], {
+        encoding: 'utf-8',
+      });
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('stale generated file');
+    } finally {
+      writeFileSync(HOOK_LOG_PATH_SH, before);
     }
   });
 });
@@ -311,7 +337,7 @@ describe('verify:close — run-all (no gate skips another)', () => {
   // runs and every result is reported, under any condition.
 
   it('lists every gate exactly once — none can be dropped by an earlier failure', () => {
-    expect(GATES).toHaveLength(15);
+    expect(GATES).toHaveLength(16);
     expect(new Set(GATES).size).toBe(GATES.length);
   });
 
@@ -358,8 +384,8 @@ describe('verify:close — a stale dist fails the chain', () => {
 describe('verify:close — a subset run never reads as a full pass', () => {
   // `VERIFY_CLOSE_GATES` is a test seam, but it must never let a subset run print
   // the release banner. "verify:close PASSED — every gate ran and passed" is
-  // reserved for the full 15: a reader or a script seeing that banner must be
-  // able to trust it means fifteen. A subset run instead names the gates it ran,
+  // reserved for the full 16: a reader or a script seeing that banner must be
+  // able to trust it means sixteen. A subset run instead names the gates it ran,
   // states the number omitted, and ends with a clearly-different subset line.
   // This proves the *pass* path — a single always-green gate, forced to pass via
   // `VERIFY_MIN_FREE_BYTES=0` — must not produce the banner.
@@ -374,8 +400,8 @@ describe('verify:close — a subset run never reads as a full pass', () => {
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('SUBSET');
-    expect(res.stdout).toContain('1 of 15');
-    expect(res.stdout).toContain('14 omitted');
+    expect(res.stdout).toContain('1 of 16');
+    expect(res.stdout).toContain('15 omitted');
     expect(res.stdout).not.toContain('every gate ran and passed');
   }, 30_000);
 });
