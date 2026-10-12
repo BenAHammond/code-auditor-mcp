@@ -1127,7 +1127,7 @@ function insertSourceStyleFacts(
     for (const decl of facts.declarations) {
       runStyleWrite(stmts, 'insDecl', [decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash]);
       if (decl.context) {
-        for (const m of decl.context.matchAll(/\.([a-zA-Z_-][a-zA-Z0-9_-]+)/g)) {
+        for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
           runStyleWrite(stmts, 'insClass', [m[1], decl.filePath]);
         }
       }
@@ -1257,7 +1257,7 @@ export function createStylesReducer(): Stage3Reducer {
                 // resolve names via `style_defined_classes` instead of a
                 // full-corpus regex scan over every declaration.
                 if (decl.context) {
-                  for (const m of decl.context.matchAll(/\.([a-zA-Z_-][a-zA-Z0-9_-]+)/g)) {
+                  for (const m of decl.context.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
                     runStyleWrite(stmts, 'insClass', [m[1], decl.filePath]);
                   }
                 }

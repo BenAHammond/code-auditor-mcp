@@ -839,13 +839,10 @@ export const CORPUS_PRODUCERS = {
   // `style-declarations` phase fact rather than the `style_defined_classes`
   // index table (Item 4 2b: style-declarations → defined-classes). Every writer
   // of `style_defined_classes` (source CSS-in-JS, compiled CSS, other extractable
-  // files) derives the class name by the SAME regex `/\.([a-zA-Z_-][a-zA-Z0-9_-]+)/g`
-  // over the declaration's selector `context` — a class name must start with a
-  // letter/underscore/hyphen (a leading digit is a keyframe percentage like
-  // `15.8%`) and be at least two chars (a compound selector's single-letter part,
-  // e.g. `.rp-letters .p`, is not a class) — so the phase fact reproduces the
-  // table byte-for-byte: group by class name, keep MIN(file_path).
-  // `context`/`filePath` are plain data already on `StylesDeclaration`.
+  // files) derives the class name by the SAME regex `/\.([a-zA-Z0-9_-]+)/g` over
+  // the declaration's selector `context`, so the phase fact reproduces the table
+  // byte-for-byte: group by class name, keep MIN(file_path). `context`/`filePath`
+  // are plain data already on `StylesDeclaration`.
   //
   // Parity notes: (1) the index producer's MIN(file_path) used SQLite BINARY
   // collation (UTF-8 byte order); JS `<` is UTF-16 code-unit order — identical
@@ -863,7 +860,7 @@ export const CORPUS_PRODUCERS = {
         for (const d of f.declarations) {
           const ctx = d.context;
           if (!ctx) continue;
-          for (const m of ctx.matchAll(/\.([a-zA-Z_-][a-zA-Z0-9_-]+)/g)) {
+          for (const m of ctx.matchAll(/\.([a-zA-Z0-9_-]+)/g)) {
             const className = m[1];
             const fp = d.filePath;
             const prev = byClass.get(className);
