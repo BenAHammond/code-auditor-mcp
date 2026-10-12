@@ -12,8 +12,9 @@
  * (CHANGELOG: the broken-compiler-that-sat-green and the stale-`missing-org-filter`
  * false clean). It bit here concretely: `verify:dist-fresh` has failed since
  * Spec 69 R1/R2 (dist stale), so the `&&` chain short-circuited at `dist-fresh`
- * and `verify:oracle-shortfalls` — the gate that pins the Spec 69 completeness
- * residuals — was never reached in that window. No drift was masked or concealed:
+ * and `verify:recall-cases` — the gate that holds the named-case recall assertion
+ * (the replacement for the retired `verify:oracle-shortfalls` count baseline) —
+ * was never reached in that window. No drift was masked or concealed:
  * the run aborted before it got that far.
  *
  * This runner fixes the *shape*, not the instance: it runs every gate, records
@@ -55,7 +56,7 @@ export const GATES = [
   'bench',
   'verify:recall-value-drift',
   'verify:extraction-completeness',
-  'verify:oracle-shortfalls',
+  'verify:recall-cases',
   'verify:clean-install',
   'verify:dist',
   'verify:self',

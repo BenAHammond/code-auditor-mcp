@@ -1,0 +1,137 @@
+{
+  "cases": [
+    {
+      "kind": "data-access-calls-candidates",
+      "corpus": "blitz",
+      "file": "apps/next13/src/auth/mutations/changePassword.ts",
+      "site": "13:24",
+      "note": "Prisma findFirst query-builder call in the changePassword mutation"
+    },
+    {
+      "kind": "data-access-calls-candidates",
+      "corpus": "blitz",
+      "file": "apps/next13/src/auth/mutations/changePassword.ts",
+      "site": "19:11",
+      "note": "Prisma update query-builder call in the changePassword mutation"
+    },
+    {
+      "kind": "data-access-calls-candidates",
+      "corpus": "hhra-org",
+      "file": "app/actions.tsx",
+      "site": "10:9",
+      "note": "drizzle fetchWithDrizzle ORM call in the todo actions"
+    },
+    {
+      "kind": "data-access-calls-candidates",
+      "corpus": "openstatus",
+      "file": "apps/dashboard/src/app/(dashboard)/monitors/(list)/client.tsx",
+      "site": "133:33",
+      "note": "monitor-list find query-builder call"
+    },
+    {
+      "kind": "data-access-calls-candidates",
+      "corpus": "recall-protocol",
+      "file": "infra/infra.ts",
+      "site": "227:21",
+      "note": "infra find query-builder call"
+    },
+    {
+      "kind": "secret-candidates",
+      "corpus": "blitz",
+      "file": "apps/next13/src/app/auth/layout.tsx",
+      "site": "5:5",
+      "note": "blitz auth redirectAuthenticatedTo credential-position pair"
+    },
+    {
+      "kind": "secret-candidates",
+      "corpus": "openstatus",
+      "file": "apps/dashboard/env.ts",
+      "site": "1:7",
+      "note": "dashboard env credential-position call candidate"
+    },
+    {
+      "kind": "secret-candidates",
+      "corpus": "recall-protocol",
+      "file": "astro.config.mjs",
+      "site": "17:3",
+      "note": "astro config credential-position pair candidate"
+    },
+    {
+      "kind": "security-candidates",
+      "corpus": "blitz",
+      "file": "integration-tests/utils/browsers/selenium.ts",
+      "site": "dynamic-require:67:23",
+      "note": "dynamic-require candidate in the selenium browser util"
+    },
+    {
+      "kind": "security-candidates",
+      "corpus": "openstatus",
+      "file": "apps/status-page/src/i18n/request.ts",
+      "site": "dynamic-require:14:22",
+      "note": "dynamic-require candidate in the i18n request"
+    },
+    {
+      "kind": "security-candidates",
+      "corpus": "recall-protocol",
+      "file": "scripts/apply-item-effects.ts",
+      "site": "command-injection:104:3",
+      "note": "command-injection execSync candidate in apply-item-effects"
+    },
+    {
+      "kind": "loop-query-candidates",
+      "corpus": "hhra-org",
+      "file": "app/api/admin/etl/folders/route.ts",
+      "site": "91:19",
+      "note": "DB call inside a loop in the ETL folders route"
+    },
+    {
+      "kind": "loop-query-candidates",
+      "corpus": "openstatus",
+      "file": "apps/dashboard/src/app/(dashboard)/chat/sidebar.tsx",
+      "site": "69:13",
+      "note": "DB call inside a loop in the chat sidebar"
+    },
+    {
+      "kind": "loop-query-candidates",
+      "corpus": "recall-protocol",
+      "file": "infra/infra.ts",
+      "site": "97:18",
+      "note": "DB call inside a loop in infra"
+    },
+    {
+      "kind": "defined-classes",
+      "corpus": "blitz",
+      "file": "apps/next13/src/styles/Home.module.css",
+      "site": "arrowIcon",
+      "note": "arrowIcon class defined in Home.module.css"
+    },
+    {
+      "kind": "defined-classes",
+      "corpus": "recall-protocol",
+      "file": "src/styles/ui-components.css",
+      "site": "accent-card-l",
+      "note": "accent-card-l class defined in ui-components.css"
+    },
+    {
+      "kind": "defined-classes",
+      "corpus": "hhra-org",
+      "file": "app/styles/globals.css",
+      "site": "dark",
+      "note": "dark class defined in globals.css"
+    },
+    {
+      "kind": "ddl-declarations",
+      "corpus": "recall-protocol",
+      "file": "migrations/0000_init.sql",
+      "site": "CREATE:users",
+      "note": "users table CREATE in the init migration"
+    },
+    {
+      "kind": "ddl-declarations",
+      "corpus": "recall-protocol",
+      "file": "migrations/0003_auth_otp.sql",
+      "site": "CREATE:otp_challenges",
+      "note": "otp_challenges table CREATE in the auth-otp migration"
+    }
+  ]
+}

@@ -57,7 +57,7 @@ import {
   compareToBaseline,
 } from '../../scripts/verify-recall-value-drift-core.mjs';
 import { compareCompleteness } from '../../scripts/verify-extraction-completeness-core.mjs';
-import { compareOracleShortfalls } from '../../scripts/verify-oracle-shortfalls-core.mjs';
+import { compareRecallCases } from '../../scripts/verify-recall-cases-core.mjs';
 import { summarizeResults, GATES } from '../../scripts/verify-close.mjs';
 
 const APP_ROOT = process.cwd();
@@ -209,6 +209,7 @@ describe('verify:version-fresh — liveness', () => {
   const VERSION_GEN = join(APP_ROOT, 'src', 'version.generated.ts');
   it('exits 1 when the version stamp drifts from its single source', () => {
     const before = readFileSync(VERSION_GEN, 'utf8');
+    const mtime = statSync(VERSION_GEN);
     // Corrupt one character: bump the stamped patch to a version package.json
     // does not carry, so the regenerated file cannot match.
     writeFileSync(VERSION_GEN, before.replace("VERSION = '", "VERSION = '9"));
@@ -220,6 +221,9 @@ describe('verify:version-fresh — liveness', () => {
       expect(res.stderr).toContain('stale generated file');
     } finally {
       writeFileSync(VERSION_GEN, before);
+      // Restore mtime: writing src/version.generated.ts bumps it past dist/cli.js,
+      // which would make the *next* `verify:dist-fresh` run fail spuriously.
+      utimesSync(VERSION_GEN, mtime.atimeMs / 1000, mtime.mtimeMs / 1000);
     }
   });
 });
@@ -460,84 +464,94 @@ describe('verify:close — run-all verdict (a failed gate fails the chain)', () 
   });
 });
 
-describe('verify:oracle-shortfalls — liveness', () => {
-  // The aggregate shortfall gate (Spec 69 R1 criterion 4) re-measures the
-  // corpora each run; the corpus is absent in CI, so the gate SKIPs there. The
-  // failure branch lives in the pure comparison — a moved files/expected/actual
-  // counter, a missing (kind, corpus), or an unexpected one must produce drift
-  // lines (and so a non-zero exit), never a silent green.
-  const baselineKinds = {
-    'file-symbols': {
-      composition: 'methods fold into their class symbol',
-      corpora: {
-        'recall-protocol': { files: 99, expected: 1847, actual: 1338 },
-      },
+describe('verify:recall-cases — liveness', () => {
+  // The named-case recall gate (the replacement for the retired count-baseline
+  // oracle-shortfalls gate) re-measures the corpora each run; the corpus is
+  // absent in CI, so the gate SKIPs cases there. The failure branch lives in the
+  // pure comparison — a named (kind, corpus, file, site) case whose site is not
+  // among the emitted sites must produce drift lines (and so a non-zero exit),
+  // never a silent green. Extra emitted sites are a gain and never fail it.
+  const baselineCases = [
+    {
+      kind: 'data-access-calls-candidates',
+      corpus: 'blitz',
+      file: 'apps/next13/src/auth/mutations/changePassword.ts',
+      site: '13:24',
+      note: 'Prisma findFirst query-builder call',
     },
-    'batch-functions': {
-      composition: 'functions with no .batch( call',
-      corpora: {
-        'recall-protocol': { files: 1431, expected: 15153, actual: 16 },
-      },
+    {
+      kind: 'secret-candidates',
+      corpus: 'recall-protocol',
+      file: 'astro.config.mjs',
+      site: '17:3',
+      note: 'astro config credential-position pair',
     },
-  };
+  ];
 
-  it('is green when every (kind, corpus) aggregate matches the baseline exactly', () => {
+  it('is green when every named case site is present', () => {
     const measured = {
-      'file-symbols': { 'recall-protocol': { files: 99, expected: 1847, actual: 1338 } },
-      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
-    };
-    expect(compareOracleShortfalls(measured, baselineKinds)).toEqual([]);
-  });
-
-  it('reports a moved counter (expected units moved)', () => {
-    const measured = {
-      'file-symbols': { 'recall-protocol': { files: 99, expected: 1846, actual: 1338 } },
-      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
-    };
-    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
-      'file-symbols on recall-protocol expected 1846 != baseline 1847',
-    );
-  });
-
-  it('marks an actual decrease as a producer regression, not drift', () => {
-    const measured = {
-      'file-symbols': { 'recall-protocol': { files: 99, expected: 1847, actual: 1200 } },
-      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
-    };
-    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
-      'REGRESSION file-symbols on recall-protocol actual 1200 < baseline 1338 (producer emitted fewer facts than its last recording — a defect until attributed)',
-    );
-  });
-
-  it('does not mark an actual increase as a regression', () => {
-    const measured = {
-      'file-symbols': { 'recall-protocol': { files: 99, expected: 1847, actual: 1400 } },
-      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
-    };
-    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
-      'file-symbols on recall-protocol actual 1400 != baseline 1338',
-    );
-  });
-
-  it('reports a (kind, corpus) the gate failed to measure', () => {
-    const measured = {
-      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
-    };
-    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
-      'file-symbols on recall-protocol not measured (baseline files 99, expected 1847, actual 1338)',
-    );
-  });
-
-  it('reports an unexpected (kind, corpus) measured beyond the baseline', () => {
-    const measured = {
-      'file-symbols': {
-        'recall-protocol': { files: 99, expected: 1847, actual: 1338 },
-        openstatus: { files: 65, expected: 830, actual: 437 },
+      'data-access-calls-candidates': {
+        blitz: {
+          'apps/next13/src/auth/mutations/changePassword.ts': ['12:10', '13:24', '19:11'],
+        },
       },
-      'batch-functions': { 'recall-protocol': { files: 1431, expected: 15153, actual: 16 } },
+      'secret-candidates': {
+        'recall-protocol': { 'astro.config.mjs': ['17:3', '29:3'] },
+      },
     };
-    expect(compareOracleShortfalls(measured, baselineKinds)).toContain(
-      'unexpected file-symbols on openstatus measured (files 65, expected 830, actual 437)',
+    expect(compareRecallCases(measured, baselineCases)).toEqual([]);
+  });
+
+  it('is green when a producer emits *more* sites than the named case (a gain)', () => {
+    const measured = {
+      'data-access-calls-candidates': {
+        blitz: {
+          'apps/next13/src/auth/mutations/changePassword.ts': ['11:1', '12:10', '13:24', '19:11', '20:15'],
+        },
+      },
+      'secret-candidates': {
+        'recall-protocol': { 'astro.config.mjs': ['17:3', '29:3', '30:3'] },
+      },
+    };
+    expect(compareRecallCases(measured, baselineCases)).toEqual([]);
+  });
+
+  it('marks a missing site as a recall regression', () => {
+    const measured = {
+      'data-access-calls-candidates': {
+        blitz: { 'apps/next13/src/auth/mutations/changePassword.ts': ['12:10', '19:11'] },
+      },
+      'secret-candidates': {
+        'recall-protocol': { 'astro.config.mjs': ['17:3'] },
+      },
+    };
+    expect(compareRecallCases(measured, baselineCases)).toContain(
+      "MISSING RECALL data-access-calls-candidates on blitz apps/next13/src/auth/mutations/changePassword.ts site '13:24' not emitted — a producer stopped emitting this named case (Prisma findFirst query-builder call)",
+    );
+  });
+
+  it('reports a case whose (kind, corpus, file) was not measured', () => {
+    const measured = {
+      'data-access-calls-candidates': {
+        blitz: { 'apps/next13/src/auth/mutations/changePassword.ts': ['13:24'] },
+      },
+    };
+    expect(compareRecallCases(measured, baselineCases)).toContain(
+      "secret-candidates on recall-protocol astro.config.mjs not measured — named case '17:3' unverified (astro config credential-position pair)",
+    );
+  });
+
+  it('reports a case whose file emitted no sites', () => {
+    const measured = {
+      'data-access-calls-candidates': {
+        blitz: { 'apps/next13/src/auth/mutations/changePassword.ts': [] },
+      },
+      'secret-candidates': {
+        'recall-protocol': { 'astro.config.mjs': ['17:3'] },
+      },
+    };
+    expect(compareRecallCases(measured, baselineCases)).toContain(
+      "data-access-calls-candidates on blitz apps/next13/src/auth/mutations/changePassword.ts not measured — named case '13:24' unverified (Prisma findFirst query-builder call)",
     );
   });
 });

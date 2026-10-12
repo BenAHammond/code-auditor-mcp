@@ -74,6 +74,10 @@ import { withRuleTiming, withRuleTimingAsync } from '../analyzers/ruleTiming.js'
  */
 export interface PhaseModelResult {
   findings: Finding[];
+  /** Fact kind → the built fact array. Exposed so recall gates (verify:recall-cases)
+   *  can assert a named (kind, file, site) case is still emitted, instead of
+   *  pinning an aggregate count that goes red on every legitimate detector gain. */
+  facts: ReadonlyMap<FactKind, unknown>;
   /** Fact kind → files whose fact is incomplete (parse dropped or producer threw). */
   incompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>>;
   /** Spec 69 R1 — per-file completeness shortfalls: a counted oracle whose
@@ -221,10 +225,10 @@ export async function runPhaseModel(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  if (MIGRATED_RULES.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
+  if (MIGRATED_RULES.length === 0) return { findings: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return { findings: [], incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
+  if (active.length === 0) return { findings: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -301,6 +305,7 @@ export async function runPhaseModelOverFiles(
   const findings = await analyzeAll(facts, thresholdsByRule, infra);
   return {
     findings,
+    facts,
     incompleteFacts,
     oracleShortfalls,
     unprovenQueryReceivers,
