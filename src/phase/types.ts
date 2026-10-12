@@ -833,14 +833,14 @@ export type StyleDeclarationsFile = {
   declarations: ReadonlyArray<StylesDeclaration>;
   tokens: ReadonlyArray<StylesToken>;
   classUsage: ReadonlyArray<StylesClassUsage>;
-  /** Parser-harvested defined classes (`.foo` selectors) from a markup file's
-   *  embedded `<style>` blocks (`harvestMarkupStyleClasses`). Markup has no CSS
-   *  AST on its `ParsedFile`, so the producer parses each readable block body
-   *  with the CSS parser and stores the result here; the `defined-classes` corpus
-   *  producer reads this field for markup instead of scanning the regex `context`.
-   *  CSS/SCSS producers carry their definitions in `classUsage` (the parser walk),
-   *  and TS/JS source producers in `declarations[].context`, so both contribute
-   *  `[]`. */
+  /** Parser-harvested defined classes (`.foo` selectors) from a file's embedded
+   *  CSS that has no CSS AST of its own: a markup file's `<style>` blocks
+   *  (`harvestMarkupStyleClasses`) or a TS/JS file's CSS-in-JS template bodies
+   *  (`harvestCssInJsStyleClasses`). Each producer parses the readable body with
+   *  the CSS parser and stores the result here; the `defined-classes` corpus
+   *  producer reads this field for markup and TS/JS source instead of scanning the
+   *  regex `context`. CSS/SCSS producers carry their definitions in `classUsage`
+   *  (the parser walk) and contribute `[]`. */
   definedClasses: ReadonlyArray<DefinedClassesFact>;
   /** Content-level `<style lang="…">` unread reasons, collected by the markup
    *  producer (`extractStylesMarkup`) during its own `extractDeclarations` pass.

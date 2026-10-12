@@ -678,29 +678,32 @@ function parseStyleObjectExpression(expr: string): Array<{ property: string; val
 // CSS-in-JS (styled-components / emotion)
 // ---------------------------------------------------------------------------
 
-function extractFromCSSinJS(
-  node: ASTNode,
-  sourceCode: string,
-  filePath: string,
-  declarations: NormalizedDeclaration[],
-): boolean {
-  // Tagged templates (styled.div`...` / css`...`) parse as a `call_expression`
-  // whose argument is a `template_string` — the WASM grammar emits no
-  // `tagged_template_expression` node. Guard on the template argument so a
-  // plain function call never reaches the tag-match below.
-  if (node.type !== 'call_expression') return false;
-  if (!findChildByType(node, 'template_string')) return false;
+/**
+ * Collect the cleaned CSS body of one CSS-in-JS tagged-template `call_expression`
+ * node, or null when the node is not a CSS-in-JS template. This is the single
+ * source of truth for *which* templates count as CSS-in-JS and *what* their CSS
+ * body text is: the declaration extractor (`extractFromCSSinJS`) and the
+ * defined-class harvest (`harvestCssInJsStyleClasses`) both read it, so the two
+ * can never disagree on a template boundary.
+ *
+ * Tagged templates (styled.div`...` / css`...`) parse as a `call_expression`
+ * whose argument is a `template_string` — the WASM grammar emits no
+ * `tagged_template_expression` node. Guard on the template argument so a plain
+ * function call never reaches the tag-match below.
+ */
+function collectCssInJsBody(node: ASTNode, sourceCode: string): string | null {
+  if (node.type !== 'call_expression') return null;
+  if (!findChildByType(node, 'template_string')) return null;
 
   const nodeText = sourceCode.slice(node.range[0], node.range[1]);
-  const line = getLine(sourceCode, node.range[0]);
 
   // Check for styled.xxx or css tag
   const tagMatch = nodeText.match(/^(styled\.[a-zA-Z]+|css|keyframes|createGlobalStyle)\s*(?:\()?\s*`/);
-  if (!tagMatch) return false;
+  if (!tagMatch) return null;
 
   // Extract the template literal content
   const templateStart = nodeText.indexOf('`');
-  if (templateStart === -1) return false;
+  if (templateStart === -1) return null;
 
   // Find the closing backtick (accounting for escape sequences)
   let templateEnd = templateStart + 1;
@@ -714,12 +717,36 @@ function extractFromCSSinJS(
   const template = nodeText.slice(templateStart + 1, templateEnd);
 
   // Replace template expressions ${expr} with placeholders for parsing
-  const cleanedTemplate = template.replace(/\$\{[^}]*\}/g, '/* dynamic */');
+  return template.replace(/\$\{[^}]*\}/g, '/* dynamic */');
+}
+
+/**
+ * Collect every CSS-in-JS template body in a TS/JS AST, in source order. Shared
+ * by the defined-class harvest (`harvestCssInJsStyleClasses`), which routes each
+ * body through the CSS parser rather than the line-splitting declaration path.
+ */
+export function collectCssInJsBlocks(ast: AST, sourceCode: string): string[] {
+  const bodies: string[] = [];
+  walkASTNodes(ast.root, (node) => {
+    const body = collectCssInJsBody(node, sourceCode);
+    if (body !== null) bodies.push(body);
+  });
+  return bodies;
+}
+
+function extractFromCSSinJS(
+  node: ASTNode,
+  sourceCode: string,
+  filePath: string,
+  declarations: NormalizedDeclaration[],
+): boolean {
+  const body = collectCssInJsBody(node, sourceCode);
+  if (body === null) return false;
+  const line = getLine(sourceCode, node.range[0]);
 
   // Parse the CSS template content
-  if (cleanedTemplate.includes(':')) {
-    const block = cleanedTemplate;
-    extractDeclarationsFromBlock(block, declarations, {
+  if (body.includes(':')) {
+    extractDeclarationsFromBlock(body, declarations, {
       filePath,
       mechanism: 'css-in-js',
       selector: `styled`,

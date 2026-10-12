@@ -10,13 +10,15 @@
  * from a keyframe selector. The CSS path already harvests class selectors
  * structurally — `extractClassUsageFromCSSAst` walks `class_name` nodes under
  * `class_selector`, so keyframes (whose selectors are `from`/`to`/percentages,
- * per the CSS grammar) never appear. This module is the shared helper every
- * catalog writer uses: CSS and markup use the parser harvest (markup via
- * `harvestMarkupStyleClasses`, which parses each embedded `<style>` block body
- * with the CSS parser); only TS/JS source (CSS-in-JS, which has no CSS AST)
- * scans the selector `context` for class names. The `@keyframes` at-rule
- * discriminant (`isKeyframeVariant`) is live only on the migration-backfill
- * path, not the TS/JS source path — see that function's doc.
+ * per the CSS grammar) never appear. Every live catalog writer now uses the
+ * parser harvest: CSS/SCSS read the parser walk (`classUsage`); markup parses
+ * each embedded `<style>` block body with the CSS parser
+ * (`harvestMarkupStyleClasses`); TS/JS source parses each CSS-in-JS template
+ * body with the same parser (`harvestCssInJsStyleClasses`). No live path scans
+ * the selector `context` anymore. The `@keyframes` at-rule discriminant
+ * (`isKeyframeVariant`) survives only on the migration-backfill path, which
+ * replays legacy `style_declarations` rows whose `variant_context` carried the
+ * at-rule — see that function's doc.
  */
 
 export interface DefinedClassRef {
@@ -88,18 +90,17 @@ export function scanClassNamesFromSelector(selector: string): string[] {
  * class selectors. The name may carry a leading `@` and may be the first or a
  * later at-rule in the stack.
  *
- * Live path: reached only from `harvestDefinedClasses`' source branch, and the
- * only caller that can supply a non-null `variantContext` is the v11→v12
- * backfill migration (`codeIndex/migrations.ts:1164`), which replays
+ * Live path: none. Every live catalog writer excludes keyframes structurally —
+ * CSS/SCSS via the parser's `class_name`-under-`class_selector` walk, markup via
+ * `harvestMarkupStyleClasses`, and TS/JS source via `harvestCssInJsStyleClasses`
+ * (both of which route a template body through `parseFile` +
+ * `extractClassUsageFromCSSAst`). The only caller that can supply a non-null
+ * `variantContext` — and therefore reach this function — is the v11→v12
+ * backfill migration (`codeIndex/migrations.ts:1164`), which replays legacy
  * `style_declarations` rows whose `variant_context` came from the CSS AST
  * extractor's at-rule context (`cssAstExtractor.ts:584` writes `@keyframes
  * <name>`; `getVariantContext` at `cssAstExtractor.ts:64` writes the enclosing
- * `@media`/`@supports`/`@layer` stack). The live TS/JS writers never supply
- * one: CSS-in-JS hardcodes `variantContext: null` (`styleExtractor.ts:726`),
- * and Tailwind and inline-style declarations carry `context: null` so they are
- * skipped before this check. On that source path the keyframe exclusion is the
- * `{` filter in `extractDeclarationsFromBlock` (`styleExtractor.ts:440`), not
- * this function.
+ * `@media`/`@supports`/`@layer` stack).
  */
 export function isKeyframeVariant(variantContext: string | null): boolean {
   if (!variantContext) return false;
@@ -112,13 +113,14 @@ export function isKeyframeVariant(variantContext: string | null): boolean {
  * `isCss` selects the source. CSS/SCSS files carry a parser-harvested
  * `classUsage` (each entry a `.foo` selector; keyframes excluded structurally;
  * SCSS `&`-patterns marked `unresolvable`, which are references rather than
- * definitions). Markup definitions are harvested separately by
- * `harvestMarkupStyleClasses` (the CSS parser over each `<style>` block) and are
- * not passed here. Only TS/JS source has no CSS AST, so its definitions are the
- * class names in the declarations' selector `context`. The `isKeyframeVariant`
- * skip below is live only for the migration-backfill path, not the TS/JS source
- * path (which excludes keyframes via the `{` filter in
- * `extractDeclarationsFromBlock`).
+ * definitions). Markup and TS/JS source definitions are harvested separately by
+ * `harvestMarkupStyleClasses` and `harvestCssInJsStyleClasses` respectively (the
+ * CSS parser over each `<style>` block / CSS-in-JS template body) and are not
+ * passed here. The `isCss === false` branch below — the selector-`context` scan
+ * — is therefore reached only by the migration-backfill path
+ * (`codeIndex/migrations.ts:1164`), which replays legacy rows whose `context`
+ * carried a selector string and whose `variant_context` carried the at-rule
+ * stack; that is the one remaining consumer of the `isKeyframeVariant` skip.
  */
 export function harvestDefinedClasses(
   declarations: readonly ClassDeclContext[],

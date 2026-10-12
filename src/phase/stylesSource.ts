@@ -29,6 +29,7 @@
 import type { AstFile, StyleDeclarationsFile } from './types.js';
 import { extractDeclarations } from '../styles/styleExtractor.js';
 import { extractClassUsage } from '../styles/styleIndexer.js';
+import { harvestCssInJsStyleClasses } from '../styles/cssInJsHarvest.js';
 import { loadTailwindConfig } from '../styles/tailwindConfigLoader.js';
 
 /**
@@ -45,10 +46,11 @@ export function extractStylesSource(file: AstFile): StyleDeclarationsFile[] {
     declarations: extractDeclarations(file.file, file.adapter, file.source, file.ast, tailwindTokens),
     tokens: [],
     classUsage: extractClassUsage(file.file, file.source),
-    // TS/JS source carries its defined classes in `declarations[].context` (the
-    // CSS-in-JS selectors), so the dedicated field is empty; the `defined-classes`
-    // producer scans `context` for these.
-    definedClasses: [],
+    // TS/JS source carries its defined classes in `definedClasses`, harvested by
+    // routing each CSS-in-JS template body through the CSS parser
+    // (`harvestCssInJsStyleClasses`) — the same parser path markup `<style>`
+    // blocks use, so keyframes are excluded structurally, not by a selector scan.
+    definedClasses: harvestCssInJsStyleClasses(file.file, file.source, file.ast),
     // No content-level `<style lang>` reason exists in TS/JS CSS-in-JS source —
     // that reason is markup-only, produced by `extractStylesMarkup`.
     unreadSources: [],

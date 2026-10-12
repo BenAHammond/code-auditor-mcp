@@ -973,6 +973,7 @@ export function createStylesSourceVisitor(): Stage2Visitor {
       // Lazy-load to avoid circular dependency issues at module load time.
       const { extractDeclarations } = await import('./styles/styleExtractor.js');
       const { extractClassUsage } = await import('./styles/styleIndexer.js');
+      const { harvestCssInJsStyleClasses } = await import('./styles/cssInJsHarvest.js');
       const { loadTailwindConfig } = await import('./styles/tailwindConfigLoader.js');
       const tsAst = ast as AST;
       const tsAdapter = adapter as LanguageAdapter;
@@ -985,6 +986,10 @@ export function createStylesSourceVisitor(): Stage2Visitor {
 
       const declarations = extractDeclarations(filePath, tsAdapter, sourceCode, tsAst, tailwindTokens);
       const classUsage = extractClassUsage(filePath, sourceCode);
+      // Defined classes come from the CSS parser over each CSS-in-JS template
+      // body — the same parser path markup `<style>` blocks use, so keyframes are
+      // excluded structurally rather than scanned out of the selector `context`.
+      const definedClasses = harvestCssInJsStyleClasses(filePath, sourceCode, tsAst);
       const contentHash = createHash('sha256').update(sourceCode).digest('hex');
 
       const diagnostic = tailwindConfig.diagnostic && !emittedTailwindDiagnostic
@@ -995,7 +1000,7 @@ export function createStylesSourceVisitor(): Stage2Visitor {
       return {
         violations: [],
         facts: {
-          [filePath]: { declarations, classUsage, contentHash },
+          [filePath]: { declarations, classUsage, definedClasses, contentHash },
         },
         ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
       };
@@ -1087,6 +1092,7 @@ function insertSourceStyleFacts(
       className: string; filePath: string; line: number;
       mechanism: string; unresolvable: boolean;
     }>;
+    definedClasses: Array<{ className: string; filePath: string }>;
     contentHash: string;
   }> | undefined,
   isScoped: boolean,
@@ -1128,10 +1134,10 @@ function insertSourceStyleFacts(
     for (const decl of facts.declarations) {
       runStyleWrite(stmts, 'insDecl', [decl.property, decl.rawValue, decl.normalizedValue ? JSON.stringify(decl.normalizedValue) : null, decl.mechanism, decl.filePath, decl.line, decl.context, decl.variantContext, decl.tokenRef, facts.contentHash]);
     }
-    // Source (CSS-in-JS) has no literal class selectors; the catalog harvest is a
-    // no-op here, but routed through the shared helper so every writer derives the
-    // catalog the same way.
-    for (const ref of harvestDefinedClasses(facts.declarations, facts.classUsage, false)) {
+    // Defined classes come from the CSS parser over each CSS-in-JS template body
+    // (harvested by the visitor and carried on the fact) — not a selector scan
+    // over `declarations[].context`, so keyframes are excluded structurally.
+    for (const ref of facts.definedClasses) {
       runStyleWrite(stmts, 'insClass', [ref.className, ref.filePath]);
     }
 
@@ -1201,6 +1207,7 @@ export function createStylesReducer(): Stage3Reducer {
               className: string; filePath: string; line: number;
               mechanism: string; unresolvable: boolean;
             }>;
+            definedClasses: Array<{ className: string; filePath: string }>;
             contentHash: string;
           }> | undefined;
 
