@@ -33,6 +33,10 @@ export function extractStylesCss(file: AstFile): StyleDeclarationsFile {
     declarations: extractDeclarationsFromCSSAst(file.ast, file.adapter, file.file, file.source),
     tokens: extractTokensFromCSSAst(file.ast, file.adapter, file.file, file.source),
     classUsage: extractClassUsageFromCSSAst(file.ast, file.adapter, file.file, file.source),
+    // CSS/SCSS carry their defined classes in `classUsage` (the parser walk), so
+    // the dedicated field is empty; the `defined-classes` producer reads
+    // `classUsage` for these.
+    definedClasses: [],
     // No content-level `<style lang>` reason exists in a CSS/SCSS file — that
     // reason is markup-only, produced by `extractStylesMarkup`.
     unreadSources: [],

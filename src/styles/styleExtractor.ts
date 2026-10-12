@@ -794,17 +794,68 @@ function extractFromHTML(
   return declarations;
 }
 
+/** One embedded `<style>` block whose dialect the extractor can read. */
+export interface StyleBlock {
+  body: string;
+  lang: 'css' | 'scss';
+  /** Index of the first body character in the source (right after the opening
+   *  `>`), used to map body line numbers back to the source file. */
+  bodyStart: number;
+}
+
+/**
+ * Collect the readable embedded `<style>` blocks from a markup source.
+ *
+ * This is the single source of truth for "which `<style>` blocks exist" — both
+ * the declaration extractor (`extractStyleBlocks`) and the parser-based
+ * defined-class harvest (`harvestMarkupStyleClasses`) consume it, so the two
+ * can never disagree about block boundaries or dialect. The dialect is chosen
+ * from the `lang`/`type` attribute:
+ *   - `css` (or absent) → `css`
+ *   - `scss` → `scss`
+ *   - anything else (`sass`, `less`, `styl`, `postcss`, …) → reported to
+ *     `onUnread` (and excluded), so `undefined-class` never asserts a class
+ *     defined only in an unread dialect.
+ *
+ * @param sourceCode The raw markup source.
+ * @param onUnread Optional callback receiving an unread dialect name.
+ */
+export function collectStyleBlocks(
+  sourceCode: string,
+  onUnread?: (lang: string) => void,
+): StyleBlock[] {
+  const blocks: StyleBlock[] = [];
+  const styleRegex = /<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = styleRegex.exec(sourceCode)) !== null) {
+    const attrs = match[1];
+    const body = match[2];
+    const bodyStart = match.index + match[0].indexOf('>') + 1;
+
+    const langAttr = attrs.match(/\blang\s*=\s*["']?([a-zA-Z0-9-]+)/);
+    const typeAttr = attrs.match(/\btype\s*=\s*["']?([a-zA-Z0-9-]+)/);
+    const lang = (langAttr?.[1] ?? typeAttr?.[1] ?? '').toLowerCase();
+
+    if (lang === '' || lang === 'css') {
+      blocks.push({ body, lang: 'css', bodyStart });
+    } else if (lang === 'scss') {
+      blocks.push({ body, lang: 'scss', bodyStart });
+    } else {
+      onUnread?.(lang);
+    }
+  }
+
+  return blocks;
+}
+
 /**
  * Extract `<style>…</style>` blocks from a markup source (Astro/Vue/Svelte).
  *
- * Each block's CSS text is fed to `extractRuleSets`, the same parser the
- * `.scss` path uses, so selectors (including `:global(.foo)`), at-rules, and
- * declarations are extracted identically. The dialect is chosen from the
- * `lang`/`type` attribute:
- *   - `css` (or absent) → `css`
- *   - `scss` → `scss` (nesting handled by the existing SCSS path)
- *   - anything else (`sass`, `less`, `styl`, `postcss`, …) → recorded as an
- *     unread source so `undefined-class` never asserts a class defined only here.
+ * Each readable block's CSS text is fed to `extractRuleSets`, the same parser
+ * the `.scss` path uses, so selectors (including `:global(.foo)`), at-rules,
+ * and declarations are extracted identically. Unread dialects are recorded as
+ * unread sources (see {@link collectStyleBlocks}).
  */
 function extractStyleBlocks(
   filePath: string,
@@ -812,33 +863,15 @@ function extractStyleBlocks(
   declarations: NormalizedDeclaration[],
   unreadSources?: UnreadStyleSource[],
 ): void {
-  const styleRegex = /<style\b([^>]*)>([\s\S]*?)<\/style\s*>/gi;
-  let match: RegExpExecArray | null;
+  const blocks = collectStyleBlocks(sourceCode, (lang) => {
+    unreadSources?.push({
+      filePath,
+      reason: `unsupported style dialect: ${lang}`,
+    });
+  });
 
-  while ((match = styleRegex.exec(sourceCode)) !== null) {
-    const attrs = match[1];
-    const body = match[2];
-    // Index of the first character of the block body (right after the opening
-    // `>`), used to map body line numbers back to the source file.
-    const bodyStart = match.index + match[0].indexOf('>') + 1;
-
-    const langAttr = attrs.match(/\blang\s*=\s*["']?([a-zA-Z0-9-]+)/);
-    const typeAttr = attrs.match(/\btype\s*=\s*["']?([a-zA-Z0-9-]+)/);
-    const lang = (langAttr?.[1] ?? typeAttr?.[1] ?? '').toLowerCase();
-
-    let mechanism: StyleMechanism;
-    if (lang === '' || lang === 'css') {
-      mechanism = 'css';
-    } else if (lang === 'scss') {
-      mechanism = 'scss';
-    } else {
-      unreadSources?.push({
-        filePath,
-        reason: `unsupported style dialect: ${lang}`,
-      });
-      continue;
-    }
-
+  for (const { body, lang, bodyStart } of blocks) {
+    const mechanism: StyleMechanism = lang === 'scss' ? 'scss' : 'css';
     // Pad with newlines so that `extractRuleSets`' line arithmetic (which counts
     // newlines up to each `{`) maps onto source-file line numbers. Newlines are
     // whitespace, so selector extraction and at-rule parsing are unaffected.

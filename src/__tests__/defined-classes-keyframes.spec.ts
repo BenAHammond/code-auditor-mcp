@@ -10,14 +10,15 @@
  * with a digit, so every such `.digit` is pollution — a class that no stylesheet
  * defines.
  *
- * The catalog must instead come from the CSS parser's class-selector harvest
- * (`classUsage`, which walks `class_name` nodes under `class_selector`) for
- * CSS/SCSS, and from a keyframe-aware scan of the selector context for
- * markup/source (which have no CSS AST). These tests drive the real
- * `defined-classes` corpus producer and pin the catalog to the parser harvest:
- * the real class is present, the keyframe fractions and attribute-value decimals
- * are absent, `@media`-wrapped rules are still harvested, and escaped/numeric-
- * leading selectors behave exactly as the parser reports them.
+ * The catalog must instead come from the CSS parser's class-selector harvest:
+ * for CSS/SCSS from `classUsage` (which walks `class_name` nodes under
+ * `class_selector`), and for markup from `harvestMarkupStyleClasses` (which
+ * parses each embedded `<style>` block body with the CSS parser). Only TS/JS
+ * source scans the selector `context` (it has no CSS AST). These tests drive the
+ * real `defined-classes` corpus producer and pin the catalog to the parser
+ * harvest: the real class is present, the keyframe fractions and attribute-value
+ * decimals are absent, `@media`-wrapped rules are still harvested, and
+ * escaped/numeric-leading selectors behave exactly as the parser reports them.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -26,6 +27,7 @@ import { LanguageRegistry } from '../languages/LanguageRegistry.js';
 import { extractDeclarationsFromCSSAst, extractClassUsageFromCSSAst } from '../styles/cssAstExtractor.js';
 import { extractDeclarations } from '../styles/styleExtractor.js';
 import { extractClassUsage } from '../styles/styleIndexer.js';
+import { harvestMarkupStyleClasses } from '../styles/markupStyleHarvest.js';
 import { CORPUS_PRODUCERS } from '../phase/producers.js';
 import type { StyleDeclarationsFile } from '../phase/types.js';
 
@@ -45,6 +47,7 @@ async function cssFact(css: string, fileName = 'fixture.css'): Promise<StyleDecl
     declarations: extractDeclarationsFromCSSAst(ast, adapter, fileName, css),
     tokens: [],
     classUsage: extractClassUsageFromCSSAst(ast, adapter, fileName, css),
+    definedClasses: [],
     unreadSources: [],
   };
 }
@@ -55,6 +58,7 @@ function markupFact(html: string, fileName = 'fixture.html'): StyleDeclarationsF
     declarations: extractDeclarations(fileName, null as never, html, undefined, undefined),
     tokens: [],
     classUsage: extractClassUsage(fileName, html),
+    definedClasses: harvestMarkupStyleClasses(fileName, html),
     unreadSources: [],
   };
 }

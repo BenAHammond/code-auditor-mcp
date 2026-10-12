@@ -123,7 +123,7 @@ import { extractSchemaUsageCandidates } from './schemaUsageCandidates.js';
 import { extractSchemaCode } from './schemaCode.js';
 import { extractSchemaObjects } from './schemaObjects.js';
 import { extractCrossLanguageEntities } from '../pipelineAdapters.js';
-import { getLanguageFromPath } from '../utils/fileDiscovery.js';
+import { getLanguageFromPath, STYLE_MARKUP_EXTENSIONS } from '../utils/fileDiscovery.js';
 import { mineConventionsFromFunctionIndex } from './conventionMining.js';
 import { replayDdlDeclarations } from '../analyzers/universal/schema/migrations.js';
 import { extractFileImports } from './fileImports.js';
@@ -838,13 +838,14 @@ export const CORPUS_PRODUCERS = {
   } satisfies CorpusProcessor<'clone-pair-history', readonly []>,
   // `defined-classes` (styles/undefined-class) — re-derived from the
   // `style-declarations` phase fact rather than the `style_defined_classes`
-  // index table (Item 4 2b: style-declarations → defined-classes). Every writer
-  // of `style_defined_classes` (source CSS-in-JS, compiled CSS, other extractable
-  // files) derives the class name by the SAME shared harvest
-  // (`harvestDefinedClasses`): the CSS/SCSS path uses the parser's class-selector
-  // walk (`classUsage`), while markup/source scan the selector `context` with the
-  // `@keyframes` at-rule as the discriminant. The phase fact reproduces the table
-  // byte-for-byte: group by class name, keep MIN(file_path).
+  // index table (Item 4 2b: style-declarations → defined-classes). The class name
+  // comes from one of three sources, chosen by file kind: CSS/SCSS read the
+  // parser's class-selector walk (`classUsage`); markup reads the CSS-parser
+  // harvest of its embedded `<style>` blocks (`definedClasses`, produced by
+  // `harvestMarkupStyleClasses`); TS/JS source scans the selector `context` with
+  // the `@keyframes` at-rule as the discriminant (no CSS AST exists for
+  // CSS-in-JS). The phase fact reproduces the table byte-for-byte: group by class
+  // name, keep MIN(file_path).
   //
   // Parity notes: (1) the index producer's MIN(file_path) used SQLite BINARY
   // collation (UTF-8 byte order); JS `<` is UTF-16 code-unit order — identical
@@ -859,9 +860,16 @@ export const CORPUS_PRODUCERS = {
     process(facts): DefinedClassesFact[] {
       const byClass = new Map<string, string>(); // className -> MIN(file_path)
       for (const f of facts['style-declarations']) {
-        const anyPath = f.declarations[0]?.filePath ?? f.classUsage[0]?.filePath;
+        const anyPath = f.declarations[0]?.filePath ?? f.classUsage[0]?.filePath ?? f.definedClasses?.[0]?.filePath;
+        const isMarkup = anyPath ? STYLE_MARKUP_EXTENSIONS.some((ext) => anyPath.endsWith(ext)) : false;
         const isCss = anyPath ? /\.(css|scss)$/i.test(anyPath) : false;
-        for (const { className, filePath } of harvestDefinedClasses(f.declarations, f.classUsage, isCss)) {
+        // Markup definitions come from the CSS parser harvest (`definedClasses`),
+        // carried on the fact — never the regex selector scan. CSS/SCSS read the
+        // parser walk in `classUsage`; TS/JS source scans `declarations[].context`.
+        const refs = isMarkup
+          ? f.definedClasses
+          : harvestDefinedClasses(f.declarations, f.classUsage, isCss);
+        for (const { className, filePath } of refs) {
           const prev = byClass.get(className);
           if (prev === undefined || filePath < prev) byClass.set(className, filePath);
         }

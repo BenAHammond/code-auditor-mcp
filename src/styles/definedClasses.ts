@@ -11,8 +11,10 @@
  * structurally — `extractClassUsageFromCSSAst` walks `class_name` nodes under
  * `class_selector`, so keyframes (whose selectors are `from`/`to`/percentages,
  * per the CSS grammar) never appear. This module is the shared helper every
- * catalog writer uses: CSS uses the parser harvest; markup/source (no CSS AST)
- * scan the selector `context` with the `@keyframes` at-rule name as the
+ * catalog writer uses: CSS and markup use the parser harvest (markup via
+ * `harvestMarkupStyleClasses`, which parses each embedded `<style>` block body
+ * with the CSS parser); only TS/JS source (CSS-in-JS, which has no CSS AST)
+ * scans the selector `context` with the `@keyframes` at-rule name as the
  * discriminant, so no hand-maintained at-rule skip list exists anywhere.
  */
 
@@ -98,9 +100,11 @@ export function isKeyframeVariant(variantContext: string | null): boolean {
  * `isCss` selects the source. CSS/SCSS files carry a parser-harvested
  * `classUsage` (each entry a `.foo` selector; keyframes excluded structurally;
  * SCSS `&`-patterns marked `unresolvable`, which are references rather than
- * definitions). Markup and source files have no CSS AST, so their definitions
- * are the class names in the declarations' selector `context`, skipping
- * keyframe declarations by at-rule name.
+ * definitions). Markup definitions are harvested separately by
+ * `harvestMarkupStyleClasses` (the CSS parser over each `<style>` block) and are
+ * not passed here. Only TS/JS source has no CSS AST, so its definitions are the
+ * class names in the declarations' selector `context`, skipping keyframe
+ * declarations by at-rule name.
  */
 export function harvestDefinedClasses(
   declarations: readonly ClassDeclContext[],

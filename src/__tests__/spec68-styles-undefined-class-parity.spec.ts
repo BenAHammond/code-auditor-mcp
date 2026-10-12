@@ -153,7 +153,7 @@ async function parity(usages: UsageSeed[], defined: Array<{ className: string; f
     unresolvable: false,
   }));
   const definedClasses = CORPUS_PRODUCERS['defined-classes'].process(
-    { 'style-declarations': [{ declarations, tokens: [], classUsage: definedClassUsage }] },
+    { 'style-declarations': [{ declarations, tokens: [], classUsage: definedClassUsage, definedClasses: [], unreadSources: [] }] },
     { indexHandle: db.indexHandle },
   );
 

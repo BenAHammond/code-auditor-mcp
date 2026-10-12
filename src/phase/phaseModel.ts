@@ -427,7 +427,7 @@ async function buildFacts(
     const twTokens = tokensToStyleTokens(loadTailwindConfig(projectRoot), projectRoot);
     if (twTokens.length > 0) {
       const acc = (facts.get('style-declarations') as StyleDeclarationsFile[] | undefined) ?? [];
-      acc.push({ declarations: [], tokens: twTokens, classUsage: [], unreadSources: [] });
+      acc.push({ declarations: [], tokens: twTokens, classUsage: [], definedClasses: [], unreadSources: [] });
       facts.set('style-declarations', acc);
     }
   }

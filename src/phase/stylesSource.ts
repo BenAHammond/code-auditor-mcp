@@ -45,6 +45,10 @@ export function extractStylesSource(file: AstFile): StyleDeclarationsFile[] {
     declarations: extractDeclarations(file.file, file.adapter, file.source, file.ast, tailwindTokens),
     tokens: [],
     classUsage: extractClassUsage(file.file, file.source),
+    // TS/JS source carries its defined classes in `declarations[].context` (the
+    // CSS-in-JS selectors), so the dedicated field is empty; the `defined-classes`
+    // producer scans `context` for these.
+    definedClasses: [],
     // No content-level `<style lang>` reason exists in TS/JS CSS-in-JS source —
     // that reason is markup-only, produced by `extractStylesMarkup`.
     unreadSources: [],

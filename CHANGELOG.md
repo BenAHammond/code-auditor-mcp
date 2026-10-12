@@ -27,10 +27,13 @@ declaration's selector context with `/\.([a-zA-Z0-9_-]+)/g`, which admitted a
 keyframe percentage (`15.8%` → `8`) or a decimal attribute selector
 (`[data-ratio="1.5"]` → `5`) as a class name — a class name can never start with
 a digit. The catalog now derives from one shared harvest: CSS/SCSS use the
-parser's class-selector walk (keyframes excluded structurally), and markup/source
-scan the selector context with the `@keyframes` at-rule as the discriminant. The
-retired regex no longer appears anywhere in `src/`. On recall-protocol this drops
-catalog pollution from 2 (`5`/`8`) to 0 with `styles/undefined-class` unchanged.
+parser's class-selector walk (keyframes excluded structurally), markup parses each
+embedded `<style>` block body with the CSS parser (`harvestMarkupStyleClasses`, so
+no selector pattern survives in the markup path either), and only TS/JS source
+(CSS-in-JS, which has no CSS AST) scans the selector context with the `@keyframes`
+at-rule as the discriminant. The retired regex no longer appears anywhere in
+`src/`. On recall-protocol this drops catalog pollution from 2 (`5`/`8`) to 0 with
+`styles/undefined-class` unchanged.
 
 ## [5.1.0]
 

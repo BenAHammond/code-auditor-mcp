@@ -13,7 +13,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { SqliteDatabase, SqliteStatement } from '../sqlite/types.js';
 import { extractDeclarations } from './styleExtractor.js';
-import { harvestDefinedClasses } from './definedClasses.js';
+import { harvestMarkupStyleClasses } from './markupStyleHarvest.js';
+import type { DefinedClassRef } from './definedClasses.js';
 import { loadTailwindConfig, tokensToStyleTokens, type TailwindConfigResult } from './tailwindConfigLoader.js';
 import {
   STYLE_MARKUP_EXTENSIONS,
@@ -201,7 +202,7 @@ export async function syncStyleIndex(
 
       // Insert declarations
       if (declarations.length > 0) {
-        insertDeclarations(rawDb, stmts, filePath, declarations, contentHash);
+        insertDeclarations(rawDb, stmts, filePath, declarations, contentHash, harvestMarkupStyleClasses(filePath, content));
         contributed = true;
       }
 
@@ -454,6 +455,7 @@ function insertDeclarations(
   filePath: string,
   declarations: NormalizedDeclaration[],
   contentHash: string,
+  definedClasses: DefinedClassRef[],
 ): void {
   const txn = rawDb.transaction(() => {
     for (const d of declarations) {
@@ -469,16 +471,15 @@ function insertDeclarations(
         tokenRef: d.tokenRef ?? null,
         contentHash,
       });
+    }
 
-      // Populate the defined-class catalog (Spec 45) from each declaration's
-      // selector context so styles/undefined-class can resolve names via an
-      // indexed `class_name IN (...)` lookup instead of a full-corpus scan.
-      // Markup has no CSS AST, so the shared harvest scans the selector context
-      // with the `@keyframes` at-rule as the discriminant (a keyframe percentage
-      // like `15.8%` is not a class selector).
-      for (const ref of harvestDefinedClasses([d], [], false)) {
-        stmts.insertClass.run(ref.className, ref.filePath);
-      }
+    // Populate the defined-class catalog (Spec 45) from the CSS-parser harvest
+    // of the file's embedded `<style>` blocks, so styles/undefined-class can
+    // resolve names via an indexed `class_name IN (...)` lookup instead of a
+    // full-corpus scan. The parser (not a selector pattern) is the source, so a
+    // keyframe percentage like `15.8%` is never mistaken for a class selector.
+    for (const ref of definedClasses) {
+      stmts.insertClass.run(ref.className, ref.filePath);
     }
   });
 

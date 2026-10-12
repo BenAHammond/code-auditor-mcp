@@ -24,6 +24,7 @@
 import type { ParsedFile, StyleDeclarationsFile, UnreadStyleSourceFact } from './types.js';
 import { extractDeclarations } from '../styles/styleExtractor.js';
 import { extractClassUsage } from '../styles/styleIndexer.js';
+import { harvestMarkupStyleClasses } from '../styles/markupStyleHarvest.js';
 import { loadTailwindConfig } from '../styles/tailwindConfigLoader.js';
 
 /**
@@ -45,6 +46,9 @@ export function extractStylesMarkup(file: ParsedFile): StyleDeclarationsFile[] {
     declarations: extractDeclarations(file.file, null as never, file.source, undefined, tailwindTokens, unreadSources),
     tokens: [],
     classUsage: extractClassUsage(file.file, file.source),
+    // Defined classes come from the CSS parser (not the regex selector scan),
+    // so keyframe percentages and other non-class dots never enter the catalog.
+    definedClasses: harvestMarkupStyleClasses(file.file, file.source),
     unreadSources,
   }];
 }
