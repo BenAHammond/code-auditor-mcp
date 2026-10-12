@@ -1,7 +1,7 @@
 {
   "version": "5.1.2",
   "files": {
-    ".claude-plugin/plugin.json": "2f2ab4167522662a1fb9f671cee7c8fdc5722cd524814d6c1746732f0fed5374",
+    ".claude-plugin/plugin.json": "7d5783d0db046e533933f0dda19e311870eaa6383492e0d7f0c0046d606c78ee",
     "README.md": "6e51516ead6c7d0b4e77629e071e139b899d30a47838e8721c0d534eb733ad45",
     "hooks/hooks.json": "f9817f337d147bbd0e175741e57c6bd0718c64352ddbff15b5ba9357272b6725",
     "scripts/hook-audit.sh": "3fa178a87c8ac4d4d49d0cac16df308a37ccc89d778a5eda614799fc69e3e6c8",
