@@ -47,6 +47,7 @@ export const GATES = [
   'verify:node-types',
   'verify:dist-fresh',
   'verify:hook-log-path',
+  'verify:version-fresh',
   'verify:gate-budget',
   'verify:types',
   'test',
@@ -103,7 +104,7 @@ export function summarizeResults(results) {
  *
  * `VERIFY_CLOSE_GATES` (a comma-separated list, e.g. `verify:dist-fresh`) narrows
  * the list for the liveness tests in `gate-liveness.test.ts` that prove a stale
- * dist *fails* the chain without paying the full 16-gate run. It is a test seam,
+ * dist *fails* the chain without paying the full 17-gate run. It is a test seam,
  * never a skip vector: it names real gates, throws on any unknown name (so it can
  * never silently drop a gate), and is unset in every release/CI path. A subset run
  * is *loud* about being a subset — the summary and verdict name the omitted count

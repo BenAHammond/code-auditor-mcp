@@ -16,11 +16,27 @@
  * so `tsx src/cli.ts` (dev, no build) still works; it is regenerated on every
  * build, and `src/version.spec.ts` fails if it ever drifts from package.json.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Resolve the output root. The default is the repo root (the build-time
+// `npm run build:version` path). `--out-dir <dir>` redirects the generated file
+// into a temp tree so `verify:version-fresh` can regenerate and diff it against
+// the committed copy without touching the committed file — the same shape as
+// `write-hook-log-path.mjs`.
+let outRoot = path.join(__dirname, '..');
+const outDirIdx = process.argv.indexOf('--out-dir');
+if (outDirIdx !== -1) {
+  const dir = process.argv[outDirIdx + 1];
+  if (!dir) {
+    console.error('write-version: --out-dir requires a directory argument');
+    process.exit(1);
+  }
+  outRoot = path.resolve(dir);
+}
 
 // package.json is the single source of truth for the version.
 const pkg = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -33,7 +49,7 @@ if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
   process.exit(1);
 }
 
-const out = path.join(__dirname, '..', 'src', 'version.generated.ts');
+const out = path.join(outRoot, 'src', 'version.generated.ts');
 const body =
   '// @generated — do not edit. Written by `scripts/write-version.mjs`.\n' +
   '//\n' +
@@ -42,5 +58,6 @@ const body =
   '// Regenerate with `npm run build:version` (or any full build).\n' +
   `export const VERSION = '${version}';\n`;
 
+mkdirSync(path.dirname(out), { recursive: true });
 writeFileSync(out, body);
 process.stdout.write(`build:version → stamped VERSION=${version}\n`);

@@ -199,6 +199,31 @@ describe('verify:hook-log-path — liveness', () => {
   });
 });
 
+describe('verify:version-fresh — liveness', () => {
+  // A hand-edited generated version stamp must fail the gate through its own
+  // exit 1, never pass by accident — the same antidote the hook-log-path and
+  // dist-fresh tests apply to their generated/compiled artifacts. Make the
+  // committed file stale on purpose (one character), assert the real gate exits
+  // non-zero, then restore. The gate regenerates into a temp tree, so the test
+  // never rewrites the single source (package.json).
+  const VERSION_GEN = join(APP_ROOT, 'src', 'version.generated.ts');
+  it('exits 1 when the version stamp drifts from its single source', () => {
+    const before = readFileSync(VERSION_GEN, 'utf8');
+    // Corrupt one character: bump the stamped patch to a version package.json
+    // does not carry, so the regenerated file cannot match.
+    writeFileSync(VERSION_GEN, before.replace("VERSION = '", "VERSION = '9"));
+    try {
+      const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-version-fresh.mjs')], {
+        encoding: 'utf-8',
+      });
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain('stale generated file');
+    } finally {
+      writeFileSync(VERSION_GEN, before);
+    }
+  });
+});
+
 describe('assert_compatible — liveness', () => {
   /** Source hook-common.sh, call `assert_compatible` against a fake `--version` bin, return the result. */
   function runAssertCompatible(fakeVersion: string | null): { status: number; stdout: string; stderr: string } {
@@ -337,7 +362,7 @@ describe('verify:close — run-all (no gate skips another)', () => {
   // runs and every result is reported, under any condition.
 
   it('lists every gate exactly once — none can be dropped by an earlier failure', () => {
-    expect(GATES).toHaveLength(16);
+    expect(GATES).toHaveLength(17);
     expect(new Set(GATES).size).toBe(GATES.length);
   });
 
@@ -384,8 +409,8 @@ describe('verify:close — a stale dist fails the chain', () => {
 describe('verify:close — a subset run never reads as a full pass', () => {
   // `VERIFY_CLOSE_GATES` is a test seam, but it must never let a subset run print
   // the release banner. "verify:close PASSED — every gate ran and passed" is
-  // reserved for the full 16: a reader or a script seeing that banner must be
-  // able to trust it means sixteen. A subset run instead names the gates it ran,
+  // reserved for the full 17: a reader or a script seeing that banner must be
+  // able to trust it means seventeen. A subset run instead names the gates it ran,
   // states the number omitted, and ends with a clearly-different subset line.
   // This proves the *pass* path — a single always-green gate, forced to pass via
   // `VERIFY_MIN_FREE_BYTES=0` — must not produce the banner.
@@ -400,8 +425,8 @@ describe('verify:close — a subset run never reads as a full pass', () => {
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('SUBSET');
-    expect(res.stdout).toContain('1 of 16');
-    expect(res.stdout).toContain('15 omitted');
+    expect(res.stdout).toContain('1 of 17');
+    expect(res.stdout).toContain('16 omitted');
     expect(res.stdout).not.toContain('every gate ran and passed');
   }, 30_000);
 });
