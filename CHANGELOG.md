@@ -2,6 +2,30 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.1.2]
+
+### `hardcoded-secret` reports on evidence, not suppression
+
+The hardcoded-secret rule carried a set of suppression filters — a minimum value
+length, a placeholder-word list, email/URL/camelCase shape tests, and a
+test/fixture file skip — each of which made a finding vanish without establishing
+anything about the site. A real credential in a test file, or a short token, or
+an email-shaped secret was silently passed. Those filters are removed: a
+candidate is now a secret on positive evidence only (a known token prefix, or
+character entropy — a digit, an uppercase letter, or a hard symbol). The result
+is more `hardcoded-secret` findings in exactly the places the old filters hid
+them (predominantly test/fixture files and short placeholder-adjacent values).
+
+### Verification fails closed instead of reporting green
+
+Three corpus-comparison gates returned exit 0 having measured nothing when their
+corpus directory was absent — a green result from a check that did not run. They
+now fail closed (exit 2, naming the missing corpus), and four history-asserting
+comparisons (a stored expected count, a stored pair list, a stored gap count, a
+stored case list) are retired in favour of tests that assert the detectors
+reject the pinned corpus sites directly. A check that was not run is reported as
+not run.
+
 ## [5.1.1]
 
 ### The hook log gets a reader
