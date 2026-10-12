@@ -26,18 +26,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 # Nothing safe to warm if the manifest version can't be read: warming @latest
 # could pin a different version than resolve_code_audit's fallback would fetch.
 pv="$(plugin_version)"
-[ -n "${pv}" ] || exit 0
 
-dir="$(pin_dir)"
-bin="${dir}/node_modules/.bin/code-audit"
+if [ -n "${pv}" ]; then
+  dir="$(pin_dir)"
+  bin="${dir}/node_modules/.bin/code-audit"
 
-# Already installed — nothing to warm. Re-running npm install here would re-check
-# the registry on every session, which is exactly the cost this hook exists to avoid.
-[ -x "${bin}" ] && exit 0
+  # Already installed — nothing to warm. Re-running npm install here would re-check
+  # the registry on every session, which is exactly the cost this hook exists to avoid.
+  if [ ! -x "${bin}" ]; then
+    # Background the exact install the hook's last-resort path runs. Output to
+    # /dev/null (silent), stdin from /dev/null (don't hold the hook's stdin open),
+    # nohup so the install survives this hook's exit.
+    nohup npm install --prefer-offline --prefix "${dir}" "code-auditor-mcp@${pv}" \
+      --no-audit --no-fund --ignore-scripts --silent >/dev/null 2>&1 </dev/null &
+  fi
+fi
 
-# Background the exact install the hook's last-resort path runs. Output to
-# /dev/null (silent), stdin from /dev/null (don't hold the hook's stdin open),
-# nohup so the install survives this hook's exit.
-nohup npm install --prefer-offline --prefix "${dir}" "code-auditor-mcp@${pv}" \
-  --no-audit --no-fund --ignore-scripts --silent >/dev/null 2>&1 </dev/null &
+# A completed run — the warm hook never exits non-zero, so every path through it
+# is a success — writes the positive record that resolves a prior HOOK NOT RUNNING
+# condition (CLAUDE_PLUGIN_ROOT unset) in the reader (src/hookLog.ts).
+hook_log "[code-auditor] HOOK RAN"
 exit 0

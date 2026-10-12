@@ -39,8 +39,10 @@ const RECORD_RE = /^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\]\s*(.*)$/;
 /** The bootstrap guard writes this when the hook cannot run (`CLAUDE_PLUGIN_ROOT`
  *  unset) — the condition the reader reports. */
 const CONDITION_MARKER = 'HOOK NOT RUNNING';
-/** hook-audit.sh writes this after a completed run (exit 0 or 2) — the positive
- *  "the hook is alive and enqueueing" signal that resolves a condition. */
+/** Every hook script writes this on a completed run — the positive "the hook is
+ *  alive and running" signal that resolves a condition. hook-audit.sh and
+ *  hook-self-audit.sh write it on exit 0 or 2 (the CLI actually ran); hook-warm.sh
+ *  and hook-drift-check.sh write it on every path (they never exit non-zero). */
 const SUCCESS_MARKER = 'HOOK RAN';
 
 /** The hook-log directory, mirroring hook-common.sh's `hook_log_dir()`. */

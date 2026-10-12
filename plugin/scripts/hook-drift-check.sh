@@ -33,7 +33,13 @@ manifest=""
 for f in "${ROOT}/.claude-plugin/manifest.json" "${ROOT}/manifest.json"; do
   if [ -f "$f" ]; then manifest="$f"; break; fi
 done
-[ -n "${manifest}" ] || exit 0
+if [ -z "${manifest}" ]; then
+  # No manifest to compare against is still a completed run — the drift check
+  # never exits non-zero, so write the success record that resolves a prior
+  # HOOK NOT RUNNING condition before the no-op exit.
+  hook_log "[code-auditor] HOOK RAN"
+  exit 0
+fi
 
 MANIFEST_PATH="${manifest}" PLUGIN_ROOT="${ROOT}" node <<'NODE'
 const fs = require('fs');
@@ -73,4 +79,7 @@ if (problems.length > 0) {
 }
 NODE
 
+# A completed run (drift found or not) resolves a prior HOOK NOT RUNNING
+# condition — the drift check never exits non-zero.
+hook_log "[code-auditor] HOOK RAN"
 exit 0

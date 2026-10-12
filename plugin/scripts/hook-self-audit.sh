@@ -92,6 +92,15 @@ fi
 exit_code=$?
 set -e
 
+# A completed run — clean (0) or finding (2) — is the positive "the hook is
+# alive" signal, mirroring hook-audit.sh. Write it so the reader (src/hookLog.ts)
+# can clear a prior HOOK NOT RUNNING condition: the reader resolves by
+# newest-record order, and without this line a recovered hook would leave the
+# stale condition live forever.
+if [ "${exit_code}" -eq 0 ] || [ "${exit_code}" -eq 2 ]; then
+  hook_log "[code-auditor] HOOK RAN"
+fi
+
 # Exit 2 = a blocking self-audit finding; propagate so Claude Code feeds it back.
 if [ ${exit_code} -eq 2 ]; then
   exit 2

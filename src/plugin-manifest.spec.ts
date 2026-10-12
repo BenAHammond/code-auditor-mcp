@@ -230,9 +230,10 @@ describe('SessionStart warm hook (hook-warm.sh)', () => {
   });
 
   it('short-circuits when already installed (no re-check on a warm session)', () => {
-    // A warm session must not re-run npm install on every launch; it exits 0 as
-    // soon as the installed bin exists.
-    expect(warmContent).toContain('[ -x "${bin}" ] && exit 0');
+    // A warm session must not re-run npm install on every launch; the install is
+    // guarded by `[ ! -x "${bin}" ]`, so an installed bin skips it and the script
+    // falls through to the success record + exit 0.
+    expect(warmContent).toContain('if [ ! -x "${bin}" ]; then');
   });
 
   it('is silent on failure — output to /dev/null, no stderr diagnostics', () => {
@@ -580,5 +581,38 @@ describe('SessionStart drift-check hook (hook-drift-check.sh)', () => {
     expect(driftContent).toContain('differs from shipped');
     expect(driftContent).toContain('reinstall');
   });
+});
+
+/**
+ * Symmetric resolution (Spec 68 §hook-contract, extended). Every hook script that
+ * can write a "hook not running" condition — its `hooks.json` guard fires when
+ * `CLAUDE_PLUGIN_ROOT` is unset — must also write the positive `HOOK RAN` record
+ * on a completed run, so the reader (`src/hookLog.ts`) can resolve the condition
+ * when the hook recovers. A writer that logs the condition but never the success
+ * leaves a recovered hook permanently "not running": the reader resolves by
+ * newest-record order, and without a newer `HOOK RAN` the stale condition never
+ * clears. This pins all four writers to the positive record.
+ *
+ * The two PostToolUse hooks write `HOOK RAN` only on exit 0 or 2 (the CLI actually
+ * ran); the two SessionStart hooks never exit non-zero, so every path is a
+ * completed run and the record is written unconditionally.
+ */
+describe('Hook success-record symmetry (HOOK RAN)', () => {
+  const SCRIPTS = [
+    ['hook-audit.sh', 'exit 0 or 2 after the audit completes'],
+    ['hook-self-audit.sh', 'exit 0 or 2 after the self-audit completes'],
+    ['hook-warm.sh', 'every path (it never exits non-zero)'],
+    ['hook-drift-check.sh', 'every path (it never exits non-zero)'],
+  ] as const;
+
+  for (const [script, when] of SCRIPTS) {
+    it(`${script} writes HOOK RAN (${when})`, () => {
+      const content = readFileSync(
+        resolve(PLUGIN_DIR, 'scripts', script),
+        'utf-8',
+      );
+      expect(content).toContain('hook_log "[code-auditor] HOOK RAN"');
+    });
+  }
 });
 
