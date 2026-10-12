@@ -147,6 +147,13 @@ export function hasUnresolvedDynamicImports(fileImports: readonly FileImportsFac
  * import — then the ordinary dead-code findings are sound and this disposition is
  * not needed. This is the coverage-diagnostic half of the split; the rule's
  * `analyze` reads {@link hasUnresolvedDynamicImports} to suppress the finding half.
+ *
+ * @param fileImports - The corpus's per-file import facts (each carries the file
+ *   path, whether it has exports, and its unresolved dynamic imports).
+ * @param reachability - The corpus import graph (package entry points plus the
+ *   per-module resolved importer lists).
+ * @returns The modules that cannot be proven dead, each carrying a file-level
+ *   `unproven` disposition and the shared reason.
  */
 export function computeUnprovenModules(
   fileImports: readonly FileImportsFact[],

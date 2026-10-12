@@ -855,6 +855,7 @@ export interface StyleBlock {
  *
  * @param sourceCode The raw markup source.
  * @param onUnread Optional callback receiving an unread dialect name.
+ * @returns The readable (`css`/`scss`) style blocks in source order.
  */
 export function collectStyleBlocks(
   sourceCode: string,

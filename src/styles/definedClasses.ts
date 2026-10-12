@@ -70,6 +70,9 @@ function isIdentifierPart(c: string): boolean {
  * point in a keyframe percentage like `15.8%` is followed by a digit and so
  * contributes nothing even before the caller's keyframe check. This is the
  * markup/source fallback; the CSS path uses the parser instead of this scanner.
+ *
+ * @param selector - The CSS selector string to scan (a declaration's `context`).
+ * @returns The `.`-prefixed class names in `selector`, in source order.
  */
 export function scanClassNamesFromSelector(selector: string): string[] {
   const names: string[] = [];
@@ -121,6 +124,13 @@ export function isKeyframeVariant(variantContext: string | null): boolean {
  * (`codeIndex/migrations.ts:1164`), which replays legacy rows whose `context`
  * carried a selector string and whose `variant_context` carried the at-rule
  * stack; that is the one remaining consumer of the `isKeyframeVariant` skip.
+ *
+ * @param declarations - The file's declaration contexts (selector plus the
+ *   enclosing at-rule stack), the legacy selector-scan source.
+ * @param classUsage - The parser-harvested class selectors (the CSS/SCSS source).
+ * @param isCss - True when the source is a CSS/SCSS file, so the harvest reads
+ *   `classUsage`; false selects the legacy selector scan over `declarations`.
+ * @returns The file's defined-class references (`className` + `filePath`).
  */
 export function harvestDefinedClasses(
   declarations: readonly ClassDeclContext[],

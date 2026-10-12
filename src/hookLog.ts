@@ -78,6 +78,10 @@ const STALE_SUFFIX =
  *
  * Fail-open: an absent, unreadable, or malformed log yields `null` (no notice)
  * and never throws.
+ *
+ * @returns The live "hook not running" notice, or `null` when the log is
+ *   absent/unreadable/malformed or the latest `HOOK RAN` record resolves the
+ *   newest condition.
  */
 export function readHookNotice(): HookNotice | null {
   let text: string;
