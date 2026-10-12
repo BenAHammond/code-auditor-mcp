@@ -9,14 +9,15 @@
  * The producer projected the positional context; this rule decides whether it is
  * a secret.
  *
- * The classification helpers (`SECRET_NAMES`, `normalizeName`, `isSecretName`,
- * `looksLikeRealSecret`, `isPlaceholder`, `hasKnownTokenPrefix`,
- * `isCredentialSelector`, `HARD_SYMBOL`, `PLACEHOLDERS`, `isTestOrFixtureFile`)
- * are re-homed verbatim — copied, not imported, because the analyzer is deleted
- * in §15 and the rule must not couple the new pipeline to a class about to
- * disappear. The `isTestOrFixtureFile` skip, which the legacy analyzer applied
- * per-file before walking, becomes a per-candidate skip here (a file is either a
- * test fixture or not, so the two are equivalent).
+ * The positive discriminants (`SECRET_NAMES`, `normalizeName`, `isSecretName`,
+ * `hasKnownTokenPrefix`, `isCredentialSelector`, `HARD_SYMBOL`) are re-homed
+ * verbatim — copied, not imported, because the analyzer is deleted in §15 and
+ * the rule must not couple the new pipeline to a class about to disappear. The
+ * legacy analyzer's suppression filters — a minimum length, a placeholder word
+ * list, email/URL/camelCase shape tests, and a test/fixture file skip — made a
+ * finding vanish without establishing anything about the site; they are
+ * deliberately not carried over. A candidate is a secret on positive evidence
+ * only.
  *
  * `hardcoded-connection` (the other security rule, reading `string-literals`)
  * lives in `security.ts` alongside this file; both are re-exported from
@@ -79,59 +80,18 @@ function hasKnownTokenPrefix(value: string): boolean {
   );
 }
 
-const PLACEHOLDERS = new Set([
-  'password', 'passwd', 'pwd', 'changeme', 'changethis', 'secret', 'yoursecret',
-  'yourapikey', 'yourtoken', 'yourapitoken', 'apikey', 'token', 'example',
-  'dummy', 'placeholder', 'replaceme', 'todo', 'fixme', 'xxx', 'xxxx', 'xxxxx',
-  'test', 'testpassword', 'testsecret', 'testtoken', '123456', '12345678',
-  '123456789', 'password123', 'qwerty', 'letmein', 'abc123', 'foobar',
-  'helloworld', 'notareal', 'notreal', 'sample', 'samplekey', 'sampletoken',
-  'insecure', 'insecurepassword', 'notasecret',
-]);
-
-/** Reject placeholder/example values: templates, redactions, and common words. */
-function isPlaceholder(value: string): boolean {
-  const t = value.trim();
-  if (t.length === 0) return true;
-  if (/^<[^>]+>$/.test(t)) return true;
-  if (/^[.…]{3,}$/.test(t)) return true;
-  if (/^[*xX]{3,}$/.test(t)) return true;
-  if (/^redacted$/i.test(t)) return true;
-  const norm = normalizeName(t);
-  if (PLACEHOLDERS.has(norm)) return true;
-  if (/^(your|test|example|sample|dummy|placeholder|replaceme|changeme)/.test(norm)) return true;
-  return false;
-}
-
-/** Does this literal look like a real credential value rather than a placeholder? */
+/** Does this literal carry positive evidence of a real credential? A known token
+ *  prefix, or enough character entropy (a digit, an uppercase letter, or a hard
+ *  symbol). It never dismisses a value for being short, a placeholder word, an
+ *  email/URL, or a camelCase identifier — those suppressions made a finding
+ *  vanish without establishing anything about the site, and are gone. */
 function looksLikeRealSecret(value: string): boolean {
   const t = value.trim();
-  if (isPlaceholder(t)) return false;
   if (hasKnownTokenPrefix(t)) return true;
-  if (t.length < 8) return false;
-  if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(t)) return false;
-  if (/^https?:\/\//i.test(t)) return false;
-  // A letters-only camelCase identifier (`styleToken`, `cssProperty`) is a code
-  // reference written as a string — an operator→field map value, not a
-  // credential. Real credentials carry digits or hard symbols; a clean
-  // camelCase name carries none of that entropy.
-  if (/^[A-Za-z_$][A-Za-z_$]*$/.test(t)) return false;
   const hasDigit = /\d/.test(t);
   const hasUpper = /[A-Z]/.test(t);
   const hasHardSymbol = HARD_SYMBOL.test(t);
   return hasDigit || hasUpper || hasHardSymbol;
-}
-
-/** Is this path a test/fixture file? Excluded up front (precision-first). */
-function isTestOrFixtureFile(filePath: string): boolean {
-  const lower = filePath.toLowerCase();
-  return (
-    lower.includes('.test.') || lower.includes('.spec.') ||
-    lower.includes('__tests__') ||
-    lower.includes('/test/') || lower.includes('/tests/') ||
-    lower.includes('/fixtures/') || lower.includes('.fixture.') ||
-    lower.endsWith('_test.go')
-  );
 }
 
 /** Is this string a credential *field selector* (`#password`, `.api_key`,
@@ -185,8 +145,6 @@ function makeFinding(
 function detectHardcodedSecret(candidates: readonly SecretCandidate[]): Finding[] {
   const findings: Finding[] = [];
   for (const c of candidates) {
-    if (isTestOrFixtureFile(c.file)) continue;
-
     if (c.position === 'call') {
       // `fn('<selector>', '<secret>')` — the page.type reference case.
       if (c.args.length < 2) continue;
