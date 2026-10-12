@@ -90,33 +90,24 @@ describe('verify:self — scope filter and exemptions', () => {
     expect(inScope('/no/src/segment.ts', '/app')).toBe(false);
   });
 
-  it('exempts only the one correct-by-design §3.2 secrets finding', () => {
-    // The three pre-§68 exemptions keyed on files the Go rework deleted are gone
-    // (§13.1) and no finding is absorbed by a suppression. One post-§68 entry
-    // exists, and only one: QueryParser.ts's declarative operator map, whose
-    // `token:` key / `styleToken` value the §3.2 secrets rule (with its legacy
-    // camelCase suppression removed) otherwise flags as a false positive.
+  it('exempts nothing — Spec 68 §13.1 empties the set, findings are fixed not exempted', () => {
+    // The three pre-§68 exemptions keyed on files the Go rework deleted; the
+    // set is now empty by design (§13.1) and no finding is absorbed by a
+    // suppression.
     expect(isScopedExempt('languages/RuntimeManager.ts', 'solid/open-closed')).toBe(false);
     expect(isScopedExempt('languages/go/analyzer-src/parser.go', 'switch-size')).toBe(false);
     expect(isScopedExempt('analyzers/universal/UniversalSecurityAnalyzer.ts', 'dry/duplicate')).toBe(false);
     expect(isScopedExempt('analyzers/nowhere/Else.ts', 'switch-size')).toBe(false);
-    expect(isScopedExempt('search/QueryParser.ts', 'hardcoded-secret')).toBe(true);
-    expect(isScopedExempt('search/QueryParser.ts', 'dry/duplicate')).toBe(false);
   });
 
   it('reports a (file, rule) exemption as stale when its finding no longer fires', () => {
-    // The one live exemption is `search/QueryParser.ts :: hardcoded-secret`. If
-    // its finding stopped firing (an empty matched set) the exemption is dead and
-    // the stale scan must name it — the SKIP_RULES failure mode inverted. A
-    // matched key keeps the exemption alive; a key that names no exemption can
-    // never produce a stale entry.
-    expect(staleExemptions(new Set())).toEqual([
-      { file: 'search/QueryParser.ts', rule: 'hardcoded-secret' },
-    ]);
-    expect(staleExemptions(new Set([scopedExemptionKey('search/QueryParser.ts', 'hardcoded-secret')]))).toEqual([]);
-    expect(staleExemptions(new Set([scopedExemptionKey('x.ts', 'r')]))).toEqual([
-      { file: 'search/QueryParser.ts', rule: 'hardcoded-secret' },
-    ]);
+    // With an empty exemption set there is nothing to go stale: the stale scan
+    // over a suppression outliving its finding returns nothing, which is the
+    // SKIP_RULES failure mode inverted — an empty map can never accumulate dead
+    // entries. The branch is still exercised (it iterates the map and filters),
+    // it just has no entries to name.
+    expect(staleExemptions(new Set())).toEqual([]);
+    expect(staleExemptions(new Set([scopedExemptionKey('x.ts', 'r')]))).toEqual([]);
   });
 
   it('strips the /src/ prefix to a repo-relative path', () => {

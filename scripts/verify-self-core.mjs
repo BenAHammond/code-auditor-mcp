@@ -80,31 +80,15 @@ export function inScope(file, appRoot) {
 // hosts real analyzer logic beyond the single flagged construct; the exemption
 // is therefore keyed on the exact rule at the exact path.
 //
-// Spec 68 §13.1 emptied the three pre-§68 entries (RuntimeManager.ts ::
-// solid/open-closed, and the two Go parser files :: switch-size) because they
-// keyed on files the §9/§15 Go rework deleted — the Go subprocess source is gone
-// and Go analysis now runs through the phase model's tree-sitter grammar. A dead
-// (file, rule) exemption is the SKIP_RULES failure mode, so they are removed
-// rather than left to rot.
-//
-// One post-§68 entry remains, for a reason, not as backlog. The Spec 68 §3.2
-// secrets rework removed the legacy `UniversalSecretsAnalyzer` suppression
-// filters — a minimum length, a placeholder word list, email/URL/camelCase shape
-// tests, and a test/fixture skip — see `src/phase/rules/secrets.ts`. Those
-// filters made a finding vanish without establishing anything about the site;
-// the rule now decides a candidate is a secret on positive evidence only. A
-// consequence is that QueryParser.ts's declarative operator map trips the rule:
-// the key `token:` (a search-query operator label, one of `css:`/`value:`/
-// `mechanism:`/`token:`) normalizes to the secret name `token`, and its value
-// `styleToken` (a filter key, see METADATA_FILTER_KEYS) carries an uppercase
-// letter, satisfying the rule's digit/upper/hard-symbol entropy test. Neither is
-// a credential; `styleToken` is an internal identifier with no secret content.
-// The fix is not to re-add a camelCase suppression (the exact filter removed in
-// §3.2) nor to rename a referenced filter key to dodge a false positive; it is a
-// correct-by-design exclusion at the one (file, rule) pair.
-const SCOPED_EXEMPTIONS = new Map([
-  ['search/QueryParser.ts', new Set(['hardcoded-secret'])],
-]);
+// Spec 68 §13.1 empties this set as a consequence, not as a goal: the three
+// entries that once lived here (RuntimeManager.ts :: solid/open-closed, and the
+// two Go parser files :: switch-size) keyed on files the §9/§15 Go rework
+// deleted — the Go subprocess source is gone and Go analysis now runs through
+// the phase model's tree-sitter grammar. A dead (file, rule) exemption is the
+// SKIP_RULES failure mode, so they are removed rather than left to rot. The
+// gate's remaining findings are fixed, not exempted (§13.1); nothing is added
+// back to absorb the backlog.
+const SCOPED_EXEMPTIONS = new Map([]);
 
 /** True when a scoped violation is a correct-by-design finding at a known (file, rule) pair. */
 export function isScopedExempt(rel, rule) {

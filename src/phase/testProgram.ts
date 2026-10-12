@@ -239,8 +239,13 @@ function relativize(projectRoot: string, filePath: string): string {
   return p;
 }
 
-/** Resolve the tree's declared test program for `projectRoot` (cached). A
- *  missing root yields the path-heuristic fallback (slice/unit-test shorthand). */
+/** Resolve the tree's declared test program for `projectRoot`, caching the
+ *  result per root. A missing root yields the path-heuristic fallback
+ *  (slice/unit-test shorthand).
+ *
+ *  @param projectRoot - The project root whose `package.json` scripts declare
+ *    the test runner; `undefined` in slice/unit-test shorthand.
+ *  @returns The test program (its `source` plus an `isTestFile` predicate). */
 export function resolveTestProgram(projectRoot: string | undefined): TestProgram {
   if (!projectRoot) return FALLBACK;
   const cached = cache.get(projectRoot);
