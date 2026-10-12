@@ -49,6 +49,9 @@ import {
   staleExemptions,
 } from '../../scripts/verify-self-core.mjs';
 import { summarizeResults, GATES } from '../../scripts/verify-close.mjs';
+import { checkValueDriftInvariant } from '../../scripts/verify-recall-value-drift-core.mjs';
+import { checkExtractionCompleteness } from '../../scripts/verify-extraction-completeness-core.mjs';
+import { checkRecallCases } from '../../scripts/verify-recall-cases-core.mjs';
 
 const APP_ROOT = process.cwd();
 const DIST_CLI = join(APP_ROOT, 'dist', 'cli.js');
@@ -280,6 +283,86 @@ describe('assert_compatible — liveness', () => {
   });
 });
 
+describe('verify:recall-value-drift — liveness', () => {
+  // The gate's invariant is a property of the rule's own output: an *emitted*
+  // pair is always below `colorDeltaE`, a *declined* pair always at or above it.
+  // Each case feeds deliberately-inconsistent output to the pure predicate to
+  // prove the failure branch is live (reachable and non-empty), not a vacuous 0.
+  it('flags an emitted pair whose recomputed ΔE is at/above the threshold', () => {
+    const drift = checkValueDriftInvariant({
+      emitted: [{ drift: '#ffffff', canonical: '#fefefe', deltaE76: 2.5 }],
+      declined: [],
+      threshold: 2.5,
+    });
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain('not below threshold');
+  });
+
+  it('flags a declined pair whose recomputed ΔE is below the threshold', () => {
+    const drift = checkValueDriftInvariant({
+      emitted: [],
+      declined: [{ drift: '#ffffff', canonical: '#fefefe', deltaE76: 0.5 }],
+      threshold: 2.5,
+    });
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain('should have been emitted');
+  });
+
+  it('is empty when every emitted pair is below and every declined pair is at/above', () => {
+    expect(
+      checkValueDriftInvariant({
+        emitted: [{ drift: '#ffffff', canonical: '#fefefe', deltaE76: 0.5 }],
+        declined: [{ drift: '#000000', canonical: '#ff0000', deltaE76: 80 }],
+        threshold: 2.5,
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe('verify:extraction-completeness — liveness', () => {
+  // Three-way disposition: extracted / declined-as-non-builder / unaccounted. A
+  // query-builder-shaped candidate that is not extracted carries no reason and
+  // must fail; an extracted candidate and a declined non-builder are clean.
+  it('flags a query-builder-shaped candidate that was not extracted', () => {
+    const drift = checkExtractionCompleteness({
+      candidates: [{ site: 'x.ts:1:1', extracted: false, queryBuilderShape: true }],
+    });
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain('no disposition reason');
+  });
+
+  it('is empty for an extracted candidate and a declined non-builder', () => {
+    expect(
+      checkExtractionCompleteness({
+        candidates: [
+          { site: 'x.ts:1:1', extracted: true, queryBuilderShape: true },
+          { site: 'x.ts:2:1', extracted: false, queryBuilderShape: false },
+        ],
+      }),
+    ).toEqual([]);
+  });
+});
+
+describe('verify:recall-cases — liveness', () => {
+  // Per pinned site: the producer must emit a fact, and the verdict must match
+  // the recorded disposition. Either arm failing is a drift line.
+  it('flags a pinned site that emits no fact', () => {
+    const drift = checkRecallCases({ sites: [{ id: 'corpus path:1', emitted: false, verdictMatches: true }] });
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain('no fact');
+  });
+
+  it('flags a pinned site whose verdict does not match its disposition', () => {
+    const drift = checkRecallCases({ sites: [{ id: 'corpus path:1', emitted: true, verdictMatches: false }] });
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toContain('does not match');
+  });
+
+  it('is empty when every site emits and matches disposition', () => {
+    expect(checkRecallCases({ sites: [{ id: 'corpus path:1', emitted: true, verdictMatches: true }] })).toEqual([]);
+  });
+});
+
 describe('verify:close — run-all (no gate skips another)', () => {
   // The pre-fix `verify:close` was a single `&&` conjunction: the first failing
   // gate aborted the run and every later gate was silently skipped. A stale
@@ -292,7 +375,7 @@ describe('verify:close — run-all (no gate skips another)', () => {
   // runs and every result is reported, under any condition.
 
   it('lists every gate exactly once — none can be dropped by an earlier failure', () => {
-    expect(GATES).toHaveLength(14);
+    expect(GATES).toHaveLength(17);
     expect(new Set(GATES).size).toBe(GATES.length);
   });
 
@@ -340,8 +423,8 @@ describe('verify:close — a stale dist fails the chain', () => {
 describe('verify:close — a subset run never reads as a full pass', () => {
   // `VERIFY_CLOSE_GATES` is a test seam, but it must never let a subset run print
   // the release banner. "verify:close PASSED — every gate ran and passed" is
-  // reserved for the full 14: a reader or a script seeing that banner must be
-  // able to trust it means fourteen. A subset run instead names the gates it ran,
+  // reserved for the full 17: a reader or a script seeing that banner must be
+  // able to trust it means seventeen. A subset run instead names the gates it ran,
   // states the number omitted, and ends with a clearly-different subset line.
   // This proves the *pass* path — a single always-green gate, forced to pass via
   // `VERIFY_MIN_FREE_BYTES=0` — must not produce the banner.
@@ -356,8 +439,8 @@ describe('verify:close — a subset run never reads as a full pass', () => {
     });
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('SUBSET');
-    expect(res.stdout).toContain('1 of 14');
-    expect(res.stdout).toContain('13 omitted');
+    expect(res.stdout).toContain('1 of 17');
+    expect(res.stdout).toContain('16 omitted');
     expect(res.stdout).not.toContain('every gate ran and passed');
   }, 30_000);
 });
