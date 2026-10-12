@@ -10,6 +10,7 @@ import './native-bootstrap.js';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { createAuditRunner } from './auditRunner.js';
+import { readHookNotice } from './hookLog.js';
 import { promises as fs } from 'fs';
 import { createInterface } from 'readline';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
@@ -684,6 +685,14 @@ program
         outputDirectory: options.output,
         presets: presetIds
       }).run();
+
+      // Hook-liveness notice — a top-level notice, not a per-file finding. A live
+      // "hook not running" condition means the PostToolUse hook is not enqueueing
+      // changes, so cached findings may be stale.
+      const hookNotice = readHookNotice();
+      if (hookNotice) {
+        console.log(chalk.yellow(`\n⚠️  ${hookNotice.message}`));
+      }
 
       const violations = Object.values(result.analyzerResults).flatMap(
         (r: any) => r.violations || []

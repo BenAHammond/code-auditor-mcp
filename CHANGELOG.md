@@ -2,6 +2,24 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.1.1]
+
+### The hook log gets a reader
+
+The PostToolUse and SessionStart hooks have written status records to `hook.log`
+since 5.0.1, but nothing read them — a hook that stopped enqueueing (e.g.
+`CLAUDE_PLUGIN_ROOT` unset) was invisible to the explicit audit, the exact
+silent-disable the 4.1.0 guard was removed to escape. A write-only log is the
+same silent disable with extra steps.
+
+Both the CLI `audit` command and the MCP `audit.run` tool now read that log and,
+when a hook-not-running condition is live, report a top-level notice that the
+hook is not enqueueing and cached findings may be stale. "Live" is decided by
+record order, not a time window: the newest `HOOK NOT RUNNING` record newer than
+the newest `HOOK RAN` record (which hook-audit.sh now writes after every
+completed run). The read is fail-open — an absent, unreadable, or malformed log
+yields no notice and never changes the audit exit code.
+
 ## [5.1.0]
 
 ### Anonymous telemetry opt-in is offered exactly once
@@ -75,7 +93,7 @@ info, warnings, and failures alike — to `hook.log` and never exits non-zero
 except to surface a gating finding (exit 2). The bootstrap guard for an unset
 `CLAUDE_PLUGIN_ROOT` no longer prints to stderr and exits 1; it is a silent
 no-op (exit 0) like the SessionStart warm hook. A broken install therefore
-surfaces on the next explicit audit (and in the log), never on the edit.
+surfaces in the log, never on the edit.
 
 Resolution also stopped paying a full `--version` round-trip per candidate on
 the per-edit hot path: the pinned install is version-guaranteed by its path and

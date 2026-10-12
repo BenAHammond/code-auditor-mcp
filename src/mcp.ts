@@ -75,6 +75,7 @@ import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { createAuditRunner } from './auditRunner.js';
+import { readHookNotice } from './hookLog.js';
 import type { AuditResult, AuditScope, FunctionMetadata, Severity } from './types.js';
 import { searchFunctions, findDefinition, syncFileIndex, getDatabase } from './codeIndexService.js';
 import { CodeMapGenerator } from './services/CodeMapGenerator.js';
@@ -329,11 +330,17 @@ const auditActions: ActionDefinition[] = [
           }
         }
 
+        // Hook-liveness notice — a top-level notice, not a per-file finding. A
+        // live "hook not running" condition means the PostToolUse hook is not
+        // enqueueing changes, so cached findings may be stale.
+        const hookNotice = readHookNotice();
+
         return {
           success: true,
           summary: auditResult.summary,
           violations: auditResult.analyzerResults,
           metadata: auditResult.metadata,
+          ...(hookNotice ? { hookNotice } : {}),
           guidance:
             'The audit takes readings, not verdicts. Severity is urgency — how fast a defect bites, never whether you may ignore it; there is no "noise" tier. Work criticals first, then severe, then high. The coverage panel tells you what was actually measured. Documentation readings (missing JSDoc) are maintainability gaps. If you decline a reading, record why instead of silently dismissing it.',
         };

@@ -161,9 +161,10 @@ describe('Hooks manifest (hooks.json)', () => {
   it('guards an unset CLAUDE_PLUGIN_ROOT by logging and exiting 0, not blocking', () => {
     // The command must never fail when the host leaves CLAUDE_PLUGIN_ROOT unset:
     // it exits 0, writes nothing to stderr, and records the condition in the
-    // hook log (the same file hook-common.sh writes) so the next explicit audit
-    // reports that the hook could not locate the plugin and the audit is not
-    // running. The 4.1.0 guard exited silently — that half was the bug.
+    // hook log (the same file hook-common.sh writes). A reader (src/hookLog.ts)
+    // surfaces the newest unresolved condition as a top-level notice on the next
+    // explicit audit — the hook could not locate the plugin and is not
+    // enqueueing. The 4.1.0 guard exited silently — that half was the bug.
     const inner = hooks.hooks.PostToolUse[0].hooks[0];
     expect(inner.command).toContain('[ -z "${CLAUDE_PLUGIN_ROOT}" ]');
     expect(inner.command).toContain('exit 0');
