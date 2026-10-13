@@ -33,13 +33,14 @@ import {
   type DeclaredScale,
 } from './styleScale.js';
 import { rgbToLab, labDistance } from '../../phase/colorMath.js';
+import { DEFAULT_COLOR_DELTA_E } from '../../config/defaults.js';
 
 // ---------------------------------------------------------------------------
 // Default configuration
 // ---------------------------------------------------------------------------
 
 export const DEFAULT_STYLES_CONFIG: StylesAnalyzerConfig = {
-  colorDeltaE: 2.5,
+  colorDeltaE: DEFAULT_COLOR_DELTA_E,
   scaleProperties: [
     'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
     'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',

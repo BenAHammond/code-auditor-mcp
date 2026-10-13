@@ -38,7 +38,9 @@
  *
  * Config resolution mirrors the legacy analyzer's `{...DEFAULT_STYLES_CONFIG,
  * ...config}` merge; the defaults are re-declared here (the legacy class is
- * deleted in §15). The §10 bridge (`resolvePhaseThresholds`) already merges the
+ * deleted in §15) except `colorDeltaE`, which reads the single source
+ * `DEFAULT_COLOR_DELTA_E` from `src/config/defaults.ts` (colour directive item
+ * 2). The §10 bridge (`resolvePhaseThresholds`) already merges the
  * same default into `ctx.thresholds`, so the merge is idempotent in production
  * and load-bearing only for the parity test, which passes raw config to both
  * sides.
@@ -55,6 +57,7 @@ import type {
   ThresholdValues,
 } from '../types.js';
 import { labDistance } from '../colorMath.js';
+import { DEFAULT_COLOR_DELTA_E } from '../../config/defaults.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 import { getTailwindExpander, type TailwindUtilityExpander } from '../../styles/tailwindUtilityExpander.js';
@@ -95,8 +98,8 @@ interface StylesConfig {
   categoricalPropertyExclusions?: string[];
 }
 
-const STYLES_DEFAULTS: StylesConfig = {
-  colorDeltaE: 2.5,
+export const STYLES_DEFAULTS: StylesConfig = {
+  colorDeltaE: DEFAULT_COLOR_DELTA_E,
   scaleProperties: [
     'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
     'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',

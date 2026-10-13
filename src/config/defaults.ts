@@ -122,6 +122,15 @@ export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
 }
 
 /**
+ * The value-drift colour threshold — the single source of truth for the
+ * `styles.colorDeltaE` config key (Spec 70 colour directive, item 2). The phase
+ * rule (`src/phase/rules/styles.ts`) and the legacy analyzer
+ * (`src/analyzers/universal/UniversalStylesAnalyzer.ts`) both read this symbol;
+ * the `2.5` literal must not be re-declared elsewhere.
+ */
+export const DEFAULT_COLOR_DELTA_E = 2.5;
+
+/**
  * Default analyzer configurations
  */
 export const DEFAULT_ANALYZER_CONFIGS = {
@@ -277,7 +286,7 @@ export const DEFAULT_ANALYZER_CONFIGS = {
 
   // Spec 10 R3: style intelligence analyzer defaults
   styles: {
-    colorDeltaE: 2.5,
+    colorDeltaE: DEFAULT_COLOR_DELTA_E,
     scaleProperties: [
       'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
       'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
