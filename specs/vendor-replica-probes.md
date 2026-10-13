@@ -15,14 +15,19 @@ per run** — the `node_modules` (or workspace) path that tree's *own* imports
 resolve to, at the version that tree actually installs. A tree on Kysely 0.29 is
 judged by 0.29's declarations.
 
-Three of the four method lists derive from a vendor `.d.ts`; the fourth
-(`COLLECTION_TRANSFORM_METHODS`) is a runtime probe over `Array.prototype` and
-has no vendor declaration. Each derived set is the union of the analyzer's
-**irreducible cross-vendor baseline** (present regardless of what resolves) and
-the per-run **probe** — the methods only a specific vendor publishes. When a
-declaration cannot be resolved in the tree, the site is **`unproven`** with a
-reason naming what could not be resolved — not a fallback list, not a stale
-snapshot, not silence.
+Five of the method lists derive from a vendor declaration — `EAGER_DB_METHODS`,
+`ORM_TABLE_VERBS`, `ORM_JOIN_VERBS` (the three baseline + probe sets),
+`PRISMA_VERBS`, and `D1_CONVENIENCE` (renamed `eagerExecutionMethods`) — and a
+sixth (`COLLECTION_TRANSFORM_METHODS`) is a runtime probe over `Array.prototype`
+with no vendor declaration. Three of the five vendor-derived sets are the union
+of the analyzer's **irreducible cross-vendor baseline** (present regardless of
+what resolves) and the per-run **probe** — the methods only a specific vendor
+publishes; the two newly-derived sets (`prismaVerbs`, `eagerExecutionMethods`)
+are resolved **entirely** from the tree, with no baseline — no generated client /
+no driver means the set is `null` and the site is `unproven`, never a fallback.
+When a declaration cannot be resolved in the tree, the site is **`unproven`**
+with a reason naming what could not be resolved — not a fallback list, not a
+stale snapshot, not silence.
 
 ## Classification
 
@@ -30,9 +35,9 @@ snapshot, not silence.
 |---|------|-----------------|-------------|
 | 1 | `SQL_KEYWORDS` | (none) — security subset | **Kept** (irreducible) |
 | 2 | `QUERY_BUILDER_COMPANIONS` | (none) — chain grammar | **Kept** (irreducible) |
-| 3 | `PRISMA_VERBS` | generated per-schema (`prisma generate`) | **Kept** (irreducible) |
+| 3 | `PRISMA_VERBS` | generated `.prisma/client` `*Delegate` union | **Resolved** (probe) |
 | 4 | `EAGER_DB_METHODS` | better-sqlite3 / node:sqlite / D1 `.d.ts` | **Resolved** (baseline + probe) |
-| 5 | `D1_CONVENIENCE` | (none) — discriminator vocabulary | **Kept** (irreducible) |
+| 5 | `eagerExecutionMethods` (was `D1_CONVENIENCE`) | cross-driver union (D1 / better-sqlite3 / node:sqlite / pg / mysql2) | **Resolved** (probe) |
 | 6 | `ORM_TABLE_VERBS` | Kysely `QueryCreator` | **Resolved** (baseline + probe) |
 | 7 | `ORM_JOIN_VERBS` | Kysely `SelectQueryBuilder` | **Resolved** (baseline + probe) |
 | 8 | `LLM_PROVIDER_RE` | (none) — judgment regex | **Kept** (irreducible) |
@@ -42,8 +47,8 @@ snapshot, not silence.
 | 12 | `COLLECTION_TRANSFORM_METHODS` | ECMAScript `Array.prototype` | **Resolved** (runtime probe) |
 | 13 | `CHUNK_HELPER_RE` | (none) — name pattern | **Kept** (irreducible) |
 
-**4 resolved, 9 kept-and-documented.** The four resolved lists are exactly the
-ones whose members a vendor (or the runtime) publishes; the nine kept lists each
+**6 resolved, 7 kept-and-documented.** The six resolved lists are exactly the
+ones whose members a vendor (or the runtime) publishes; the seven kept lists each
 encode a *selection* or a *shape* no vendor declares.
 
 ---
@@ -54,8 +59,8 @@ encode a *selection* or a *shape* no vendor declares.
 
 `resolveVendorSurfaces(projectRoot)` walks up from the project root looking for
 each vendor package's `node_modules` directory, reads the shipped `.d.ts` for
-the named declaration types, and returns eight member-name sets plus a
-`resolutions` record per (package, type) attempt. The four packages and their
+the named declaration types, and returns eleven member-name sets plus a
+`resolutions` record per (package, type) attempt. The seven packages and their
 declaration types:
 
 | Package | Types | Entry |
@@ -64,6 +69,16 @@ declaration types:
 | `@types/node` | `DatabaseSync`, `StatementSync` | `sqlite.d.ts` |
 | `@cloudflare/workers-types` | `D1Database`, `D1PreparedStatement` | `index.d.ts` |
 | `kysely` | `QueryCreator`, `SelectQueryBuilder` | walked (split across subpath `.d.ts`) |
+| `@types/pg` | `Pool` | walked (`query` is its eager-execution member) |
+| `mysql2` | `Connection` | walked (`execute` is its eager-execution member) |
+| `.prisma/client` | `*Delegate` (union of every generated model delegate) | `index.d.ts` (generated, not shipped) |
+
+`@types/pg` and `mysql2` contribute only their single eager-execution member
+(`query` / `execute`): a Pool/Connection surface is a *client* surface
+(`connect`/`end`/`on`), not an eager-execution surface, so the whole declaration
+is not unioned the way the statement/database surfaces are. `.prisma/client` is
+resolved separately — it is not a single named declaration type but the union of
+every generated `*Delegate` declaration (see below).
 
 Each `VendorResolution` carries the resolved `.d.ts` path, the installed package
 version, and — when unresolvable — a reason naming what could not be resolved
@@ -91,10 +106,67 @@ a fallback list.
 
 The baseline is **not** a copy of any single vendor's declaration: it is the
 analyzer's accumulated judgment of the generic SQL-driver/builder grammar — the
-same criterion that keeps the nine irreducible lists. The probe supplies exactly
+same criterion that keeps the seven irreducible lists. The probe supplies exactly
 what that grammar misses and only a vendor publishes.
 
-### 12. `COLLECTION_TRANSFORM_METHODS` — ECMAScript `Array.prototype`
+### `PRISMA_VERBS` — the generated `.prisma/client` `*Delegate` union
+
+- **Old:** a hand-kept 15-verb list (`aggregate count create createMany delete
+  deleteMany findFirst findFirstOrThrow findMany findUnique findUniqueOrThrow
+  groupBy update updateMany upsert`). It had already drifted: `findRaw` was stale
+  (not a Prisma verb — the raw entry point is `$queryRaw`), and it was missing the
+  two `…AndReturn` verbs Prisma 5.4+ generates (`createManyAndReturn`,
+  `updateManyAndReturn`).
+- **Source of truth:** the generated client in the analyzed tree. Prisma emits its
+  client into a dot-prefixed virtual package — `node_modules/.prisma/client/index.d.ts`,
+  re-exported by the `@prisma/client` shim — where the model verbs live on one
+  `export interface <Model>Delegate<…>` per model. The delegate members are
+  identical across models by construction, so the union of the generated
+  `*Delegate` member names is exactly the verb set the repo's *own* schema
+  generated.
+- **Resolution — what changed to make it derivable.** The resolver could not read
+  this before B2a: it read only `interface_declaration` / `class_declaration` /
+  `abstract_class_declaration` bodies, while Prisma's delegates are `type … = …
+  & { … }` aliases; and the delegate name is per-schema (`<Model>Delegate`), so
+  there was no fixed type name to resolve. `readTypeMemberSurface` now also reads
+  `type_alias_declaration`s whose body is an `object_type` or an `intersection_type`
+  of `object_type`s, and a separate `readDelegateUnion` enumerates every
+  `*Delegate` declaration and unions their members. The derived set is the union of
+  all 18 generated member names (17 verbs + the `fields` property), including the
+  two `…AndReturn` verbs the old list lacked.
+- **No baseline.** Unlike the three baseline + probe sets, `prismaVerbs` is resolved
+  *entirely* from the tree. Where `.prisma/client` is not generated (no
+  `node_modules/.prisma/client`), the set is `null` and the resolution record names
+  that reason — the Prisma object-form site is `unproven`, never a fallback list and
+  never a stale snapshot.
+
+### `D1_CONVENIENCE` → `eagerExecutionMethods` — the cross-driver union
+
+- **Old:** `['all', 'first', 'run', 'query', 'execute']` — an *unconditional*
+  hand-kept union applied to every tree regardless of what drivers that tree used.
+- **The naming defect.** The list was misnamed: it is a **cross-driver** eager-execution
+  surface, not D1's. `@cloudflare/workers-types` publishes only the D1 third
+  (`all`/`first`/`run` on `D1PreparedStatement`); `query` is node-postgres, `execute`
+  is mysql2, and `all`/`run` are also better-sqlite3 / node:sqlite. Deriving only the
+  D1 third would *regress* a better-sqlite3 tree (which has no workers-types
+  installed and would lose `all`/`run`, stopping its own parameterized shorthand from
+  being recognized) — so the whole set is derived **per driver**, not hand-kept.
+- **Derivation.** `eagerExecutionMethods` is the union of whichever driver surfaces
+  resolve in the analyzed tree: `D1PreparedStatement` (D1), the statement *and*
+  database surfaces of `better-sqlite3` and `node:sqlite`, plus `query` from
+  `@types/pg` `Pool` and `execute` from `mysql2` `Connection`. A tree with only
+  better-sqlite3 gets better-sqlite3's methods and nothing else — no D1 `.first()`,
+  no generic `.query()`. It is the discriminator vocabulary for the
+  parameterized single-arg-vs-two-arg check: an eager-execution method taking a
+  bind-params second argument (`db.run(query, params)`) is fully parameterized and
+  safe.
+- **No baseline.** Like `prismaVerbs`, `eagerExecutionMethods` is resolved entirely
+  from the tree: no driver resolves → the set is `null` and the site is `unproven`,
+  never a fallback list. (This is the one deliberate behaviour change: the old
+  unconditional list suppressed two-arg `.all/.first/.run/.query/.execute` calls
+  everywhere; the derived set suppresses only where a driver actually resolves.)
+
+### `COLLECTION_TRANSFORM_METHODS` — ECMAScript `Array.prototype`
 
 - **Old:** `new Set(['slice','splice','map','filter','concat','flatMap'])`
 - **Source of truth:** the ECMAScript runtime — `Array.prototype` (no `.d.ts`
@@ -175,52 +247,7 @@ declaration:
   `VENDOR_TYPE_SPECS`), because the grammar is a cross-builder union of spellings
   no one vendor is the authority for.
 
-### 3. `PRISMA_VERBS`
-
-- **List:** `create createMany update updateMany upsert delete deleteMany
-  findUnique findFirst findMany findUniqueOrThrow findFirstOrThrow count groupBy
-  aggregate`
-- **Judgment:** the Prisma Client object-form admitter's verb core
-  (`<recv>.<Model>.<verb>({ … })` with a `where`/`data` key).
-- **What cannot be read — the specific answer.** The model verbs are declared on
-  `<Model>Delegate` types in Prisma's *generated* client, and three independent
-  facts put them out of reach of the resolver's fixed-declaration model:
-  1. **Generated per-schema** — `prisma generate` emits the client from the
-     user's `schema.prisma` into `node_modules/.prisma/client`; `@prisma/client`
-     ships no fixed list (its `.d.ts` re-exports the generated output).
-  2. **Declared on type aliases, not interfaces/classes** — each `<Model>Delegate`
-     is a `type … = … & { findUnique(…): … }` alias, and the resolver's
-     `readTypeMemberSurface` reads only `interface_declaration` /
-     `class_declaration` / `abstract_class_declaration` bodies, so it cannot
-     extract the member surface from a type-alias intersection.
-  3. **The declaration name is per-schema** — the delegate is named
-     `<Model>Delegate`, so there is no fixed type name to resolve (the resolver
-     resolves *named* types like `QueryCreator` / `SelectQueryBuilder`).
-- **Correction in this pass:** `findRaw` was stale drift — it is not a Prisma
-  verb (the raw entry point is `$queryRaw`). It is removed; the list above is the
-  corrected verb core.
-
-### 4. `D1_CONVENIENCE`
-
-- **List:** `all first run query execute`
-- **Judgment:** the *discriminator vocabulary* for the parameterized
-  single-arg-vs-two-arg check — an eager-execution method that takes a
-  bind-params second argument (`db.run(query, params)`) is fully parameterized
-  and safe.
-- **What the published interface lacks — the specific answer.** The name is a
-  misnomer: the set is a **cross-driver union**, not D1's surface.
-  `@cloudflare/workers-types` publishes only the D1 third — `all`/`first`/`run`
-  on `D1PreparedStatement` (already resolved as `d1PreparedStatement`). What the
-  published interface **lacks** is `query` and `execute`: neither is a D1 method
-  (D1 uses `exec` on the database, `run` on the statement); `query` is
-  node-postgres / the tool's own `IndexHandle`, `execute` is mysql2, and
-  `all`/`run` are also better-sqlite3 / node:sqlite. No single vendor declares
-  the union, and deriving only the D1 half would *regress* the check — a
-  better-sqlite3 tree (no workers-types installed) would lose `all`/`run` and
-  stop recognizing its own parameterized shorthand. The set is the analyzer's
-  own cross-driver admission predicate, irreducible.
-
-### 5. `LLM_PROVIDER_RE`
+### 3. `LLM_PROVIDER_RE`
 
 - **List:** `/(?:anthropic|openai|deepseek|claude|gpt|gemini|cohere|mistral|bedrock|vertex|ollama|llm|gateway)/i`
 - **Judgment:** an LLM/agent-adjacency signal — which *identifier prefixes*
@@ -229,7 +256,7 @@ declaration:
   surface. No vendor declares "which identifier prefixes denote an LLM
   provider"; the list is a cross-vendor naming convention.
 
-### 6. `LLM_ACTION_RE`
+### 4. `LLM_ACTION_RE`
 
 - **List:** `/(?:embed|reembed|completion|chat|prompt|synthesize|thesis|agent|classify|summarize|translate)/i`
 - **Judgment:** LLM action verbs — AI SDK methods and the wrapper names that
@@ -242,7 +269,7 @@ declaration:
   generic code. No single vendor declares "which of these names are ambiguous in
   ordinary code"; the exclusion is the analyzer's call.
 
-### 7. `LLM_CLIENT_ARG_NAMES`
+### 5. `LLM_CLIENT_ARG_NAMES`
 
 - **List:** `model llm embedder gateway anthropic openai deepseek claude gpt
   gemini cohere mistral bedrock`
@@ -254,7 +281,7 @@ declaration:
   variable names denote an LLM client"; the exclusion of `client`/`ai` is a
   correctness judgment about ambiguity no declaration captures.
 
-### 8. `MESSAGE_LIFECYCLE_METHODS`
+### 6. `MESSAGE_LIFECYCLE_METHODS`
 
 - **List:** `ack nack acknowledge deleteMessage retry`
 - **Judgment:** the queue-consumer per-message verbs — a loop whose body
@@ -266,7 +293,7 @@ declaration:
   contextual `retry`. No single vendor's declaration is that union; each broker
   would yield only its own spelling.
 
-### 9. `CHUNK_HELPER_RE`
+### 7. `CHUNK_HELPER_RE`
 
 - **List:** `/^(chunk|chunks|chunkArray|chunkBy|partition|paginate|paged)$/i`
 - **Judgment:** a **name pattern** recognizing *user-written* chunking helper
@@ -300,8 +327,8 @@ declaration:
 
 The directive requires a finding that appears **only** because the probe supplied
 a method the old hand-kept list lacked, demonstrated on a pinned corpus with the
-real vendor installed. None of the six pinned corpora uses any of the six
-probe-only methods (grep over all six is empty), so a fixture is required.
+real vendor installed. None of the seven pinned corpora uses any of the six
+probe-only methods (grep over all seven is empty), so a fixture is required.
 
 `bench/corpus/vendor-probe/` pins `kysely@0.29.6` (`package.json` +
 `package-lock.json` committed; `node_modules` gitignored). Its
@@ -356,7 +383,50 @@ finding:
 | recall-protocol | 13 | 13 | 0 | 0 |
 
 Every corpus is `added=0 removed=0`: the probe-derived sets produce byte-identical
-data-access findings on all six pinned corpora, and the six probe-only methods
+data-access findings on all seven pinned corpora, and the six probe-only methods
 simply never fire there — the honest "no drift" the reissued directive asked to
 *measure* rather than assume. (The liveness fixture proves the probe is not
 vacuous; this table proves it does not perturb the pinned corpora.)
+
+## B2d — per-corpus delta for the two newly-derived sets
+
+The same measurement is required for the two sets derived *entirely* from the
+tree (`prismaVerbs`, `eagerExecutionMethods`): the old hand-kept behaviour is
+simulated (`OLD`), the derived behaviour is the real run (`NEW`), and the finding
+multiset is diffed per corpus.
+
+- **`prismaVerbs`.** `OLD` admitted the object form via the hand-kept 15-verb
+  `isQueryBuilderShape` set; `NEW` reads the generated client's `*Delegate` union
+  (18 members). No pinned corpus has a generated client (they ship no
+  `node_modules`, so the resolution is `unproven`), and none uses the two verbs
+  the old list lacked (`createManyAndReturn`, `updateManyAndReturn`). Both arms
+  admit via the shape — the only difference is that `NEW` degrades unproven-vs-
+  confirmed verb recognition rather than emitting a different finding, so no
+  finding moves.
+- **`eagerExecutionMethods`.** `OLD` applied the unconditional
+  `['all','first','run','query','execute']` to every tree; `NEW` derives the union
+  per driver. No pinned corpus resolves any driver, so `NEW`'s set is `null` — the
+  one place a *behaviour change* is possible: a two-arg `.all/.first/.run/.query/
+  .execute` call with a `${}` interpolation that `OLD` suppressed as parameterized
+  and `NEW` (null set) does not. Every such candidate site was grep-identified and
+  hand-checked: each is a safe constant, a non-`handle` receiver, or non-injection
+  transaction-control SQL, so no `sql-injection-risk` finding is added.
+
+| Corpus | OLD total | NEW total | added | removed |
+|--------|----------:|----------:|------:|--------:|
+| blitz | 0 | 0 | 0 | 0 |
+| endless-guessing | 1 | 1 | 0 | 0 |
+| hhra-org | 3 | 3 | 0 | 0 |
+| knex | 7 | 7 | 0 | 0 |
+| openstatus | 1 | 1 | 0 | 0 |
+| primer-css | 0 | 0 | 0 | 0 |
+| recall-protocol | 13 | 13 | 0 | 0 |
+
+All seven corpora are `added=0 removed=0` (totals are all `sql-injection-risk`).
+The two newly-derived sets change the *evidence* a site rests on — resolved
+verb/driver surface vs. hand-kept snapshot — without changing any emitted finding
+on the pinned corpora. The liveness tests (`vendor-probe-prisma-eager-liveness.spec.ts`)
+prove the derivation is not vacuous: a generated client admits
+`createManyAndReturn` that the old 15-verb list dropped, and a better-sqlite3 tree
+is parameterized *only* with the probe. This table proves the derivation does not
+perturb the pinned corpora.

@@ -432,12 +432,23 @@ function hasChainCompanion(methods: readonly string[]): boolean {
   return false;
 }
 
-/** Prisma CRUD verbs admitted by the object-form shape (admitter 2). */
-const PRISMA_VERBS = new Set([
-  'create', 'createMany', 'update', 'updateMany', 'upsert',
-  'delete', 'deleteMany', 'findUnique', 'findFirst', 'findMany',
-  'findUniqueOrThrow', 'findFirstOrThrow', 'count', 'groupBy', 'aggregate',
-]);
+/**
+ * The reason a Prisma object-form site is `unproven`: the analyzed tree has no
+ * generated `.prisma/client`, so the model verb set (the union of the generated
+ * `*Delegate` members) cannot be derived and the verb cannot be confirmed. Item B
+ * (reissued): the verb set is no longer a committed `PRISMA_VERBS` snapshot — it
+ * is resolved per-run from the tree's own generated client, and its absence is
+ * this `unproven` reason, never a stale fallback.
+ */
+const PRISMA_NOT_PRESENT_REASON =
+  'generated Prisma client `.prisma/client` is not present in the analyzed tree — the model verb set cannot be confirmed (run `prisma generate`)';
+
+/** The tri-state a Prisma object-form site admits to: a confirmed verb, an
+ *  unconfirmed verb (no generated client), or not a Prisma object form. */
+type PrismaFormVerdict =
+  | { readonly kind: 'not-prisma' }
+  | { readonly kind: 'prisma' }
+  | { readonly kind: 'prisma-unproven'; readonly reason: string };
 
 /** Collect the property keys of an object literal, including its nested objects. */
 function collectObjectLiteralKeys(
@@ -465,29 +476,46 @@ function collectObjectLiteralKeys(
  * object-literal argument carries a `where` or `data` key. Option 1 (chained
  * companions) misses this because the `where`/`data` are keys inside an object
  * literal, not chained calls (blitz `prisma.user.update({ where, data })`).
+ *
+ * Tri-state (Item B, reissued): the verb is confirmed against the *derived*
+ * Prisma verb set (`vendor.prismaVerbs`), not a committed snapshot. When the
+ * shape matches (`<recv>.<Model>.<verb>` + `where`/`data` key) but the generated
+ * client is absent — so no verb set was derived — the verdict is `prisma-unproven`
+ * with {@link PRISMA_NOT_PRESENT_REASON}, never `not-prisma` (which would silently
+ * drop the site) and never a stale verb list.
  */
 function isPrismaObjectForm(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
-): boolean {
+  prismaVerbs: ReadonlySet<string> | null,
+): PrismaFormVerdict {
   const callee = getCallExpressionCallee(node, adapter);
-  if (!callee || adapter.getNodeType(callee) !== 'member_expression') return false;
+  if (!callee || adapter.getNodeType(callee) !== 'member_expression') return { kind: 'not-prisma' };
   // The chain must be `<recv>.<Model>.<verb>` — at least two member segments
   // (the Model and the verb) read from their property nodes. A subscript like
   // `obj["a.b"]` is not a Model segment, so `obj["a.b"].update(…)` has only one
   // segment and fails.
   const methods = collectChainMethods(callee, adapter, sourceCode);
-  if (methods.length < 2) return false;
-  if (!PRISMA_VERBS.has(methods[methods.length - 1])) return false;
+  if (methods.length < 2) return { kind: 'not-prisma' };
+  const verb = methods[methods.length - 1];
 
   const args = adapter.getChildren(node).find((c) => adapter.getNodeType(c) === 'arguments');
-  if (!args) return false;
+  if (!args) return { kind: 'not-prisma' };
+  let hasWhereOrData = false;
   for (const arg of adapter.getChildren(args)) {
     const keys = collectObjectLiteralKeys(arg, adapter, sourceCode);
-    if (keys.includes('where') || keys.includes('data')) return true;
+    if (keys.includes('where') || keys.includes('data')) {
+      hasWhereOrData = true;
+      break;
+    }
   }
-  return false;
+  if (!hasWhereOrData) return { kind: 'not-prisma' };
+
+  // The shape matches. Confirm the verb against the derived set; an absent set
+  // (no generated client) is `unproven`, a confirmed non-verb is `not-prisma`.
+  if (prismaVerbs === null) return { kind: 'prisma-unproven', reason: PRISMA_NOT_PRESENT_REASON };
+  return prismaVerbs.has(verb) ? { kind: 'prisma' } : { kind: 'not-prisma' };
 }
 
 /**
@@ -516,18 +544,25 @@ function isPrismaObjectForm(
  * @param node the candidate call node to classify
  * @param adapter the language adapter used to read the callee
  * @param sourceCode the file source text for reading callee text
+ * @param prismaVerbs the derived Prisma model verb set (or null when the generated
+ *   client is absent). A Prisma object form is admitted by shape even when this is
+ *   null — the *confirmation* of the verb is what degrades to `unproven`, never the
+ *   admission (see {@link isPrismaObjectForm}).
  * @returns true when the call is query-builder shaped (chain companion or Prisma object form)
  */
 export function isQueryBuilderShape(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
+  prismaVerbs: ReadonlySet<string> | null = null,
 ): boolean {
   if (node.type !== 'call_expression') return false;
   const callee = getCallExpressionCallee(node, adapter);
   if (!callee) return false;
   const methods = collectChainMethods(callee, adapter, sourceCode);
-  return hasChainCompanion(methods) || isPrismaObjectForm(node, adapter, sourceCode);
+  if (hasChainCompanion(methods)) return true;
+  const prismaVerdict = isPrismaObjectForm(node, adapter, sourceCode, prismaVerbs);
+  return prismaVerdict.kind !== 'not-prisma';
 }
 
 /**
@@ -765,7 +800,7 @@ function isDbCallCandidate(
   scan: DataAccessScanContext,
   tagNames: readonly string[] = SQL_TAG_NAMES,
 ): boolean {
-  const { adapter, sourceCode } = scan;
+  const { adapter, sourceCode, vendor } = scan;
 
   // Spec 70 R1.2: a DB/ORM-method call whose receiver resolves handle-or-unproven.
   // `not-handle` (e.g. lodash `get`) and `null` (not query-shaped) are rejected.
@@ -773,7 +808,7 @@ function isDbCallCandidate(
   if (verdict !== null && verdict.kind !== 'not-handle') return true;
 
   // A query-builder chain is discovered by shape, not receiver name.
-  if (isQueryBuilderShape(node, adapter, sourceCode)) {
+  if (isQueryBuilderShape(node, adapter, sourceCode, vendor.prismaVerbs)) {
     return true;
   }
 
@@ -947,8 +982,17 @@ function buildDatabaseCall(
   // a type-annotated `db: D1Database` with a dynamic template argument now stays
   // visible instead of being dropped before the rules can see it.
   const handleVerdict = handleVerdictForCall(node, scan);
-  const handleAdmits = handleVerdict !== null && handleVerdict.kind !== 'not-handle';
-  const isSqlPosition = handleAdmits || isQueryBuilderShape(node, adapter, sourceCode);
+  // Item B (reissued) — a Prisma object-form site whose verb set cannot be
+  // confirmed (no generated `.prisma/client`) is `unproven` with that reason. It
+  // only fills a *null* handle verdict (no resolution evidence); a definitive
+  // `handle`/`not-handle` from declaration resolution always wins.
+  const prismaVerdict = isPrismaObjectForm(node, adapter, sourceCode, vendor.prismaVerbs);
+  const effectiveHandleVerdict: HandleVerdict | null = handleVerdict
+    ?? (prismaVerdict.kind === 'prisma-unproven'
+      ? { kind: 'unproven', reason: prismaVerdict.reason }
+      : null);
+  const handleAdmits = effectiveHandleVerdict !== null && effectiveHandleVerdict.kind !== 'not-handle';
+  const isSqlPosition = handleAdmits || isQueryBuilderShape(node, adapter, sourceCode, vendor.prismaVerbs);
   const isSqlQuery = sqlOk !== null || isSqlPosition || isTaggedSqlCall;
 
   if (!isSqlQuery && !isOrmCall) return null;
@@ -981,7 +1025,7 @@ function buildDatabaseCall(
   // a proven `handle` — a parsed SQL argument (R3) or a package in the manifest
   // (R4) — fires. A type name proves nothing under criterion 9, so there is no
   // type-annotation signal to consult.
-  const injectionRisk = security.injectionRisk && handleVerdict?.kind === 'handle';
+  const injectionRisk = security.injectionRisk && effectiveHandleVerdict?.kind === 'handle';
 
   const callType = classifyCallType(isSqlQuery, isOrmCall);
 
@@ -1008,7 +1052,7 @@ function buildDatabaseCall(
     sqlEscaped: security.escaped,
     enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
     resolvedWhere: resolveWhereBinding(node, sourceCode, adapter) ?? undefined,
-    handleVerdict: handleVerdict ?? undefined,
+    handleVerdict: effectiveHandleVerdict ?? undefined,
   };
 }
 
@@ -1677,8 +1721,9 @@ function isInExecChain(
 }
 
 /**
- * Detect eager execution methods called with bind parameters as a second
- * argument — D1's `.all()`/`.first()`/`.run()`, plus the parameterized
+ * Detect eager-execution methods called with bind parameters as a second
+ * argument — D1's `.all()`/`.first()`/`.run()`, better-sqlite3's `.get()` /
+ * `.iterate()`, node:sqlite's `.get()` / `.all()`, plus the parameterized
  * `.query()`/`.execute()` form shared by node-postgres/mysql2 and the tool's
  * own `IndexHandle`.
  *
@@ -1693,20 +1738,24 @@ function isInExecChain(
  * `?`-placeholder clauses (`${fp.clause}`, `${inList(types)}`) and `params`
  * binds the values out-of-band. A single-arg `.query(\`…${input}\`)` — the raw
  * injection shape — stays flagged because it carries no bind argument.
+ *
+ * Item B (reissued): the method set is no longer a hand-kept `D1_CONVENIENCE`
+ * list — it is the cross-driver eager-execution surface (`vendor.eagerExecutionMethods`),
+ * the union of whichever driver surfaces resolved in the analyzed tree. A tree
+ * with only better-sqlite3 gets better-sqlite3's methods and nothing else.
  */
-function isD1ConvenienceCall(
+function isEagerExecutionCall(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
+  eagerExecutionMethods: ReadonlySet<string> | null,
 ): boolean {
-  const D1_CONVENIENCE = new Set(['all', 'first', 'run', 'query', 'execute']);
-
   const call = findCallFromEntry(node, adapter);
   if (!call) return false;
 
   const callee = findMemberCallee(call, adapter);
   const method = callee ? memberPropertyName(callee, adapter, sourceCode) : null;
-  if (!method || !D1_CONVENIENCE.has(method)) return false;
+  if (!method || !eagerExecutionMethods || !eagerExecutionMethods.has(method)) return false;
 
   // Bind params as a second argument → fully parameterized and safe.
   return countArgs(call, adapter) >= 2;
@@ -2144,10 +2193,11 @@ function isParameterizedByChain(
   sourceCode: string,
   config: DataAccessAnalyzerConfig,
   wrapperNames: string[],
+  eagerExecutionMethods: ReadonlySet<string> | null,
 ): boolean {
   if (isInPrepareBindChain(node, adapter, sourceCode)) return true;
   if (isInExecChain(node, adapter, sourceCode)) return true;
-  if (isD1ConvenienceCall(node, adapter, sourceCode)) return true;
+  if (isEagerExecutionCall(node, adapter, sourceCode, eagerExecutionMethods)) return true;
   if (isWrapperFunctionWithBindParams(node, adapter, sourceCode, wrapperNames)) return true;
   return false;
 }
@@ -2290,11 +2340,11 @@ function checkQuerySecurity(
   ast: AST,
   scan: DataAccessScanContext,
 ): { parameterized: boolean; injectionRisk: boolean; escaped: boolean; message?: string } {
-  const { adapter, sourceCode, config } = scan;
+  const { adapter, sourceCode, config, vendor } = scan;
 
-  // Parameterized chains (.prepare().bind(), .exec() spread, D1 convenience,
-  // DB wrappers) and explicit parameterization are always safe.
-  if (isParameterizedByChain(node, adapter, sourceCode, config, effectiveWrapperNames(scan))) {
+  // Parameterized chains (.prepare().bind(), .exec() spread, eager-execution
+  // method, DB wrappers) and explicit parameterization are always safe.
+  if (isParameterizedByChain(node, adapter, sourceCode, config, effectiveWrapperNames(scan), vendor.eagerExecutionMethods)) {
     return { parameterized: true, injectionRisk: false, escaped: false };
   }
   // A drizzle `sql`/`db` tagged template parameterizes bare `${id}` interpolations
@@ -3783,8 +3833,8 @@ function isBroadenedDataAccessCandidate(
   scan: DataAccessScanContext,
   tagNames: readonly string[],
 ): boolean {
-  const { adapter, sourceCode } = scan;
-  if (isQueryBuilderShape(node, adapter, sourceCode)) return true;
+  const { adapter, sourceCode, vendor } = scan;
+  if (isQueryBuilderShape(node, adapter, sourceCode, vendor.prismaVerbs)) return true;
   if (isTaggedTemplateSqlCall(node, adapter, sourceCode, tagNames)) return true;
   if (isVariableAssignment(node, adapter) && extractStaticSql(node, adapter, sourceCode) !== null) return true;
   if (isBoundIdentifierCall(node, scan)) return true;
@@ -3971,7 +4021,7 @@ function buildDataAccessCallCandidate(
   const isOrmCall = isOrmPattern(nodeText);
   const tagNames = config.sqlTagNames ?? SQL_TAG_NAMES;
   const isTaggedSqlCall = isTaggedTemplateSqlCall(node, adapter, sourceCode, tagNames);
-  const isQueryBuilder = isQueryBuilderShape(node, adapter, sourceCode);
+  const isQueryBuilder = isQueryBuilderShape(node, adapter, sourceCode, vendor.prismaVerbs);
   const isVariableAssignmentSql = isVariableAssignment(node, adapter) && sqlArg !== null;
   const isTemplate = isTemplateLiteral(node, adapter);
 

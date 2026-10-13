@@ -1,0 +1,5 @@
+{
+  "name": ".prisma/client",
+  "version": "6.19.3",
+  "types": "index.d.ts"
+}

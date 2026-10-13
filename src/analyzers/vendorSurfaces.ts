@@ -1,27 +1,29 @@
 /**
  * Vendor surface resolution — Item B (reissued).
  *
- * The data-access analyzer once hand-maintained four method-name lists
- * (`EAGER_DB_METHODS`, `ORM_TABLE_VERBS`, `ORM_JOIN_VERBS`, and the
- * `COLLECTION_TRANSFORM_METHODS` runtime probe). A hand-copied vendor list
- * drifts: the vendor adds, renames, or removes a method and the replica silently
- * goes stale (the `.get()` gap, the deferred `.iterate()`, the missing lateral
- * joins). The reissued directive deletes the committed snapshot and resolves each
- * vendor's declaration **from the tree under analysis, per run** — the
- * `node_modules` (or workspace) path the tree's *own* imports resolve to, at the
- * version that tree actually installs. Nothing about a vendor's API is committed
- * here, and nothing is fetched from the network at analysis time.
+ * The data-access analyzer once hand-maintained five method-name lists
+ * (`EAGER_DB_METHODS`, `ORM_TABLE_VERBS`, `ORM_JOIN_VERBS`, `PRISMA_VERBS`, and
+ * `D1_CONVENIENCE`) plus the `COLLECTION_TRANSFORM_METHODS` runtime probe. A
+ * hand-copied vendor list drifts: the vendor adds, renames, or removes a method
+ * and the replica silently goes stale (the `.get()` gap, the deferred `.iterate()`,
+ * the missing lateral joins, the missing `…AndReturn` verbs). The reissued
+ * directive deletes the committed snapshot and resolves each vendor's declaration
+ * **from the tree under analysis, per run** — the `node_modules` (or workspace)
+ * path the tree's *own* imports resolve to, at the version that tree actually
+ * installs. Nothing about a vendor's API is committed here, and nothing is fetched
+ * from the network at analysis time.
  *
- * Three of the four lists derive from a vendor `.d.ts`; the fourth
- * (`COLLECTION_TRANSFORM_METHODS`) is a runtime probe over `Array.prototype` and
- * has no vendor declaration. Each derived set is the union of the analyzer's
- * irreducible cross-vendor grammar (the baseline, present regardless of what
- * resolves) and the per-run probe — the methods only a specific vendor publishes.
- * When a vendor declaration cannot be resolved, the corresponding surface is
- * `null` and its probe methods are absent (not a fallback list, not a stale
- * snapshot); the resolution record carries the *reason* naming what could not be
- * resolved, so a site whose classification depends on a probe-only method is
- * `unproven`, never silent.
+ * Three of the five vendor lists (`eagerMethods`, `ormTableVerbs`, `ormJoinVerbs`)
+ * are the union of the analyzer's irreducible cross-vendor grammar (the baseline,
+ * present regardless of what resolves) and the per-run probe — the methods only a
+ * specific vendor publishes. Two (`prismaVerbs`, `eagerExecutionMethods`) are
+ * resolved **entirely** from the tree, with no baseline. `COLLECTION_TRANSFORM_METHODS`
+ * is a runtime probe over `Array.prototype` and has no vendor declaration. When a
+ * vendor declaration cannot be resolved, the corresponding surface is `null` and
+ * its probe methods are absent (not a fallback list, not a stale snapshot); the
+ * resolution record carries the *reason* naming what could not be resolved, so a
+ * site whose classification depends on a probe-only method is `unproven`, never
+ * silent.
  */
 
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -30,10 +32,10 @@ import { parseFile, getNodeText } from '../languages/adapterBridge.js';
 import type { ASTNode } from '../languages/types.js';
 
 /**
- * The eight vendor surfaces the analyzer derives its method sets from. Each is a
+ * The eleven vendor surfaces the analyzer derives its method sets from. Each is a
  * resolved member-name set, or `null` when the vendor's declaration could not be
- * resolved from the tree. The names are exactly the declaration *types* the four
- * vendors publish; the *selection* of which members are eager I/O / table verbs /
+ * resolved from the tree. The names are exactly the declaration *types* the seven
+ * packages publish; the *selection* of which members are eager I/O / table verbs /
  * join verbs is a documented judgment (specs/vendor-replica-probes.md).
  */
 export interface VendorSurfaces {
@@ -45,6 +47,13 @@ export interface VendorSurfaces {
   nodeSqliteDatabase: ReadonlySet<string> | null;
   d1Database: ReadonlySet<string> | null;
   d1PreparedStatement: ReadonlySet<string> | null;
+  /** The `Pool` declaration from `@types/pg` — `query` is its eager-execution member. */
+  pgPool: ReadonlySet<string> | null;
+  /** The `Connection` declaration from `mysql2` — `execute` is its eager-execution member. */
+  mysql2Connection: ReadonlySet<string> | null;
+  /** The union of generated `*Delegate` member names from `.prisma/client`, or null
+   *  when the generated client is not present in the analyzed tree. */
+  prismaVerbs: ReadonlySet<string> | null;
   /** One record per (package, type) resolution attempt — the probe's evidence. */
   resolutions: readonly VendorResolution[];
 }
@@ -73,6 +82,9 @@ export const EMPTY_VENDOR_SURFACES: VendorSurfaces = {
   nodeSqliteDatabase: null,
   d1Database: null,
   d1PreparedStatement: null,
+  pgPool: null,
+  mysql2Connection: null,
+  prismaVerbs: null,
   resolutions: [],
 };
 
@@ -84,6 +96,16 @@ export interface DerivedVendorSets {
   eagerMethods: ReadonlySet<string>;
   ormTableVerbs: ReadonlySet<string>;
   ormJoinVerbs: ReadonlySet<string>;
+  /** The Prisma model verbs derived from the generated `.prisma/client` `*Delegate`
+   *  declarations, or null when the generated client is absent. No hand-kept
+   *  fallback: an absent client means the Prisma object-form admitter cannot
+   *  confirm a verb and the site is `unproven` (never a stale snapshot). */
+  prismaVerbs: ReadonlySet<string> | null;
+  /** The cross-driver eager-execution surface — the union of the resolved
+   *  D1PreparedStatement / better-sqlite3 / node:sqlite statement+database
+   *  surfaces plus `query` (pg) and `execute` (mysql2). Null when no driver
+   *  resolves (the site is `unproven`), never a fallback list. */
+  eagerExecutionMethods: ReadonlySet<string> | null;
 }
 
 /** Which vendor package publishes each declaration type, and which file (relative
@@ -101,6 +123,12 @@ const VENDOR_TYPE_SPECS: readonly VendorTypeSpec[] = [
   { pkg: '@types/node', entry: 'sqlite.d.ts', types: ['DatabaseSync', 'StatementSync'] },
   { pkg: '@cloudflare/workers-types', entry: 'index.d.ts', types: ['D1Database', 'D1PreparedStatement'] },
   { pkg: 'kysely', entry: null, types: ['QueryCreator', 'SelectQueryBuilder'] },
+  // `@types/pg` and `mysql2` contribute only their single eager-execution member
+  // (`query` / `execute` respectively) — a Pool/Connection surface is a *client*
+  // surface (connect/end/on), not an eager-execution surface, so the whole
+  // declaration is not unioned the way the statement/database surfaces are.
+  { pkg: '@types/pg', entry: null, types: ['Pool'] },
+  { pkg: 'mysql2', entry: null, types: ['Connection'] },
 ];
 
 /**
@@ -152,26 +180,96 @@ function walkDts(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * Find the `interface_declaration` / `class_declaration` /
- * `abstract_class_declaration` named `typeName` in a parsed `.d.ts`. The name is
- * the leading `type_identifier` child (tree-sitter renders a declaration name as
- * a type identifier for classes and interfaces alike).
+ * The declaration kinds a named type may take: interfaces and classes (with an
+ * `interface_body`/`class_body`), plus type aliases (a `type_alias_declaration`
+ * whose body is an `object_type` or an `intersection_type` of `object_type`s).
+ * tree-sitter renders a declaration name as a leading `type_identifier` child
+ * for all three.
  */
-function findTypeDecl(root: ASTNode, typeName: string, sourceCode: string): ASTNode | null {
+const TYPE_DECLARATION_KINDS = new Set([
+  'interface_declaration',
+  'class_declaration',
+  'abstract_class_declaration',
+  'type_alias_declaration',
+]);
+
+/**
+ * Find every `interface_declaration` / `class_declaration` /
+ * `abstract_class_declaration` / `type_alias_declaration` named `typeName` in a
+ * parsed `.d.ts`.
+ *
+ * A name is not unique in a real declaration file: `@types/better-sqlite3`
+ * declares both `interface Statement` (the surface) and a *conditional*
+ * `type Statement<…> = …` alias (a tuple-parameter helper), in the same
+ * namespace. Returning the first match — whichever a depth-first walk reaches
+ * first — would let the helper alias shadow the interface and read an empty
+ * surface. Collect *all* matches and let the caller union their member surfaces.
+ */
+function findTypeDecls(root: ASTNode, typeName: string, sourceCode: string): ASTNode[] {
+  const decls: ASTNode[] = [];
   const stack: ASTNode[] = [root];
   while (stack.length > 0) {
     const node = stack.pop()!;
-    if (
-      node.type === 'interface_declaration' ||
-      node.type === 'class_declaration' ||
-      node.type === 'abstract_class_declaration'
-    ) {
+    if (TYPE_DECLARATION_KINDS.has(node.type)) {
       const nameNode = node.children?.find((c) => c.type === 'type_identifier');
-      if (nameNode && getNodeText(nameNode, sourceCode) === typeName) return node;
+      if (nameNode && getNodeText(nameNode, sourceCode) === typeName) decls.push(node);
     }
     if (node.children) for (const c of node.children) stack.push(c);
   }
-  return null;
+  return decls;
+}
+
+/** A member node of a type body: a callable method/property signature or
+ *  definition. */
+function isMemberNode(t: string): boolean {
+  return (
+    t === 'method_signature' ||
+    t === 'property_signature' ||
+    t === 'method_definition' ||
+    t === 'public_field_definition' ||
+    t === 'property_definition'
+  );
+}
+
+/** Extract the identifier-name surface from a list of member nodes. Non-identifier
+ *  members (`[Symbol.dispose]`, string-literal keys) are dropped. */
+function collectCallableMembers(memberNodes: readonly ASTNode[], sourceCode: string): Set<string> {
+  const members = new Set<string>();
+  for (const m of memberNodes) {
+    if (!isMemberNode(m.type)) continue;
+    const nameNode = m.children?.find((c) => c.type === 'property_identifier');
+    if (!nameNode) continue;
+    const name = getNodeText(nameNode, sourceCode);
+    if (name && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) members.add(name);
+  }
+  return members;
+}
+
+/**
+ * Read the member surface of a `type_alias_declaration` whose body is an
+ * `object_type` or an `intersection_type` of `object_type`s — e.g.
+ * `type X = { a(): void } & { b(): void }`. Only the top-level members of each
+ * `object_type` are collected; a nested `object_type` inside a member's own type
+ * annotation (an index signature's value type, a method's return type) is NOT
+ * descended into — those are member *types*, not members of the alias.
+ */
+function readTypeAliasMembers(decl: ASTNode, sourceCode: string): Set<string> {
+  const typeNode = decl.children?.find(
+    (c) => c.type === 'intersection_type' || c.type === 'object_type',
+  );
+  if (!typeNode) return new Set<string>();
+  const memberNodes: ASTNode[] = [];
+  if (typeNode.type === 'object_type') {
+    memberNodes.push(...(typeNode.children ?? []));
+  } else if (typeNode.type === 'intersection_type') {
+    for (const part of typeNode.children ?? []) {
+      if (part.type === 'object_type') memberNodes.push(...(part.children ?? []));
+      // A named-type reference (`type_identifier`) inside an intersection is a
+      // cross-declaration alias this single-file reader does not chase — the
+      // generated Prisma client never uses it for model delegates.
+    }
+  }
+  return collectCallableMembers(memberNodes, sourceCode);
 }
 
 /**
@@ -181,6 +279,11 @@ function findTypeDecl(root: ASTNode, typeName: string, sourceCode: string): ASTN
  * surface. Non-identifier members (`[Symbol.dispose]`, string-literal keys) are
  * dropped. Returns null when the file is unreadable, unparseable, or does not
  * declare the named type.
+ *
+ * When a name is declared more than once (an interface shadowed by a helper type
+ * alias, as in `@types/better-sqlite3`'s `Statement`), the surface is the union of
+ * every declaration's members — a conditional-type alias contributes none, so the
+ * interface's surface wins rather than being masked by the helper.
  */
 function readTypeMemberSurface(dtsPath: string, typeName: string): ReadonlySet<string> | null {
   let content: string;
@@ -191,28 +294,143 @@ function readTypeMemberSurface(dtsPath: string, typeName: string): ReadonlySet<s
   }
   const ast = parseFile(dtsPath, content);
   if (!ast) return null;
-  const decl = findTypeDecl(ast.root, typeName, content);
-  if (!decl) return null;
-  const body = decl.children?.find((c) => c.type === 'interface_body' || c.type === 'class_body');
-  if (!body) return new Set<string>();
+  const decls = findTypeDecls(ast.root, typeName, content);
+  if (decls.length === 0) return null;
   const members = new Set<string>();
-  for (const m of body.children ?? []) {
-    const t = m.type;
-    if (
-      t !== 'method_signature' &&
-      t !== 'property_signature' &&
-      t !== 'method_definition' &&
-      t !== 'public_field_definition' &&
-      t !== 'property_definition'
-    ) {
-      continue;
+  for (const decl of decls) {
+    const body = decl.children?.find((c) => c.type === 'interface_body' || c.type === 'class_body');
+    if (body) {
+      for (const m of collectCallableMembers(body.children ?? [], content)) members.add(m);
+    } else if (decl.type === 'type_alias_declaration') {
+      for (const m of readTypeAliasMembers(decl, content)) members.add(m);
     }
-    const nameNode = m.children?.find((c) => c.type === 'property_identifier');
-    if (!nameNode) continue;
-    const name = getNodeText(nameNode, content);
-    if (name && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) members.add(name);
   }
   return members;
+}
+
+/**
+ * Enumerate every `*Delegate` declaration in a parsed generated Prisma client and
+ * return the union of their callable member names — the model verb set. Prisma 6
+ * generates one delegate *interface* per model (`export interface UserDelegate<…>`)
+ * whose members are exactly the model verbs; the `[K: symbol]` index signature the
+ * generator adds is not a callable member and is dropped. Returns null when no
+ * `*Delegate` declaration is found (so an empty client is `unproven`, not an empty
+ * verb set).
+ */
+function readDelegateUnion(root: ASTNode, sourceCode: string): ReadonlySet<string> | null {
+  const verbs = new Set<string>();
+  let found = false;
+  const stack: ASTNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (TYPE_DECLARATION_KINDS.has(node.type)) {
+      const nameNode = node.children?.find((c) => c.type === 'type_identifier');
+      const name = nameNode ? getNodeText(nameNode, sourceCode) : null;
+      if (name && /Delegate$/.test(name)) {
+        found = true;
+        const body = node.children?.find(
+          (c) => c.type === 'interface_body' || c.type === 'class_body',
+        );
+        const members = body
+          ? collectCallableMembers(body.children ?? [], sourceCode)
+          : node.type === 'type_alias_declaration'
+            ? readTypeAliasMembers(node, sourceCode)
+            : new Set<string>();
+        for (const m of members) verbs.add(m);
+      }
+    }
+    if (node.children) for (const c of node.children) stack.push(c);
+  }
+  return found ? verbs : null;
+}
+
+/**
+ * Resolve the generated Prisma client's model verb set from the analyzed tree.
+ *
+ * Prisma generates its client into a dot-prefixed *virtual* package —
+ * `node_modules/.prisma/client/index.d.ts` — re-exported by the `@prisma/client`
+ * shim. The verbs live on the generated `*Delegate` declarations (one per model),
+ * identical across models by construction, so the union of their member names is
+ * exactly the verb set the repo's own schema generated. A tree without a generated
+ * client (no `node_modules/.prisma/client`) is `unproven` with that reason — never
+ * a committed snapshot, never a network fetch.
+ */
+function resolvePrismaSurface(projectRoot: string): {
+  verbs: ReadonlySet<string> | null;
+  resolution: VendorResolution;
+} {
+  const pkgRoot = resolvePackageRoot('.prisma/client', projectRoot);
+  if (!pkgRoot) {
+    return {
+      verbs: null,
+      resolution: {
+        pkg: '.prisma/client',
+        type: '*Delegate',
+        path: null,
+        version: null,
+        reason: `generated Prisma client \`.prisma/client\` is not present under ${path.join(path.resolve(projectRoot), 'node_modules')} (run \`prisma generate\` in the analyzed tree)`,
+      },
+    };
+  }
+  const version = packageVersion(pkgRoot);
+  const indexDts = path.join(pkgRoot, 'index.d.ts');
+  if (!existsSync(indexDts)) {
+    return {
+      verbs: null,
+      resolution: {
+        pkg: '.prisma/client',
+        type: '*Delegate',
+        path: null,
+        version,
+        reason: `generated Prisma client has no index.d.ts (${version ?? 'version unknown'})`,
+      },
+    };
+  }
+  let content: string;
+  try {
+    content = readFileSync(indexDts, 'utf8');
+  } catch {
+    return {
+      verbs: null,
+      resolution: {
+        pkg: '.prisma/client',
+        type: '*Delegate',
+        path: null,
+        version,
+        reason: `could not read ${indexDts}`,
+      },
+    };
+  }
+  const ast = parseFile(indexDts, content);
+  if (!ast) {
+    return {
+      verbs: null,
+      resolution: {
+        pkg: '.prisma/client',
+        type: '*Delegate',
+        path: null,
+        version,
+        reason: `could not parse ${indexDts}`,
+      },
+    };
+  }
+  const verbs = readDelegateUnion(ast.root, content);
+  if (verbs === null) {
+    return {
+      verbs: null,
+      resolution: {
+        pkg: '.prisma/client',
+        type: '*Delegate',
+        path: null,
+        version,
+        reason: `no \`*Delegate\` declaration found in the generated client (${version ?? 'version unknown'})`,
+      },
+    };
+  }
+  return {
+    verbs,
+    resolution: { pkg: '.prisma/client', type: '*Delegate', path: indexDts, version, reason: null },
+  };
 }
 
 /**
@@ -300,6 +518,8 @@ const SURFACE_FIELDS: readonly {
   { pkg: '@cloudflare/workers-types', type: 'D1PreparedStatement', field: 'd1PreparedStatement' },
   { pkg: 'kysely', type: 'QueryCreator', field: 'kyselyQueryCreator' },
   { pkg: 'kysely', type: 'SelectQueryBuilder', field: 'kyselySelectQueryBuilder' },
+  { pkg: '@types/pg', type: 'Pool', field: 'pgPool' },
+  { pkg: 'mysql2', type: 'Connection', field: 'mysql2Connection' },
 ];
 
 /**
@@ -316,6 +536,11 @@ export function resolveVendorSurfaces(projectRoot: string): VendorSurfaces {
     surfaces[field] = members;
     resolutions.push(resolution);
   }
+  // Prisma is resolved separately: it is not a single named declaration type but
+  // the union of every generated `*Delegate` declaration in `.prisma/client`.
+  const prisma = resolvePrismaSurface(projectRoot);
+  surfaces.prismaVerbs = prisma.verbs;
+  resolutions.push(prisma.resolution);
   return {
     kyselyQueryCreator: surfaces.kyselyQueryCreator ?? null,
     kyselySelectQueryBuilder: surfaces.kyselySelectQueryBuilder ?? null,
@@ -325,6 +550,9 @@ export function resolveVendorSurfaces(projectRoot: string): VendorSurfaces {
     nodeSqliteDatabase: surfaces.nodeSqliteDatabase ?? null,
     d1Database: surfaces.d1Database ?? null,
     d1PreparedStatement: surfaces.d1PreparedStatement ?? null,
+    pgPool: surfaces.pgPool ?? null,
+    mysql2Connection: surfaces.mysql2Connection ?? null,
+    prismaVerbs: surfaces.prismaVerbs ?? null,
     resolutions,
   };
 }
@@ -340,18 +568,24 @@ function addIfPublished(
 }
 
 /**
- * Derive the three method sets the analyzer reads, as the union of the analyzer's
- * irreducible cross-vendor grammar (the baseline, present regardless of what
- * resolves) and the per-run *probe* — the methods only a specific vendor publishes
- * that the baseline lacks. The probe is resolved from the analyzed tree; when a
- * vendor cannot be resolved, its probe methods are absent and the reason is
- * recorded on the resolution (`path: null`), which is the honest `unproven` state
- * — never a fallback list, never silence.
+ * Derive the method sets the analyzer reads. Three of them (`eagerMethods`,
+ * `ormTableVerbs`, `ormJoinVerbs`) are the union of the analyzer's irreducible
+ * cross-vendor grammar (the baseline, present regardless of what resolves) and the
+ * per-run *probe* — the methods only a specific vendor publishes that the baseline
+ * lacks. Two more are resolved *entirely* from the tree, with no baseline:
+ *
+ *   - `prismaVerbs` — the union of the generated `.prisma/client` `*Delegate`
+ *     member names. No hand-kept fallback: where `.prisma/client` is not generated,
+ *     the set is null and the site is `unproven` with that reason.
+ *   - `eagerExecutionMethods` — the cross-driver eager-execution surface, the union
+ *     of whichever driver surfaces resolve (D1PreparedStatement; better-sqlite3 and
+ *     node:sqlite statement+database; `query` from pg; `execute` from mysql2).
+ *     Null when no driver resolves, never a fallback list.
  *
  * The baseline is not a copy of any single vendor's declaration: it is the
  * analyzer's accumulated judgment of the generic SQL-driver/builder grammar, the
  * cross-vendor union no one vendor is the authority for (the same criterion that
- * keeps the nine irreducible lists). The probe supplies exactly what that grammar
+ * keeps the seven irreducible lists). The probe supplies exactly what that grammar
  * misses and only a vendor publishes — `iterate` (better-sqlite3), `mergeInto` /
  * `replaceInto` and `fullJoin` / `*JoinLateral` (Kysely).
  */
@@ -373,5 +607,36 @@ export function deriveVendorSets(s: VendorSurfaces): DerivedVendorSets {
     }
   }
 
-  return { eagerMethods, ormTableVerbs, ormJoinVerbs };
+  // Eager-execution surface — the cross-driver union of resolved statement/database
+  // surfaces, plus pg's `query` and mysql2's `execute`. Null when nothing resolves
+  // (the site is `unproven`); a tree with only better-sqlite3 gets better-sqlite3's
+  // methods and nothing else.
+  const eagerExecutionMethods = new Set<string>();
+  let anyEagerDriverResolved = false;
+  const unionSurface = (surface: ReadonlySet<string> | null): void => {
+    if (!surface) return;
+    anyEagerDriverResolved = true;
+    for (const m of surface) eagerExecutionMethods.add(m);
+  };
+  unionSurface(s.d1PreparedStatement);
+  unionSurface(s.betterSqlite3Statement);
+  unionSurface(s.betterSqlite3Database);
+  unionSurface(s.nodeSqliteStatement);
+  unionSurface(s.nodeSqliteDatabase);
+  if (s.pgPool) {
+    anyEagerDriverResolved = true;
+    if (s.pgPool.has('query')) eagerExecutionMethods.add('query');
+  }
+  if (s.mysql2Connection) {
+    anyEagerDriverResolved = true;
+    if (s.mysql2Connection.has('execute')) eagerExecutionMethods.add('execute');
+  }
+
+  return {
+    eagerMethods,
+    ormTableVerbs,
+    ormJoinVerbs,
+    prismaVerbs: s.prismaVerbs,
+    eagerExecutionMethods: anyEagerDriverResolved ? eagerExecutionMethods : null,
+  };
 }

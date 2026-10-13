@@ -144,7 +144,7 @@ describe('vendor-probe data-access method sets (item B, reissued)', () => {
       const bareSurfaces = resolveVendorSurfaces(bare);
       expect(bareSurfaces.betterSqlite3Statement).toBeNull();
       expect(bareSurfaces.kyselyQueryCreator).toBeNull();
-      expect(bareSurfaces.resolutions.length).toBe(8);
+      expect(bareSurfaces.resolutions.length).toBe(11);
       const miss = bareSurfaces.resolutions.find((r) => r.pkg === 'kysely')!;
       expect(miss.path).toBeNull();
       expect(miss.reason).toContain('not installed');
@@ -163,6 +163,87 @@ describe('vendor-probe data-access method sets (item B, reissued)', () => {
         typeof (Array.prototype as unknown as Record<string, unknown>)[m],
         `${m} not on Array.prototype`,
       ).toBe('function');
+    }
+  });
+
+  // ── Item B2a/B2b — the two newly-derived sets (Prisma verbs, eager-execution) ──
+
+  it('prismaVerbs passes through from the resolved surface, with no baseline', () => {
+    // No generated client → null (never a hand-kept fallback).
+    expect(deriveVendorSets(EMPTY_VENDOR_SURFACES).prismaVerbs).toBeNull();
+
+    const verbs = new Set(['findUnique', 'findMany', 'createManyAndReturn', 'updateManyAndReturn']);
+    const d = deriveVendorSets(surfaceWith({ prismaVerbs: verbs }));
+    // Identity pass-through: the derived set IS the resolved set, no additions.
+    expect(d.prismaVerbs).toBe(verbs);
+  });
+
+  it('eagerExecutionMethods is the union of resolved driver surfaces, null when none resolve', () => {
+    // No driver resolves → null (unproven, not a fallback list).
+    expect(deriveVendorSets(EMPTY_VENDOR_SURFACES).eagerExecutionMethods).toBeNull();
+
+    // A tree with only better-sqlite3 gets better-sqlite3's methods and nothing
+    // else — no D1 `.first()`, no generic `.query()`.
+    const betterOnly = deriveVendorSets(surfaceWith({
+      betterSqlite3Statement: new Set(['run', 'get', 'all', 'iterate', 'raw']),
+      betterSqlite3Database: new Set(['exec', 'prepare', 'transaction']),
+    }));
+    expect([...(betterOnly.eagerExecutionMethods ?? [])].sort()).toEqual(
+      ['all', 'exec', 'get', 'iterate', 'prepare', 'raw', 'run', 'transaction'].sort(),
+    );
+    expect(betterOnly.eagerExecutionMethods!.has('first')).toBe(false);
+
+    // D1 contributes its own surface; pg contributes only `query`, mysql2 only `execute`.
+    const allDrivers = deriveVendorSets(surfaceWith({
+      d1PreparedStatement: new Set(['all', 'first', 'run', 'bind']),
+      pgPool: new Set(['query', 'connect', 'end', 'on']),
+      mysql2Connection: new Set(['execute', 'query', 'connect', 'end']),
+    }));
+    expect([...(allDrivers.eagerExecutionMethods ?? [])].sort()).toEqual(
+      ['all', 'bind', 'execute', 'first', 'query', 'run'].sort(),
+    );
+    // pg's non-eager members (connect/end/on) do not leak in.
+    expect(allDrivers.eagerExecutionMethods!.has('connect')).toBe(false);
+    expect(allDrivers.eagerExecutionMethods!.has('end')).toBe(false);
+  });
+
+  it('resolveVendorSurfaces unions a name shadowed by a helper type alias (better-sqlite3 Statement)', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'vendor-probe-collide-'));
+    try {
+      const pkg = path.join(root, 'node_modules', '@types', 'better-sqlite3');
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@types/better-sqlite3', version: '7.6.13' }));
+      writeFileSync(
+        path.join(pkg, 'index.d.ts'),
+        `declare namespace BetterSqlite3 {
+  interface Statement { run(...params: unknown[]): unknown; get(...params: unknown[]): unknown; iterate(...params: unknown[]): unknown; }
+  interface Database { exec(sql: string): unknown; }
+  type Statement<BindParameters extends unknown[]> = BindParameters extends unknown[] ? Statement : never;
+}`,
+      );
+      const s = resolveVendorSurfaces(root);
+      // The conditional helper alias must not shadow the interface: the surface
+      // is the union, so the interface's members (iterate) survive.
+      expect(s.betterSqlite3Statement).not.toBeNull();
+      expect([...(s.betterSqlite3Statement ?? [])].sort()).toEqual(['get', 'iterate', 'run'].sort());
+      expect(s.betterSqlite3Database).not.toBeNull();
+      expect([...(s.betterSqlite3Database ?? [])].sort()).toEqual(['exec'].sort());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolveVendorSurfaces records the prisma resolution, unproven when the client is absent', () => {
+    const bare = mkdtempSync(path.join(tmpdir(), 'vendor-probe-prisma-bare-'));
+    try {
+      const s = resolveVendorSurfaces(bare);
+      expect(s.prismaVerbs).toBeNull();
+      const rec = s.resolutions.find((r) => r.pkg === '.prisma/client')!;
+      expect(rec.path).toBeNull();
+      expect(rec.version).toBeNull();
+      expect(rec.reason).toContain('not present');
+    } finally {
+      rmSync(bare, { recursive: true, force: true });
     }
   });
 });
