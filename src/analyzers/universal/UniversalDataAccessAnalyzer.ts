@@ -204,7 +204,13 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   },
   securityPatterns: {
     sqlInjectionRisks: ['${', 'concat', 'string interpolation'],
-    parameterizedQueries: ['?', ':param', '$1', 'prepared', 'parameterized']
+    // NOTE: `?` is deliberately absent. A bare-substring `text.includes('?')`
+    // matches a ternary operator's `?` (`${cond ? 'a' : value}`) and `'?'` string
+    // literals (`.map(() => '?')`), silently clearing a value-bearing interpolation
+    // before isSafeDynamicPart ever runs. A real `?` placeholder does not make a
+    // `${…}` interpolation safe either — that is decided structurally by
+    // isSafeDynamicPart, so the `?` shortcut could only ever cause false negatives.
+    parameterizedQueries: [':param', '$1', 'prepared', 'parameterized']
   },
   // DB wrapper functions that accept (sql, params) — same as .prepare().bind()
   // but expressed as a simple function call.  Must match the provenance system's

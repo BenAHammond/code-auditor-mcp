@@ -210,7 +210,10 @@ export const DEFAULT_ANALYZER_CONFIGS = {
       mongodb: ['mongodb', 'mongoose']
     },
     securityPatterns: {
-      parameterizedQueries: ['?', '$1', ':param'],
+      // `?` is deliberately absent — see UniversalDataAccessAnalyzer.ts: a bare
+      // substring `?` matches the ternary operator and `'?'` string literals,
+      // clearing value-bearing interpolations before isSafeDynamicPart runs.
+      parameterizedQueries: ['$1', ':param'],
     },
     performanceThresholds: {
       maxJoins: 5,
