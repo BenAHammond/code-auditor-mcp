@@ -61,6 +61,7 @@ import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
 import type { UnparseableSql } from '../analyzers/universal/schema/codeAnalysis.js';
 import type { HandleVerdict } from '../analyzers/handleIdentification.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
+import type { VendorSurfaces } from '../analyzers/vendorSurfaces.js';
 import { classifyUnprovenQueryReceivers, classifyUnresolvedQuerySites, classifyUnparseableSql } from './receiverConsumers.js';
 import { computeAmbientInterfaceFields } from './receiverProvenance.js';
 import { computeUnprovenModules } from './reachability.js';
@@ -214,6 +215,14 @@ export interface PhaseInfra {
    *  gate abstains: an unbound `D1Database` without a declared dependency stays
    *  `unproven` rather than being credited `handle`. */
   declaredTypePackages?: ReadonlySet<string>;
+  /** Item B (reissued) — the vendor method surfaces resolved once per run from
+   *  the tree under analysis. The entry point resolves them (via
+   *  {@link resolveVendorSurfaces}) and threads them here; every parsed file
+   *  receives the same resolved set, and the loop-query / data-access producers
+   *  read it rather than a committed replica. Absent (the slice tests, or a
+   *  caller that forgets to resolve) the producers run on the empty surface —
+   *  unproven, never a fallback list. */
+  vendorSurfaces?: VendorSurfaces;
 }
 
 /**
@@ -680,6 +689,13 @@ async function processFile(
   // data-access producer's SQL facts parse rather than regex.
   if (parsed && infra?.sqlDialect) {
     parsed = { ...parsed, sqlDialect: infra.sqlDialect };
+  }
+  // Item B (reissued) — attach the once-per-run resolved vendor surfaces to the
+  // parsed file so the loop-query / data-access producers read the installed
+  // vendor's own declarations. Absent (slice tests / no vendor installed) the
+  // producers run on the empty surface (unproven), never a fallback list.
+  if (parsed && infra?.vendorSurfaces) {
+    parsed = { ...parsed, vendorSurfaces: infra.vendorSurfaces };
   }
   const fragments = new Map<FileFactKind, unknown[]>();
   const incomplete: FileFactKind[] = [];

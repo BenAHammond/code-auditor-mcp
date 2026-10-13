@@ -34,6 +34,7 @@ import {
   DEFAULT_DATA_ACCESS_CONFIG,
 } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 import { isD1RestCall, extractTopLevelIdentifiers } from '../analyzers/provenance.js';
+import { deriveVendorSets, EMPTY_VENDOR_SURFACES } from '../analyzers/vendorSurfaces.js';
 
 beforeAll(async () => {
   initializeLanguages();
@@ -163,7 +164,7 @@ describe('sweep — node reads (red)', () => {
     const src = 'db.raw("a.b.from(x)")';
     const { adapter } = parseSrc('/f.ts', src);
     const node = outermostOfType('/f.ts', src, 'call_expression');
-    expect(extractOrmTables(node, adapter, src, DEFAULT_DATA_ACCESS_CONFIG)).toEqual([]);
+    expect(extractOrmTables(node, adapter, src, DEFAULT_DATA_ACCESS_CONFIG, deriveVendorSets(EMPTY_VENDOR_SURFACES))).toEqual([]);
   });
 
   it('#8 — isPrepareAssignedToVariable walks the subtree, not function text', () => {

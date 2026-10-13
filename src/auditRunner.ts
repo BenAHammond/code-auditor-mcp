@@ -76,6 +76,7 @@ import {
 import { computeSizeDistributions } from './reporting/sizeDistribution.js';
 import { splitRoutes, attributeRoutes, enabledMigratedRules } from './phase/routing.js';
 import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';
+import { resolveVendorSurfaces } from './analyzers/vendorSurfaces.js';
 import { resolvePhaseThresholds } from './phase/config.js';
 import { deriveCoverage, presentFormatsOf } from './phase/coverage.js';
 import { MIGRATED_RULES, RULE_ANALYZER } from './phase/rules/registry.js';
@@ -972,6 +973,11 @@ async function applyPhaseModelSplit(inputs: {
       sqlDialect: infraConfig.sqlDialect as Dialect | null | undefined,
       sqlDialectReason: infraConfig.sqlDialectReason as string | null | undefined,
       declaredTypePackages: infraConfig.declaredTypePackages as ReadonlySet<string> | undefined,
+      // Item B (reissued) — resolve each vendor's declaration from the tree under
+      // analysis (its own node_modules / workspace path) once per run. The
+      // loop-query / data-access producers read these resolved surfaces; nothing
+      // about a vendor's API is committed and nothing is fetched at analysis time.
+      vendorSurfaces: resolveVendorSurfaces(root),
       // Spec 70 2b — the diverging-clone write: seed `dry_pair_history` from the
       // phase `code-block` fact (replacing `createDryVisitor`/`persistDryPairs`).
       persistDryPairHistory: (facts) => {

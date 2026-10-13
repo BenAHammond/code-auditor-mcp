@@ -1,107 +1,157 @@
 /**
- * Item B — vendor-probe conformance for the data-access method-name lists.
+ * Item B (reissued) — vendor-probe conformance for the data-access method names.
  *
- * `UniversalDataAccessAnalyzer.ts` used to hand-maintain four method-name lists
- * (EAGER_DB_METHODS, ORM_TABLE_VERBS, ORM_JOIN_VERBS, COLLECTION_TRANSFORM_METHODS).
- * Item B rewires each to *derive* from a vendor surface (the shipped `.d.ts`
- * snapshot in `vendor-declarations.json`, or `Array.prototype` for the collection
- * transforms) instead of copying names. These tests pin that derivation so a
- * later edit cannot silently regress it back to a hand-copied replica:
+ * The analyzer no longer hand-copies vendor method lists, and it no longer reads a
+ * committed snapshot. The three derived sets (`eagerMethods`, `ormTableVerbs`,
+ * `ormJoinVerbs`) are the union of the analyzer's irreducible cross-vendor grammar
+ * (the baseline) and a per-run *probe* resolved from the tree's own `node_modules`.
+ * This test pins the two halves of that contract:
  *
- *   1. the committed snapshot records the real vendor surface (the source of
- *      truth is present and non-trivial);
- *   2. every derived name is actually a member of the vendor surface it claims to
- *      derive from — i.e. the list *reads* the vendor rather than replicating it;
- *   3. the vendor-only additions that were previously missing (`mergeInto`/
- *      `replaceInto`, the lateral/full joins, `iterate`) are present, and the
- *      documented judgments (`selectNoFrom` excluded from table verbs, bare
- *      `join` retained, generic `query` retained) are pinned.
+ *   1. the baseline survives an empty surface (no vendor resolved) — the generic
+ *      SQL-driver/builder grammar is a judgment, not a vendor replica, so it never
+ *      silently collapses;
+ *   2. the probe supplies exactly the vendor-only methods the baseline lacks —
+ *      `iterate` (better-sqlite3), `mergeInto`/`replaceInto` and
+ *      `fullJoin`/`*JoinLateral` (Kysely) — and only when that vendor resolves;
+ *   3. `resolveVendorSurfaces` reads a real `.d.ts` from a tree's `node_modules`,
+ *      reporting the resolved path and installed version, and an `unproven`
+ *      resolution (`path: null`, a reason naming what could not be resolved) on a
+ *      tree where the vendor is absent;
+ *   4. `COLLECTION_TRANSFORM_METHODS` remains a runtime probe over `Array.prototype`.
  *
- * This is a guard test: it does not re-run a corpus, so it is fast and stable.
- * The corpus-level evidence (zero finding drift before/after) lives in
- * specs/vendor-replica-probes.md and is measured by scripts/measure-finding-identity.ts.
+ * This is a guard/derivation test. The end-to-end liveness (a finding that appears
+ * only with the probe) is demonstrated against a real installed vendor in
+ * `bench/corpus/vendor-probe/` and recorded in `specs/vendor-replica-probes.md`.
  */
 
-import { describe, it, expect } from 'vitest';
-import vendorDeclarations from '../analyzers/universal/vendor-declarations.json' with { type: 'json' };
+import { describe, it, expect, beforeAll } from 'vitest';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { initializeLanguages, initParsers } from '../languages/index.js';
 import {
-  EAGER_DB_METHODS,
-  ORM_TABLE_VERBS,
-  ORM_JOIN_VERBS,
-  COLLECTION_TRANSFORM_METHODS,
-} from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
+  deriveVendorSets,
+  resolveVendorSurfaces,
+  EMPTY_VENDOR_SURFACES,
+  type VendorSurfaces,
+} from '../analyzers/vendorSurfaces.js';
+import { COLLECTION_TRANSFORM_METHODS } from '../analyzers/universal/UniversalDataAccessAnalyzer.js';
 
-const KYSELY_QC = new Set<string>(vendorDeclarations.vendors.kysely.types.QueryCreator);
-const KYSELY_SQB = new Set<string>(vendorDeclarations.vendors.kysely.types.SelectQueryBuilder);
-const BS3_STMT = new Set<string>(vendorDeclarations.vendors['better-sqlite3'].types.Statement);
-const BS3_DB = new Set<string>(vendorDeclarations.vendors['better-sqlite3'].types.Database);
-const NODE_STMT = new Set<string>(vendorDeclarations.vendors['node:sqlite'].types.StatementSync);
-const NODE_DB = new Set<string>(vendorDeclarations.vendors['node:sqlite'].types.DatabaseSync);
-const D1_DB = new Set<string>(vendorDeclarations.vendors['@cloudflare/workers-types'].types.D1Database);
-const D1_STMT = new Set<string>(vendorDeclarations.vendors['@cloudflare/workers-types'].types.D1PreparedStatement);
+beforeAll(async () => {
+  initializeLanguages();
+  await initParsers();
+}, 30_000);
 
-describe('vendor-probe data-access method lists (item B)', () => {
-  it('commits a non-trivial vendor snapshot (four vendors, real surfaces)', () => {
-    const vendors = vendorDeclarations.vendors as Record<string, { types: Record<string, string[]> }>;
-    expect(Object.keys(vendors).sort()).toEqual([
-      '@cloudflare/workers-types',
-      'better-sqlite3',
-      'kysely',
-      'node:sqlite',
-    ].sort());
-    // The surfaces that must exist for the derivations below to be meaningful.
-    expect(KYSELY_QC.size).toBeGreaterThan(10);
-    expect(KYSELY_SQB.size).toBeGreaterThan(30);
-    expect(BS3_STMT.size).toBeGreaterThan(8);
-    expect(D1_STMT.size).toBeGreaterThan(3);
+/** A synthetic resolved surface: the probe members the vendor publishes. */
+function surfaceWith(overrides: Partial<VendorSurfaces>): VendorSurfaces {
+  return {
+    ...EMPTY_VENDOR_SURFACES,
+    resolutions: [],
+    ...overrides,
+  };
+}
+
+describe('vendor-probe data-access method sets (item B, reissued)', () => {
+  it('baseline survives an empty surface — no vendor, no collapse', () => {
+    const d = deriveVendorSets(EMPTY_VENDOR_SURFACES);
+    // The generic grammar is present even when nothing resolves…
+    expect([...d.eagerMethods].sort()).toEqual(
+      ['all', 'batch', 'exec', 'first', 'get', 'query', 'raw', 'run'].sort(),
+    );
+    expect([...d.ormTableVerbs].sort()).toEqual(
+      ['deleteFrom', 'insertInto', 'selectFrom', 'updateTable'].sort(),
+    );
+    expect([...d.ormJoinVerbs].sort()).toEqual(
+      ['innerJoin', 'join', 'leftJoin', 'rightJoin'].sort(),
+    );
+    // …and the probe-only methods are absent (unproven, not a fallback list).
+    expect(d.eagerMethods.has('iterate')).toBe(false);
+    expect(d.ormTableVerbs.has('mergeInto')).toBe(false);
+    expect(d.ormTableVerbs.has('replaceInto')).toBe(false);
+    expect(d.ormJoinVerbs.has('fullJoin')).toBe(false);
+    expect(d.ormJoinVerbs.has('innerJoinLateral')).toBe(false);
   });
 
-  it('ORM_TABLE_VERBS are exactly the Kysely QueryCreator table-entry members', () => {
-    // Every table verb is a real QueryCreator member (read, not copied)…
-    for (const m of ORM_TABLE_VERBS) expect(KYSELY_QC.has(m), `${m} not in QueryCreator`).toBe(true);
-    // …and it picks up the vendor-only entry points the old list missed.
-    expect([...ORM_TABLE_VERBS].sort()).toEqual(
-      ['deleteFrom', 'insertInto', 'mergeInto', 'replaceInto', 'selectFrom', 'updateTable'].sort(),
+  it('probe adds iterate only when better-sqlite3 Statement resolves', () => {
+    const none = deriveVendorSets(surfaceWith({ betterSqlite3Statement: null }));
+    expect(none.eagerMethods.has('iterate')).toBe(false);
+
+    const withIt = deriveVendorSets(
+      surfaceWith({ betterSqlite3Statement: new Set(['run', 'get', 'all', 'iterate', 'raw']) }),
     );
-    // `selectNoFrom` is part of the vendor surface but takes a *selection*, not a
-    // table — the documented exclusion must hold.
-    expect(KYSELY_QC.has('selectNoFrom')).toBe(true);
-    expect(ORM_TABLE_VERBS.has('selectNoFrom')).toBe(false);
+    expect(withIt.eagerMethods.has('iterate')).toBe(true);
+    // The baseline is unchanged by the probe.
+    expect(withIt.eagerMethods.has('run')).toBe(true);
   });
 
-  it('ORM_JOIN_VERBS = every Kysely SelectQueryBuilder *Join member + the irreducible bare join', () => {
-    const kyselyJoins = [...KYSELY_SQB].filter((m) => m.endsWith('Join') || m.endsWith('JoinLateral')).sort();
-    expect(kyselyJoins).toEqual(
-      ['fullJoin', 'innerJoin', 'innerJoinLateral', 'leftJoin', 'leftJoinLateral', 'rightJoin'].sort(),
+  it('probe adds mergeInto/replaceInto only when Kysely QueryCreator resolves', () => {
+    const none = deriveVendorSets(surfaceWith({ kyselyQueryCreator: null }));
+    expect(none.ormTableVerbs.has('mergeInto')).toBe(false);
+    expect(none.ormTableVerbs.has('replaceInto')).toBe(false);
+
+    const withIt = deriveVendorSets(
+      surfaceWith({ kyselyQueryCreator: new Set(['selectFrom', 'selectNoFrom', 'mergeInto', 'replaceInto', 'deleteFrom']) }),
     );
-    // The Kysely-derived half is read from the vendor surface…
-    for (const m of kyselyJoins) expect(ORM_JOIN_VERBS.has(m), `${m} missing`).toBe(true);
-    // …and bare `join` is retained as a documented non-Kysely judgment.
-    expect(ORM_JOIN_VERBS.has('join')).toBe(true);
-    expect(KYSELY_SQB.has('join')).toBe(false); // not a Kysely verb — proves the judgment
-    // No other members sneak in.
-    expect([...ORM_JOIN_VERBS].sort()).toEqual(
-      [...kyselyJoins, 'join'].sort(),
-    );
+    expect(withIt.ormTableVerbs.has('mergeInto')).toBe(true);
+    expect(withIt.ormTableVerbs.has('replaceInto')).toBe(true);
+    // `selectNoFrom` is a selection, not a table-entry verb — the documented exclusion.
+    expect(withIt.ormTableVerbs.has('selectNoFrom')).toBe(false);
   });
 
-  it('EAGER_DB_METHODS trace to a real statement/database surface (plus the generic query)', () => {
-    // Every eager method except the generic `query` must be a method that actually
-    // executes I/O on one of the four vendor surfaces the comment claims.
-    const allSurfaces = [
-      ...BS3_STMT, ...BS3_DB, ...NODE_STMT, ...NODE_DB, ...D1_DB, ...D1_STMT,
-    ];
-    for (const m of EAGER_DB_METHODS) {
-      if (m === 'query') continue; // documented generic-driver judgment
-      expect(allSurfaces.includes(m), `${m} not on any vendor surface`).toBe(true);
+  it('probe adds fullJoin / *JoinLateral only when Kysely SelectQueryBuilder resolves', () => {
+    const none = deriveVendorSets(surfaceWith({ kyselySelectQueryBuilder: null }));
+    expect(none.ormJoinVerbs.has('fullJoin')).toBe(false);
+    expect(none.ormJoinVerbs.has('leftJoinLateral')).toBe(false);
+
+    const withIt = deriveVendorSets(
+      surfaceWith({
+        kyselySelectQueryBuilder: new Set(['innerJoin', 'fullJoin', 'innerJoinLateral', 'leftJoinLateral', 'where']),
+      }),
+    );
+    expect(withIt.ormJoinVerbs.has('fullJoin')).toBe(true);
+    expect(withIt.ormJoinVerbs.has('innerJoinLateral')).toBe(true);
+    expect(withIt.ormJoinVerbs.has('leftJoinLateral')).toBe(true);
+    // Non-join members do not leak in.
+    expect(withIt.ormJoinVerbs.has('where')).toBe(false);
+  });
+
+  it('resolveVendorSurfaces reads a real .d.ts with path + version, and is unproven otherwise', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'vendor-probe-'));
+    try {
+      // A tree with a vendored @types/better-sqlite3 declaration.
+      const pkg = path.join(root, 'node_modules', '@types', 'better-sqlite3');
+      mkdirSync(pkg, { recursive: true });
+      writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@types/better-sqlite3', version: '7.6.11' }));
+      writeFileSync(
+        path.join(pkg, 'index.d.ts'),
+        `declare namespace BetterSqlite3 {
+  interface Statement { run(...params: unknown[]): unknown; get(...params: unknown[]): unknown; all(...params: unknown[]): unknown; iterate(...params: unknown[]): unknown; raw(): unknown; }
+  interface Database { exec(sql: string): unknown; }
+}`,
+      );
+
+      const s = resolveVendorSurfaces(root);
+      expect(s.betterSqlite3Statement).not.toBeNull();
+      expect(s.betterSqlite3Statement!.has('iterate')).toBe(true);
+
+      const rec = s.resolutions.find((r) => r.pkg === '@types/better-sqlite3' && r.type === 'Statement')!;
+      expect(rec.path).toContain('better-sqlite3');
+      expect(rec.version).toBe('7.6.11');
+      expect(rec.reason).toBeNull();
+
+      // A tree without any vendor installed: every surface null, reason names the miss.
+      const bare = mkdtempSync(path.join(tmpdir(), 'vendor-probe-bare-'));
+      const bareSurfaces = resolveVendorSurfaces(bare);
+      expect(bareSurfaces.betterSqlite3Statement).toBeNull();
+      expect(bareSurfaces.kyselyQueryCreator).toBeNull();
+      expect(bareSurfaces.resolutions.length).toBe(8);
+      const miss = bareSurfaces.resolutions.find((r) => r.pkg === 'kysely')!;
+      expect(miss.path).toBeNull();
+      expect(miss.reason).toContain('not installed');
+      rmSync(bare, { recursive: true, force: true });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-    // The previously-deferred `.iterate()` is now restored from the vendor surface.
-    expect(EAGER_DB_METHODS.has('iterate')).toBe(true);
-    expect(BS3_STMT.has('iterate')).toBe(true);
-    // The `.get()` gap that motivated #329 is covered by the vendor surface.
-    expect(EAGER_DB_METHODS.has('get')).toBe(true);
-    expect(BS3_STMT.has('get')).toBe(true);
-    expect(NODE_STMT.has('get')).toBe(true);
   });
 
   it('COLLECTION_TRANSFORM_METHODS are real Array.prototype functions', () => {

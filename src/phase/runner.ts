@@ -77,6 +77,7 @@ import type {
   GoFunctionFact,
   GoSwitchFact,
 } from './types.js';
+import type { VendorSurfaces } from '../analyzers/vendorSurfaces.js';
 
 /** A file to parse, with its source already read (the CLI reads it in §11). */
 export type InputFile = { readonly path: string; readonly content: string };
@@ -117,6 +118,7 @@ export async function parseOne(
   input: InputFile,
   projectRoot?: string,
   sqlDialect?: Dialect | null,
+  vendorSurfaces?: VendorSurfaces,
 ): Promise<ParsedFile | null> {
   // `.sql` and markup (`.astro`/`.vue`/`.svelte`/`.html`) are the text-only
   // formats: no grammar, no adapter, no AST. Their sole producers
@@ -124,8 +126,9 @@ export async function parseOne(
   // ParsedFile with neither `ast` nor `adapter`.
   const format = formatFor(input.path);
   const sqlDialectSpread = sqlDialect === undefined ? {} : { sqlDialect };
+  const vendorSpread = vendorSurfaces ? { vendorSurfaces } : {};
   if (format === 'sql' || format === 'markup') {
-    return { file: input.path, format, source: input.content, ...(projectRoot ? { projectRoot } : {}), ...sqlDialectSpread };
+    return { file: input.path, format, source: input.content, ...(projectRoot ? { projectRoot } : {}), ...sqlDialectSpread, ...vendorSpread };
   }
   const adapter = LanguageRegistry.getInstance().getAdapterForFile(input.path);
   if (!adapter) return null;
@@ -139,6 +142,7 @@ export async function parseOne(
       adapter,
       ...(projectRoot ? { projectRoot } : {}),
       ...sqlDialectSpread,
+      ...vendorSpread,
     };
   } catch {
     return null;
@@ -161,10 +165,11 @@ async function buildFileFact<K extends FileFactKind>(
   files: readonly InputFile[],
   kind: K,
   sqlDialect?: Dialect | null,
+  vendorSurfaces?: VendorSurfaces,
 ): Promise<FactShapes[K]> {
   const out = [] as unknown as FactShapes[K];
   for (const input of files) {
-    const parsed = await parseOne(input, undefined, sqlDialect);
+    const parsed = await parseOne(input, undefined, sqlDialect, vendorSurfaces);
     if (!parsed) continue;
     try {
       const producer = fileProducerFor(kind, parsed.format);
@@ -288,9 +293,10 @@ async function buildReceiverConsumer<PK extends 'data-access-calls' | 'loop-quer
   candidateKind: FileFactKind,
   producerKey: PK,
   sqlDialect: Dialect | null,
+  vendorSurfaces?: VendorSurfaces,
 ): Promise<FactShapes[PK]> {
   const [candidates, within, imports, exports, goBindings, activity] = await Promise.all([
-    buildFileFact(files, candidateKind),
+    buildFileFact(files, candidateKind, sqlDialect, vendorSurfaces),
     buildFileFact(files, 'within-file-provenance'),
     buildFileFact(files, 'import-specifiers'),
     buildFileFact(files, 'export-symbols'),
@@ -328,8 +334,9 @@ async function buildReceiverConsumer<PK extends 'data-access-calls' | 'loop-quer
 export async function buildDataAccessCalls(
   files: readonly InputFile[],
   sqlDialect?: Dialect | null,
+  vendorSurfaces?: VendorSurfaces,
 ): Promise<ResolvedQuery[]> {
-  return buildReceiverConsumer(files, 'data-access-calls-candidates', 'data-access-calls', sqlDialect ?? null);
+  return buildReceiverConsumer(files, 'data-access-calls-candidates', 'data-access-calls', sqlDialect ?? null, vendorSurfaces);
 }
 
 /** Analyze the assembled `data-access-calls` + `resolution` facts with the
@@ -358,9 +365,9 @@ export async function analyzeDataAccessCalls(
  * @param sqlDialect - The corpus's named dialect (null means cannot-fire).
  * @returns The data-access rules' findings over the assembled facts.
  */
-export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues, sqlDialect?: Dialect | null): Promise<Finding[]> {
+export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues, sqlDialect?: Dialect | null, vendorSurfaces?: VendorSurfaces): Promise<Finding[]> {
   const [calls, resolution] = await Promise.all([
-    buildDataAccessCalls(files, sqlDialect),
+    buildDataAccessCalls(files, sqlDialect, vendorSurfaces),
     buildResolution(files, sqlDialect),
   ]);
   return analyzeDataAccessCalls(calls, resolution, thresholds);
@@ -381,8 +388,9 @@ export async function runDataAccessSlice(files: readonly InputFile[], thresholds
 export async function buildLoopQueries(
   files: readonly InputFile[],
   sqlDialect?: Dialect | null,
+  vendorSurfaces?: VendorSurfaces,
 ): Promise<LoopQueryFact[]> {
-  return buildReceiverConsumer(files, 'loop-query-candidates', 'loop-queries', sqlDialect ?? null);
+  return buildReceiverConsumer(files, 'loop-query-candidates', 'loop-queries', sqlDialect ?? null, vendorSurfaces);
 }
 
 /**
@@ -411,8 +419,9 @@ export async function runLoopQueriesSlice(
   files: readonly InputFile[],
   thresholds?: ThresholdValues,
   sqlDialect?: Dialect | null,
+  vendorSurfaces?: VendorSurfaces,
 ): Promise<Finding[]> {
-  const facts = await buildLoopQueries(files, sqlDialect);
+  const facts = await buildLoopQueries(files, sqlDialect, vendorSurfaces);
   return analyzeLoopQueries(facts, thresholds);
 }
 

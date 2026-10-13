@@ -26,5 +26,5 @@ import { extractLoopQueryRawCandidates as extractAnalyzerCandidates } from '../a
  *    the corpus producer re-folds both after re-folding the handle verdict)
  */
 export function extractLoopQueryRawCandidates(file: AstFile): LoopQueryRawCandidate[] {
-  return extractAnalyzerCandidates(file.ast, file.adapter, file.source);
+  return extractAnalyzerCandidates(file.ast, file.adapter, file.source, undefined, file.vendorSurfaces);
 }

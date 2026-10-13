@@ -25,5 +25,5 @@ import { extractDataAccessCallCandidates as extractAnalyzerCandidates } from '..
  *    producer dedups after re-folding admission)
  */
 export function extractDataAccessCallCandidates(file: AstFile): DataAccessCallCandidate[] {
-  return extractAnalyzerCandidates(file.ast, file.adapter, file.source);
+  return extractAnalyzerCandidates(file.ast, file.adapter, file.source, undefined, file.vendorSurfaces);
 }

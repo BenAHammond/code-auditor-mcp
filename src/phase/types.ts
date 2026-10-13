@@ -44,6 +44,7 @@ import type { BindingKind, ImportKind, ValueDescriptor } from '../analyzers/rece
 import type { HandleVerdict } from '../analyzers/handleIdentification.js';
 import type { Dialect } from '../mcp-tools/discoveryQueries.js';
 import type { UnresolvedQuery } from '../analyzers/universal/schema/codeAnalysis.js';
+import type { VendorSurfaces } from '../analyzers/vendorSurfaces.js';
 
 export interface FactShapes {
   /** Reserved: an AST is not a fact and cannot be declared. */
@@ -2082,6 +2083,13 @@ export interface ParsedFile {
    *  regex. Absent in the slice tests (single fixture, no corpus) — the producer
    *  then runs on the default (null) dialect and SQL facts `cannot-fire`. */
   readonly sqlDialect?: Dialect | null;
+  /** Item B (reissued) — the vendor method surfaces resolved once per run from
+   *  the tree under analysis (`node_modules` / workspace paths), threaded to the
+   *  loop-query and data-access producers so their discriminators read the
+   *  installed vendor's *own* declarations rather than a committed replica.
+   *  Absent in the vertical slice tests (single fixture, no vendor installed) —
+   *  the producers then run on the empty surface (unproven), never a fallback. */
+  readonly vendorSurfaces?: VendorSurfaces;
 }
 
 /**

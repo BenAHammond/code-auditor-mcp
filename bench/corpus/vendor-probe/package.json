@@ -1,0 +1,7 @@
+{
+  "name": "vendor-probe",
+  "private": true,
+  "dependencies": {
+    "kysely": "0.29.6"
+  }
+}

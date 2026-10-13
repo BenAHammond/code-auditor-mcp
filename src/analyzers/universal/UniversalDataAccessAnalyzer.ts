@@ -63,27 +63,18 @@ import {
   whereColumnRefs,
   isDdlStatementKind,
 } from '../../languages/sql/sqlAst.js';
-// Item B — the vendor-declaration snapshot. `scripts/generate-vendor-declarations.mjs`
-// reads each vendor's shipped `.d.ts` (kysely, @cloudflare/workers-types,
-// better-sqlite3, node:sqlite) and writes this manifest; the method-name lists
-// below derive from it rather than hand-copying vendor names. See
-// specs/vendor-replica-probes.md for the full reducible/irreducible mapping.
-import vendorDeclarations from './vendor-declarations.json' with { type: 'json' };
-
-// ─── Vendor method-name surfaces (item B) ─────────────────────────────────────
-// Each method-name list below derives from these surfaces, which
-// `scripts/generate-vendor-declarations.mjs` reads from the vendor's shipped
-// `.d.ts` (never hand-copied). The *selection* of which names are table verbs /
-// join verbs / eager I/O is a documented judgment (specs/vendor-replica-probes.md);
-// the *spelling and completeness* of the names is the vendor's.
-const KYSELY_QUERY_CREATOR: ReadonlySet<string> = new Set(vendorDeclarations.vendors.kysely.types.QueryCreator);
-const KYSELY_SELECT_QB: ReadonlySet<string> = new Set(vendorDeclarations.vendors.kysely.types.SelectQueryBuilder);
-const BETTER_SQLITE3_STATEMENT: ReadonlySet<string> = new Set(vendorDeclarations.vendors['better-sqlite3'].types.Statement);
-const BETTER_SQLITE3_DATABASE: ReadonlySet<string> = new Set(vendorDeclarations.vendors['better-sqlite3'].types.Database);
-const NODE_SQLITE_STATEMENT: ReadonlySet<string> = new Set(vendorDeclarations.vendors['node:sqlite'].types.StatementSync);
-const NODE_SQLITE_DATABASE: ReadonlySet<string> = new Set(vendorDeclarations.vendors['node:sqlite'].types.DatabaseSync);
-const D1_DATABASE: ReadonlySet<string> = new Set(vendorDeclarations.vendors['@cloudflare/workers-types'].types.D1Database);
-const D1_PREPARED_STATEMENT: ReadonlySet<string> = new Set(vendorDeclarations.vendors['@cloudflare/workers-types'].types.D1PreparedStatement);
+// Item B (reissued) — vendor surfaces are resolved per-run from the tree under
+// analysis (its own node_modules), never from a committed snapshot. The method
+// sets below derive from those resolved surfaces via `deriveVendorSets`; a vendor
+// whose declaration cannot be resolved contributes nothing (the honest `unproven`
+// state), recorded with its reason on the `VendorSurfaces.resolutions` records.
+// See specs/vendor-replica-probes.md for the reducible/irreducible mapping.
+import {
+  deriveVendorSets,
+  EMPTY_VENDOR_SURFACES,
+  type VendorSurfaces,
+  type DerivedVendorSets,
+} from '../vendorSurfaces.js';
 
 /**
  * SQL keywords recognized as evidence that a *dynamically-constructed* string is
@@ -323,6 +314,11 @@ interface DataAccessScanContext {
   /** Per-file Go binding environment `identifyHandle` reads for Go declaration
    *  resolution. Built once per file; absent for TS / non-code. */
   goEnv?: GoResolutionEnv;
+  /** Item B — the derived vendor method sets (eager I/O, table verbs, join
+   *  verbs), resolved per-run from the tree under analysis. The loop-query and
+   *  ORM discriminators read these instead of the deleted module-level constants;
+   *  an unresolvable vendor contributes nothing (unproven), never a fallback. */
+  vendor: DerivedVendorSets;
 }
 
 /**
@@ -893,7 +889,7 @@ function buildDatabaseCall(
   ast: AST,
   scan: DataAccessScanContext,
 ): DatabaseCall | null {
-  const { adapter, sourceCode, config, provenanceContext } = scan;
+  const { adapter, sourceCode, config, provenanceContext, vendor } = scan;
   const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
   if (!nodeText || nodeText.trim().length < 10) return null;
 
@@ -962,7 +958,7 @@ function buildDatabaseCall(
 
   // Tables: SQL relations from the AST ∪ ORM-shaped references from the node.
   const sqlTables = sqlAstNode ? extractTableNames(sqlAstNode) : [];
-  const ormTables = isOrmCall ? extractOrmTables(node, adapter, sourceCode, config) : [];
+  const ormTables = isOrmCall ? extractOrmTables(node, adapter, sourceCode, config, vendor) : [];
   const tables = [...new Set([...sqlTables, ...ormTables])];
 
   // Row-limiting filter: SQL WHERE/HAVING/LIMIT from the AST, or the ORM chain
@@ -1480,30 +1476,15 @@ function dbCallMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: s
  * which only construct a statement object). Used to decide whether a
  * prepare/bind call is chained into an eager execution.
  *
- * Derived from the vendor-declaration snapshot (item B): each name is read from
- * a vendor's shipped `.d.ts` surface and *validated* against it, rather than
- * hand-copied. The eager classification is a cross-vendor judgment (which
- * statement methods return rows vs. only configure the statement), so the
- * selection is the documented judgment and the *names* are the vendor's — the
- * vendor surfaces that this union reads are:
- *   - better-sqlite3 `Statement` (run/get/all/iterate/raw) + `Database` (exec);
- *   - node:sqlite `StatementSync` (run/get/all/iterate) + `DatabaseSync` (exec);
- *   - Cloudflare D1 `D1PreparedStatement` (all/first/run/raw) + `D1Database`
- *     (batch/exec).
- * `query` is the generic driver abstraction (`IndexHandle.query`), not a single
- * vendor. `.iterate()` was previously deferred "until measured" — reading the
- * vendor surface restores it, and the before/after corpus diff (specs/
- * vendor-replica-probes.md) records the zero-finding effect of that addition.
+ * Item B (reissued): the eager set is no longer a module-level constant. It is
+ * derived per-run from the tree's own vendor declarations via
+ * `deriveVendorSets` and threaded on `scan.vendor.eagerMethods`. The eager
+ * classification (which statement methods return rows vs. only configure the
+ * statement) is still the documented judgment; the *names* now come from the
+ * installed vendor's shipped `.d.ts` (better-sqlite3 `Statement`/`Database`,
+ * node:sqlite `StatementSync`/`DatabaseSync`, D1 `D1PreparedStatement`/`D1Database`),
+ * plus the generic `query` driver abstraction (`IndexHandle.query`).
  */
-export const EAGER_DB_METHODS: ReadonlySet<string> = new Set([
-  ...['run', 'get', 'all', 'iterate', 'raw'].filter((m) => BETTER_SQLITE3_STATEMENT.has(m)),
-  ...['exec'].filter((m) => BETTER_SQLITE3_DATABASE.has(m)),
-  ...['run', 'get', 'all', 'iterate'].filter((m) => NODE_SQLITE_STATEMENT.has(m)),
-  ...['exec'].filter((m) => NODE_SQLITE_DATABASE.has(m)),
-  ...['all', 'first', 'run', 'raw'].filter((m) => D1_PREPARED_STATEMENT.has(m)),
-  ...['batch', 'exec'].filter((m) => D1_DATABASE.has(m)),
-  'query',
-]);
 
 /**
  * True when `node` (a `.prepare()`/`.bind()` call) is chained into an eager
@@ -1512,7 +1493,12 @@ export const EAGER_DB_METHODS: ReadonlySet<string> = new Set([
  * N+1, not an accumulate-then-batch false positive. Walks up the enclosing
  * expression and stops at the statement boundary; a chain never crosses one.
  */
-function hasEagerMethodInCallChain(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+function hasEagerMethodInCallChain(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  vendor: DerivedVendorSets,
+): boolean {
   const call = resolveDbCallNode(node, adapter);
   let cur = call ? adapter.getParent(call) : adapter.getParent(node);
   while (cur) {
@@ -1520,7 +1506,7 @@ function hasEagerMethodInCallChain(node: ASTNode, adapter: LanguageAdapter, sour
     if (type === 'call_expression') {
       const memberExpr = findMemberCallee(cur, adapter);
       const name = memberExpr ? memberPropertyName(memberExpr, adapter, sourceCode) : null;
-      if (name && EAGER_DB_METHODS.has(name) && !isPromiseAllMember(memberExpr!, adapter, sourceCode)) return true;
+      if (name && vendor.eagerMethods.has(name) && !isPromiseAllMember(memberExpr!, adapter, sourceCode)) return true;
     }
     if (
       type === 'expression_statement' ||
@@ -1546,9 +1532,14 @@ function hasEagerMethodInCallChain(node: ASTNode, adapter: LanguageAdapter, sour
  * `.first()` / `.raw()` / `.exec()` / `.batch()` / `.get()`). Such a call
  * performs no I/O, so it is not a query-in-loop on its own (Spec 52 R1).
  */
-function isStatementConstructionOnly(node: ASTNode, adapter: LanguageAdapter, sourceCode: string): boolean {
+function isStatementConstructionOnly(
+  node: ASTNode,
+  adapter: LanguageAdapter,
+  sourceCode: string,
+  vendor: DerivedVendorSets,
+): boolean {
   const method = dbCallMethodName(node, adapter, sourceCode);
-  return (method === 'prepare' || method === 'bind') && !hasEagerMethodInCallChain(node, adapter, sourceCode);
+  return (method === 'prepare' || method === 'bind') && !hasEagerMethodInCallChain(node, adapter, sourceCode, vendor);
 }
 
 /**
@@ -1566,9 +1557,10 @@ function isSqlStringConstruction(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
+  vendor: DerivedVendorSets,
 ): boolean {
   const method = dbCallMethodName(node, adapter, sourceCode);
-  if (!method || EAGER_DB_METHODS.has(method)) return false;
+  if (!method || vendor.eagerMethods.has(method)) return false;
   if (!isOrmMethod(method)) return false;
 
   const call = resolveDbCallNode(node, adapter);
@@ -2006,33 +1998,6 @@ function ormTableNameFromArgument(
 }
 
 /**
- * Kysely `QueryCreator` entry points whose first argument is the table name.
- * Read from the vendor-declaration snapshot (item B) and *validated* against it:
- * `selectFrom`/`deleteFrom`/`insertInto`/`updateTable`/`mergeInto`/`replaceInto`
- * all take a table first. `selectNoFrom` is part of the same vendor surface but
- * takes a *selection* (a column list, not a table), so it is deliberately
- * excluded — the judgment of which QueryCreator members are table-entry vs.
- * selection/CTE/schema members is documented in specs/vendor-replica-probes.md.
- */
-export const ORM_TABLE_VERBS: ReadonlySet<string> = new Set(
-  ['selectFrom', 'deleteFrom', 'insertInto', 'updateTable', 'mergeInto', 'replaceInto']
-    .filter((m) => KYSELY_QUERY_CREATOR.has(m)),
-);
-/**
- * ORM join verbs whose first argument is the joined table. Read from the Kysely
- * `SelectQueryBuilder` surface (item B): every member in the `Join` family —
- * `fullJoin`/`innerJoin`/`innerJoinLateral`/`leftJoin`/`leftJoinLateral`/
- * `rightJoin`. The lateral variants end in `JoinLateral`, not `Join`, so both
- * suffixes are matched. The bare `join` is NOT a Kysely verb; it is retained as
- * an irreducible judgment for non-Kysely builders (`knex('t').join('u', …)`,
- * Objection-style `.join`), which no single vendor `.d.ts` models here.
- */
-export const ORM_JOIN_VERBS: ReadonlySet<string> = new Set([
-  ...[...KYSELY_SELECT_QB].filter((m) => m.endsWith('Join') || m.endsWith('JoinLateral')),
-  'join',
-]);
-
-/**
  * Walk the callee chain of an ORM candidate, reading table references from the
  * *structure* (member names + argument nodes) rather than the source text. A
  * `.from(…)` / verb / `db.<table>.<method>()` shape inside a string argument is
@@ -2041,7 +2006,9 @@ export const ORM_JOIN_VERBS: ReadonlySet<string> = new Set([
  * Three shapes are read:
  *   - `.from(table)` / `.from('table')` (except JS `Array.from`/`Buffer.from`/
  *     `String.from`/`*Array.from` construction),
- *   - a Kysely/join verb carrying the table as its first argument,
+ *   - a Kysely/join verb carrying the table as its first argument (the table and
+ *     join verbs are `vendor.ormTableVerbs`/`vendor.ormJoinVerbs` — derived
+ *     per-run from the tree's Kysely declaration, item B reissued),
  *   - Drizzle's `db.<table>.<method>()` table-access idiom.
  */
 function collectOrmTableReferences(
@@ -2049,6 +2016,7 @@ function collectOrmTableReferences(
   adapter: LanguageAdapter,
   sourceCode: string,
   tables: Set<string>,
+  vendor: DerivedVendorSets,
 ): void {
   const t = adapter.getNodeType(node);
 
@@ -2069,15 +2037,15 @@ function collectOrmTableReferences(
           const isFrom = method === 'from'
             && !(receiverName && (receiverName === 'Buffer' || receiverName === 'String'
               || receiverName.endsWith('Array')));
-          const isVerb = ORM_TABLE_VERBS.has(method);
-          const isJoin = ORM_JOIN_VERBS.has(method) && receiverName !== 'sql';
+          const isVerb = vendor.ormTableVerbs.has(method);
+          const isJoin = vendor.ormJoinVerbs.has(method) && receiverName !== 'sql';
           if (isFrom || isVerb || isJoin) {
             const name = ormTableNameFromArgument(firstArg, adapter, sourceCode);
             if (name) tables.add(name);
           }
         }
       }
-      collectOrmTableReferences(callee, adapter, sourceCode, tables);
+      collectOrmTableReferences(callee, adapter, sourceCode, tables, vendor);
     }
   } else if (t === 'member_expression' || t === 'selector_expression') {
     // db.<table>.<method>() — Drizzle's table-access idiom. The receiver is the
@@ -2093,10 +2061,10 @@ function collectOrmTableReferences(
         tables.add(innerProp);
       }
     }
-    if (object) collectOrmTableReferences(object, adapter, sourceCode, tables);
+    if (object) collectOrmTableReferences(object, adapter, sourceCode, tables, vendor);
   } else if (t === 'subscript_expression') {
     const object = memberObjectNode(node, adapter);
-    if (object) collectOrmTableReferences(object, adapter, sourceCode, tables);
+    if (object) collectOrmTableReferences(object, adapter, sourceCode, tables, vendor);
   }
 }
 
@@ -2113,6 +2081,7 @@ function collectOrmTableReferences(
  * @param adapter The language adapter (drives node traversal).
  * @param sourceCode The file source text.
  * @param config The data-access analyzer config holding table patterns.
+ * @param vendor The per-run derived vendor method sets (item B reissued).
  * @returns The set of table names referenced by ORM shapes.
  */
 export function extractOrmTables(
@@ -2120,9 +2089,10 @@ export function extractOrmTables(
   adapter: LanguageAdapter,
   sourceCode: string,
   config: DataAccessAnalyzerConfig,
+  vendor: DerivedVendorSets,
 ): string[] {
   const tables = new Set<string>();
-  collectOrmTableReferences(node, adapter, sourceCode, tables);
+  collectOrmTableReferences(node, adapter, sourceCode, tables, vendor);
 
   // User-configured `orm` patterns are arbitrary text shapes with no node to
   // read (e.g. `table: 'users'`), so they still run over the source text.
@@ -2570,7 +2540,7 @@ function collectLoopQueryCandidates(
   ast: AST,
   scan: DataAccessScanContext,
 ): LoopQueryCandidate[] {
-  const { adapter, sourceCode } = scan;
+  const { adapter, sourceCode, vendor } = scan;
   const candidates: LoopQueryCandidate[] = [];
 
   // Spec 21: provenance-gated detection of database calls.
@@ -2600,13 +2570,13 @@ function collectLoopQueryCandidates(
 
     // Spec 52 R1 — skip statement construction (prepare/bind with no eager call);
     // an eager call or a prepare chained into one still fires.
-    if (isStatementConstructionOnly(node, adapter, sourceCode)) continue;
+    if (isStatementConstructionOnly(node, adapter, sourceCode, vendor)) continue;
 
     // Spec 52 R1 (extension) — skip SQL-string construction inside a query
     // compiler: an ORM builder method (e.g. `aggregate`) on an unprovenanced
     // `this` whose result is accumulated via `.push(...)` returns a string
     // fragment, not a query result (knex `sql.push(...this.aggregate(stmt))`).
-    if (isSqlStringConstruction(node, adapter, sourceCode)) continue;
+    if (isSqlStringConstruction(node, adapter, sourceCode, vendor)) continue;
 
     const loopInfo = findEnclosingLoop(node, adapter, sourceCode);
     if (!loopInfo) continue;
@@ -2659,7 +2629,7 @@ function collectLoopQueryCandidates(
     const hoistedReuse =
       !preparesInLoop &&
       (transactionEnclosesLoop ||
-        isHoistedStatementReRun(node, loopInfo.loopNode, adapter, sourceCode));
+        isHoistedStatementReRun(node, loopInfo.loopNode, adapter, sourceCode, vendor));
     if (hoistedReuse) {
       continue;
     }
@@ -2670,7 +2640,7 @@ function collectLoopQueryCandidates(
     // a chunked `id IN (…)` write is not an N+1 at any chunk size. Only a scalar
     // or property read off a single loop element (`run(row.id)`) is per-row. See
     // `bindsBatchArgument`.
-    if (bindsBatchArgument(node, loopInfo.loopNode, adapter, sourceCode)) {
+    if (bindsBatchArgument(node, loopInfo.loopNode, adapter, sourceCode, vendor)) {
       continue;
     }
 
@@ -2812,8 +2782,9 @@ function isHoistedStatementReRun(
   loopNode: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
+  vendor: DerivedVendorSets,
 ): boolean {
-  const base = memberChainBaseIdentifier(node, adapter, sourceCode);
+  const base = memberChainBaseIdentifier(node, adapter, sourceCode, vendor);
   if (base && identifierBoundToPrepareOutsideLoop(base, loopNode, adapter, sourceCode)) {
     return true;
   }
@@ -2865,8 +2836,9 @@ function memberChainBaseIdentifier(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
+  vendor: DerivedVendorSets,
 ): string | null {
-  const eagerCall = findEagerExecutionCall(node, adapter, sourceCode);
+  const eagerCall = findEagerExecutionCall(node, adapter, sourceCode, vendor);
   if (!eagerCall) return null;
   const memberExpr = findMemberCallee(eagerCall, adapter);
   if (!memberExpr) return null;
@@ -3303,8 +3275,9 @@ function bindsBatchArgument(
   loopNode: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
+  vendor: DerivedVendorSets,
 ): boolean {
-  const eagerCall = findEagerExecutionCall(node, adapter, sourceCode);
+  const eagerCall = findEagerExecutionCall(node, adapter, sourceCode, vendor);
   if (!eagerCall) return false;
   const argsNode = adapter.getChildren(eagerCall).find(
     (c) => adapter.getNodeType(c) === 'arguments',
@@ -3356,11 +3329,12 @@ function findEagerExecutionCall(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
+  vendor: DerivedVendorSets,
 ): ASTNode | null {
   const call = resolveDbCallNode(node, adapter);
   if (!call) return null;
   const direct = dbCallMethodName(call, adapter, sourceCode);
-  if (direct && EAGER_DB_METHODS.has(direct)) {
+  if (direct && vendor.eagerMethods.has(direct)) {
     const memberExpr = findMemberCallee(call, adapter);
     if (!(memberExpr && isPromiseAllMember(memberExpr, adapter, sourceCode))) return call;
   }
@@ -3370,7 +3344,7 @@ function findEagerExecutionCall(
     if (type === 'call_expression') {
       const memberExpr = findMemberCallee(cur, adapter);
       const name = memberExpr ? memberPropertyName(memberExpr, adapter, sourceCode) : null;
-      if (name && EAGER_DB_METHODS.has(name) && !isPromiseAllMember(memberExpr!, adapter, sourceCode)) {
+      if (name && vendor.eagerMethods.has(name) && !isPromiseAllMember(memberExpr!, adapter, sourceCode)) {
         return cur;
       }
     }
@@ -3625,6 +3599,7 @@ function buildDataAccessScan(
   adapter: LanguageAdapter,
   sourceCode: string,
   config: DataAccessAnalyzerConfig | undefined,
+  vendorSurfaces?: VendorSurfaces,
 ): DataAccessScanContext {
   const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
   const detectionMode: DetectionMode = finalConfig.detection?.mode ?? 'hybrid';
@@ -3649,6 +3624,7 @@ function buildDataAccessScan(
     provenanceContext,
     handleEnv: buildHandleEnv(ast, adapter, sourceCode, provenanceContext),
     goEnv: buildGoEnv(ast, adapter, sourceCode, provenanceContext),
+    vendor: deriveVendorSets(vendorSurfaces ?? EMPTY_VENDOR_SURFACES),
   };
 }
 
@@ -3718,6 +3694,7 @@ function buildCandidateScan(
   adapter: LanguageAdapter,
   sourceCode: string,
   config?: DataAccessAnalyzerConfig,
+  vendorSurfaces?: VendorSurfaces,
 ): DataAccessScanContext {
   const finalConfig = { ...DEFAULT_DATA_ACCESS_CONFIG, ...config };
   const provenanceContext: ProvenanceContext = {
@@ -3734,6 +3711,7 @@ function buildCandidateScan(
     provenanceContext,
     handleEnv: buildHandleEnv(ast, adapter, sourceCode, provenanceContext),
     goEnv: buildGoEnv(ast, adapter, sourceCode, provenanceContext),
+    vendor: deriveVendorSets(vendorSurfaces ?? EMPTY_VENDOR_SURFACES),
   };
 }
 
@@ -3983,7 +3961,7 @@ function buildDataAccessCallCandidate(
   ast: AST,
   scan: DataAccessScanContext,
 ): DataAccessCallCandidate | null {
-  const { adapter, sourceCode, config } = scan;
+  const { adapter, sourceCode, config, vendor } = scan;
   const nodeText = stripComments(adapter.getNodeText(node, sourceCode));
   if (!nodeText || nodeText.trim().length < 10) return null;
 
@@ -4031,7 +4009,7 @@ function buildDataAccessCallCandidate(
     hasOrganizationFilter: hasOrganizationFilter(nodeText, config),
     enclosingFunction: enclosingIdentity(node, adapter, ast.filePath),
     resolvedWhere: resolveWhereBinding(node, sourceCode, adapter),
-    ormTables: isOrmCall ? extractOrmTables(node, adapter, sourceCode, config) : [],
+    ormTables: isOrmCall ? extractOrmTables(node, adapter, sourceCode, config, vendor) : [],
     builderVerb: builderWriteVerb(node, adapter, sourceCode),
     ormHasFilter: hasOrmFilterShape(node, adapter, sourceCode),
     staticParameterized: security.parameterized,
@@ -4052,6 +4030,8 @@ function buildDataAccessCallCandidate(
  * @param adapter - The language adapter (drives node discovery + text reads).
  * @param sourceCode - The file's source text.
  * @param config - Optional data-access config; defaults to the shared config.
+ * @param vendorSurfaces - Optional per-run resolved vendor surfaces (item B
+ *   reissued); defaults to the empty set (no vendor resolved).
  * @returns The raw, provenance-free `data-access-calls-candidates`.
  */
 export function extractDataAccessCallCandidates(
@@ -4059,8 +4039,9 @@ export function extractDataAccessCallCandidates(
   adapter: LanguageAdapter,
   sourceCode: string,
   config?: DataAccessAnalyzerConfig,
+  vendorSurfaces?: VendorSurfaces,
 ): DataAccessCallCandidate[] {
-  const scan = buildCandidateScan(ast, adapter, sourceCode, config);
+  const scan = buildCandidateScan(ast, adapter, sourceCode, config, vendorSurfaces);
   const tagNames = scan.config.sqlTagNames ?? SQL_TAG_NAMES;
   const nodes = adapter.findNodes(ast, {
     custom: (node) => isBroadenedDataAccessCandidate(node, scan, tagNames),
@@ -4087,6 +4068,8 @@ export function extractDataAccessCallCandidates(
  * @param adapter - The language adapter (drives node discovery + text reads).
  * @param sourceCode - The file's source text.
  * @param config - Optional data-access config; defaults to the shared config.
+ * @param vendorSurfaces - Optional per-run resolved vendor surfaces (item B
+ *   reissued); defaults to the empty set (no vendor resolved).
  * @returns The raw, provenance-free `loop-query-candidates`.
  */
 export function extractLoopQueryRawCandidates(
@@ -4094,8 +4077,9 @@ export function extractLoopQueryRawCandidates(
   adapter: LanguageAdapter,
   sourceCode: string,
   config?: DataAccessAnalyzerConfig,
+  vendorSurfaces?: VendorSurfaces,
 ): LoopQueryRawCandidate[] {
-  const scan = buildCandidateScan(ast, adapter, sourceCode, config);
+  const scan = buildCandidateScan(ast, adapter, sourceCode, config, vendorSurfaces);
   const candidates: LoopQueryRawCandidate[] = [];
 
   const dbNodes = adapter.findNodes(ast, {
@@ -4114,8 +4098,8 @@ export function extractLoopQueryRawCandidates(
     const nodeText = adapter.getNodeText(node, sourceCode);
     if (!nodeText || nodeText.trim().length < 10) continue;
 
-    if (isStatementConstructionOnly(node, adapter, sourceCode)) continue;
-    if (isSqlStringConstruction(node, adapter, sourceCode)) continue;
+    if (isStatementConstructionOnly(node, adapter, sourceCode, scan.vendor)) continue;
+    if (isSqlStringConstruction(node, adapter, sourceCode, scan.vendor)) continue;
 
     const loopInfo = findEnclosingLoop(node, adapter, sourceCode);
     if (!loopInfo) continue;
@@ -4129,10 +4113,10 @@ export function extractLoopQueryRawCandidates(
     const preparesInLoop = loopBodyContainsPrepare(loopInfo.loopNode, adapter, sourceCode);
     const hoistedReuse =
       !preparesInLoop &&
-      (transactionEnclosesLoop || isHoistedStatementReRun(node, loopInfo.loopNode, adapter, sourceCode));
+      (transactionEnclosesLoop || isHoistedStatementReRun(node, loopInfo.loopNode, adapter, sourceCode, scan.vendor));
     if (hoistedReuse) continue;
 
-    if (bindsBatchArgument(node, loopInfo.loopNode, adapter, sourceCode)) continue;
+    if (bindsBatchArgument(node, loopInfo.loopNode, adapter, sourceCode, scan.vendor)) continue;
     if (loopBodyContainsLlmCall(loopInfo.loopNode, adapter, sourceCode)) continue;
     if (loopBodyContainsMessageLifecycleCall(loopInfo.loopNode, adapter, sourceCode)) continue;
 
