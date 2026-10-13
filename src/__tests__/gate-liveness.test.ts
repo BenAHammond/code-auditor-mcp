@@ -290,9 +290,9 @@ describe('verify:recall-value-drift — liveness', () => {
   // prove the failure branch is live (reachable and non-empty), not a vacuous 0.
   it('flags an emitted pair whose recomputed ΔE is at/above the threshold', () => {
     const drift = checkValueDriftInvariant({
-      emitted: [{ drift: '#ffffff', canonical: '#fefefe', deltaE76: 2.5 }],
+      emitted: [{ drift: '#ffffff', canonical: '#fefefe', deltaE00: 1.0 }],
       declined: [],
-      threshold: 2.5,
+      threshold: 1.0,
     });
     expect(drift).toHaveLength(1);
     expect(drift[0]).toContain('not below threshold');
@@ -301,8 +301,8 @@ describe('verify:recall-value-drift — liveness', () => {
   it('flags a declined pair whose recomputed ΔE is below the threshold', () => {
     const drift = checkValueDriftInvariant({
       emitted: [],
-      declined: [{ drift: '#ffffff', canonical: '#fefefe', deltaE76: 0.5 }],
-      threshold: 2.5,
+      declined: [{ drift: '#ffffff', canonical: '#fefefe', deltaE00: 0.5 }],
+      threshold: 1.0,
     });
     expect(drift).toHaveLength(1);
     expect(drift[0]).toContain('should have been emitted');
@@ -311,9 +311,9 @@ describe('verify:recall-value-drift — liveness', () => {
   it('is empty when every emitted pair is below and every declined pair is at/above', () => {
     expect(
       checkValueDriftInvariant({
-        emitted: [{ drift: '#ffffff', canonical: '#fefefe', deltaE76: 0.5 }],
-        declined: [{ drift: '#000000', canonical: '#ff0000', deltaE76: 80 }],
-        threshold: 2.5,
+        emitted: [{ drift: '#ffffff', canonical: '#fefefe', deltaE00: 0.5 }],
+        declined: [{ drift: '#000000', canonical: '#ff0000', deltaE00: 80 }],
+        threshold: 1.0,
       }),
     ).toEqual([]);
   });

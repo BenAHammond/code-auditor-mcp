@@ -56,7 +56,7 @@ import type {
   ColorValuesFact,
   ThresholdValues,
 } from '../types.js';
-import { labDistance } from '../colorMath.js';
+import { ciede2000 } from '../colorMath.js';
 import { DEFAULT_COLOR_DELTA_E } from '../../config/defaults.js';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
@@ -355,10 +355,10 @@ function detectColorDrift(
     }
   }
   const values = [...byRgb.values()];
-  const clusters = clusterDistinctColors(values, cfg.colorDeltaE, labDistance);
+  const clusters = clusterDistinctColors(values, cfg.colorDeltaE, ciede2000);
   const drift = clusters.filter((c) => c.length >= 2);
   if (drift.length === 0) return [];
-  return flagColorDriftMembers(drift, property, report, labDistance);
+  return flagColorDriftMembers(drift, property, report, ciede2000);
 }
 
 function detectValueDrift(

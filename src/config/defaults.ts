@@ -126,9 +126,20 @@ export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
  * `styles.colorDeltaE` config key (Spec 70 colour directive, item 2). The phase
  * rule (`src/phase/rules/styles.ts`) and the legacy analyzer
  * (`src/analyzers/universal/UniversalStylesAnalyzer.ts`) both read this symbol;
- * the `2.5` literal must not be re-declared elsewhere.
+ * the literal must not be re-declared elsewhere.
+ *
+ * `1.0` is the CIEDE2000 (ΔE00) just-noticeable difference. The CIEDE2000
+ * formula (Sharma, Wu & Dalal 2005, "The CIEDE2000 color-difference formula:
+ * Implementation notes, supplementary test data, and mathematical observations",
+ * Color Research & Application 30(1):21–30, doi:10.1002/col.20070; standardised
+ * as CIE 142-2001 / ISO/CIE 11664-6) is normalised so ΔE00 = 1.0 is the
+ * threshold of human perception: pairs with ΔE00 < 1.0 are perceptually
+ * indistinguishable ("near-identical") — exactly the drift the rule flags. The
+ * metric changed ΔE76 → ΔE00 in Spec 70 colour directive item 4; the prior ΔE76
+ * default of 2.5 was "JND-adjacent" to the ~2.3 ΔE76 JND with no written
+ * citation and does not transfer, because the ΔE00 JND is 1.0, not 2.3.
  */
-export const DEFAULT_COLOR_DELTA_E = 2.5;
+export const DEFAULT_COLOR_DELTA_E = 1.0;
 
 /**
  * Default analyzer configurations

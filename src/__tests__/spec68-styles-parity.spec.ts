@@ -188,10 +188,10 @@ describe('Spec 68 styles parity (new analyze(ctx) === old UniversalStylesAnalyze
   it('all eight rules fire and match the legacy multiset on a full seed', async () => {
     const seeds: Seed[] = [];
 
-    // value-drift: two near-identical colors (ΔE ≈ 1.59 < 2.5) on `color`.
+    // value-drift: two near-identical colors (ΔE00 ≈ 0.78 < 1.0) on `color`.
     seeds.push(
-      { property: 'color', rawValue: '#5f7488', mechanism: 'css', filePath: 'a.css', line: 1 },
-      { property: 'color', rawValue: '#637688', mechanism: 'css', filePath: 'a.css', line: 2 },
+      { property: 'color', rawValue: '#06121a', mechanism: 'css', filePath: 'a.css', line: 1 },
+      { property: 'color', rawValue: '#06131c', mechanism: 'css', filePath: 'a.css', line: 2 },
     );
 
     // token-bypass: a raw color that matches the `colors.brand` token below, no token_ref.

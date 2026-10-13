@@ -32,7 +32,7 @@ import {
   tokenScaleCategory,
   type DeclaredScale,
 } from './styleScale.js';
-import { rgbToLab, labDistance } from '../../phase/colorMath.js';
+import { rgbToLab, ciede2000 } from '../../phase/colorMath.js';
 import { DEFAULT_COLOR_DELTA_E } from '../../config/defaults.js';
 
 // ---------------------------------------------------------------------------
@@ -278,7 +278,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
   // -----------------------------------------------------------------------
 
   /**
-   * For each color property, cluster distinct values by ΔE76 distance
+   * For each color property, cluster distinct values by ΔE00 distance
    * (< colorDeltaE) and flag each non-canonical member of a ≥2-value cluster as
    * style drift (Spec 67). How often a value is used plays no part.
    *
@@ -356,7 +356,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
   /**
    * Color drift (Spec 67): pairwise perceptual drift, not scarcity. Parse every
    * color declaration to Lab, cluster *distinct* values by single-linkage at
-   * ΔE76 < `colorDeltaE`, and flag each non-canonical member of a ≥2-value
+   * ΔE00 < `colorDeltaE`, and flag each non-canonical member of a ≥2-value
    * cluster. A lone value — however rarely used — is not drift.
    */
   protected detectColorDrift(
@@ -381,7 +381,7 @@ abstract class UniversalStylesAnalyzerDetectors extends UniversalStylesAnalyzerB
     }
     const values = [...byRgb.values()];
 
-    const distance = (a: [number, number, number], b: [number, number, number]) => labDistance(rgbToLab(a), rgbToLab(b));
+    const distance = (a: [number, number, number], b: [number, number, number]) => ciede2000(rgbToLab(a), rgbToLab(b));
     const clusters = clusterDistinctColors(values, cfg.colorDeltaE, distance);
     const drift = clusters.filter((c) => c.length >= 2);
     if (drift.length === 0) return [];
@@ -566,7 +566,7 @@ interface ColorValue {
 
 /**
  * Single-linkage clustering of distinct color values (Spec 67 R2): an edge joins
- * two values iff they are perceptually near-identical (ΔE76 < `threshold`), and
+ * two values iff they are perceptually near-identical (ΔE00 < `threshold`), and
  * connected components become clusters. Union-find over O(n²) pairwise
  * distances — n is the number of *distinct* values for one property, small in
  * practice. Unlike the old greedy centroid loop (first-item anchor), a chain of

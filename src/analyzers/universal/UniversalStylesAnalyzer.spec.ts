@@ -20,7 +20,7 @@ import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { extractDeclarationsFromCSSAst } from '../../styles/cssAstExtractor.js';
 import { harvestDefinedClasses } from '../../styles/definedClasses.js';
 import type { LanguageAdapter } from '../../languages/types.js';
-import { rgbToLab, labDistance } from '../../phase/colorMath.js';
+import { rgbToLab, ciede2000 } from '../../phase/colorMath.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -180,29 +180,34 @@ describe('Detector 1 — Value Drift', () => {
       return this.parseColorToRGB(raw);
     }
     distance(a: [number, number, number], b: [number, number, number]): number {
-      return labDistance(rgbToLab(a), rgbToLab(b));
+      return ciede2000(rgbToLab(a), rgbToLab(b));
     }
   }
 
-  // ── R1: CIELAB ΔE76 conversion ────────────────────────────────────────────
+  // ── R1: CIELAB ΔE00 conversion ────────────────────────────────────────────
 
-  it('reproduces the known ΔE76 for #06121a ↔ #06131c (≈1.06)', () => {
+  it('reproduces the known ΔE00 for #06121a ↔ #06131c (≈0.78)', () => {
     const probe = new LabProbe();
     const a = probe.parse('#06121a')!;
     const b = probe.parse('#06131c')!;
-    expect(probe.distance(a, b)).toBeCloseTo(1.06, 1);
+    expect(probe.distance(a, b)).toBeCloseTo(0.78, 1);
   });
 
-  it('places the genuine recall drift pairs under the 2.5 threshold', () => {
+  it('places genuinely near-identical pairs under the 1.0 threshold', () => {
     const probe = new LabProbe();
-    expect(probe.distance(probe.parse('#5f7488')!, probe.parse('#637688')!)).toBeCloseTo(1.59, 1);
-    expect(probe.distance(probe.parse('#cfe0ef')!, probe.parse('#cfe2ee')!)).toBeCloseTo(1.82, 1);
+    expect(probe.distance(probe.parse('#1e2327')!, probe.parse('#1e2328')!)).toBeCloseTo(0.71, 1);
   });
 
-  it('places the genuinely-distinct pairs over the 2.5 threshold', () => {
+  it('the recall pairs ΔE76 flagged now decline under the ΔE00 1.0 JND', () => {
     const probe = new LabProbe();
-    expect(probe.distance(probe.parse('#0f172a')!, probe.parse('#101b26')!)).toBeCloseTo(6.76, 1);
-    expect(probe.distance(probe.parse('#e0e8f0')!, probe.parse('#f1f5f9')!)).toBeCloseTo(5.34, 1);
+    expect(probe.distance(probe.parse('#5f7488')!, probe.parse('#637688')!)).toBeCloseTo(1.20, 1);
+    expect(probe.distance(probe.parse('#cfe0ef')!, probe.parse('#cfe2ee')!)).toBeCloseTo(1.83, 1);
+  });
+
+  it('places the genuinely-distinct pairs over the 1.0 threshold', () => {
+    const probe = new LabProbe();
+    expect(probe.distance(probe.parse('#0f172a')!, probe.parse('#101b26')!)).toBeCloseTo(6.23, 1);
+    expect(probe.distance(probe.parse('#e0e8f0')!, probe.parse('#f1f5f9')!)).toBeCloseTo(3.60, 1);
   });
 
   // ── R4: keywords are not colors ───────────────────────────────────────────
@@ -224,28 +229,28 @@ describe('Detector 1 — Value Drift', () => {
   // ── R2/R3: pairwise drift, not scarcity ───────────────────────────────────
 
   it('flags a near-identical pair, naming the canonical', async () => {
-    // #4a5568 (canonical, 2 uses) + #4e5568 (1 use) — ΔE76 1.505 < 2.5.
-    insertDecl({ property: 'background-color', raw_value: '#4a5568', file_path: 'src/a.css', line: 1 });
-    insertDecl({ property: 'background-color', raw_value: '#4a5568', file_path: 'src/b.css', line: 1 });
-    insertDecl({ property: 'background-color', raw_value: '#4e5568', file_path: 'src/c.css', line: 1 });
+    // #06121a (canonical, 2 uses) + #06131c (1 use) — ΔE00 0.784 < 1.0.
+    insertDecl({ property: 'background-color', raw_value: '#06121a', file_path: 'src/a.css', line: 1 });
+    insertDecl({ property: 'background-color', raw_value: '#06121a', file_path: 'src/b.css', line: 1 });
+    insertDecl({ property: 'background-color', raw_value: '#06131c', file_path: 'src/c.css', line: 1 });
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     const drifts = findViolations(violations, 'styles/value-drift');
     expect(drifts.length).toBe(1);
     expect(drifts[0].file).toBe('src/c.css');
-    expect(drifts[0].message).toContain('#4e5568');
-    expect(drifts[0].message).toContain('#4a5568');
+    expect(drifts[0].message).toContain('#06131c');
+    expect(drifts[0].message).toContain('#06121a');
     expect(drifts[0].message).toContain('used 2 times');
     expect(drifts[0].message).toContain('ΔE =');
   });
 
-  it('does NOT fire for a pair of distinct colors (ΔE76 > 2.5)', async () => {
-    // #4a5568 ↔ #535568 — ΔE76 3.446 > 2.5.
+  it('does NOT fire for a pair of distinct colors (ΔE00 > 1.0)', async () => {
+    // #4a5568 ↔ #535568 — ΔE00 4.476 > 1.0.
     insertDecl({ property: 'color', raw_value: '#4a5568', file_path: 'src/a.css', line: 1 });
     insertDecl({ property: 'color', raw_value: '#535568', file_path: 'src/b.css', line: 1 });
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
   });
@@ -253,7 +258,7 @@ describe('Detector 1 — Value Drift', () => {
   it('does NOT fire for a singleton (one distinct value, however rare)', async () => {
     insertDecl({ property: 'color', raw_value: '#ff0000', file_path: 'src/only.css', line: 1 });
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
   });
@@ -263,7 +268,7 @@ describe('Detector 1 — Value Drift', () => {
       insertDecl({ property: 'color', raw_value: '#4a5568', file_path: `src/c${i}.css`, line: 1 });
     }
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
   });
@@ -275,7 +280,7 @@ describe('Detector 1 — Value Drift', () => {
     insertDecl({ property: 'background', raw_value: 'transparent', file_path: 'src/a.css', line: 1 });
     insertDecl({ property: 'background', raw_value: '#1e2328', file_path: 'src/b.css', line: 1 });
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
   });
@@ -304,13 +309,13 @@ describe('Detector 1 — Value Drift', () => {
       line: 1,
     });
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
   });
 
   it('does NOT fire for distinct colors regardless of declaration count', async () => {
-    // Ten gray shades, spaced ~17 sRGB units apart (adjacent ΔE76 ≥ 5) — no pair
+    // Ten gray shades, spaced ~17 sRGB units apart (adjacent ΔE00 > 1.0) — no pair
     // is perceptually near-identical, so each is its own singleton. The old
     // predicate needed a corpus floor; the pairwise predicate does not.
     for (let i = 0; i < 10; i++) {
@@ -322,7 +327,7 @@ describe('Detector 1 — Value Drift', () => {
       });
     }
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     expect(findViolations(violations, 'styles/value-drift')).toHaveLength(0);
   });
@@ -350,14 +355,14 @@ describe('Detector 1 — Value Drift', () => {
       });
     }
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     const drifts = findViolations(violations, 'styles/value-drift');
     expect(drifts.length).toBe(0);
   });
 
   // Spec 22 R3.2: color drift still fires on continuous domains — near-identical
-  // colors cluster at ΔE76 < 2.5 regardless of how rarely the straggler appears.
+  // colors cluster at ΔE00 < 1.0 regardless of how rarely the straggler appears.
   it('fires color drift on near-identical continuous values', async () => {
     for (let i = 0; i < 47; i++) {
       insertDecl({
@@ -380,8 +385,8 @@ describe('Detector 1 — Value Drift', () => {
       });
     }
 
-    // #1e2327 ↔ #1e2328 is ΔE76 0.723 < 2.5 → one cluster of two distinct values.
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    // #1e2327 ↔ #1e2328 is ΔE00 0.711 < 1.0 → one cluster of two distinct values.
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     const drifts = findViolations(violations, 'styles/value-drift');
     expect(drifts.length).toBe(1);
@@ -416,7 +421,7 @@ describe('Detector 1 — Value Drift', () => {
       });
     }
 
-    const violations = await runAnalyzer({ colorDeltaE: 2.5 });
+    const violations = await runAnalyzer({ colorDeltaE: 1.0 });
 
     const drifts = findViolations(violations, 'styles/value-drift');
     expect(drifts.length).toBe(1);

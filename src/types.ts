@@ -1767,7 +1767,7 @@ export interface SchemaAwareFunctionMetadata extends EnhancedFunctionMetadata {
 // ═══════════════════════════════════════════════════════════════════════════
 
 export interface StylesAnalyzerConfig {
-  /** CIELAB ΔE76 threshold for color drift detection. Default 2.5. */
+  /** CIEDE2000 ΔE00 threshold for color drift detection. Default 1.0. */
   colorDeltaE: number;
   /** Properties that take scale-family values (margin, padding, gap, font-size). */
   scaleProperties: string[];
