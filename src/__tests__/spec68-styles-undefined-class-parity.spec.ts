@@ -22,6 +22,9 @@
  */
 
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { UniversalStylesAnalyzer } from '../analyzers/universal/UniversalStylesAnalyzer.js';
 import { CodeIndexDB } from '../codeIndexDB.js';
 import { resetTailwindExpander } from '../styles/tailwindUtilityExpander.js';
@@ -255,5 +258,45 @@ describe('Spec 68 styles parity (new undefined-class analyze(ctx) === old detect
     );
     expect(nu).toEqual(old);
     expect(nu).toEqual(['page.tsx:5:1:styles/undefined-class:severe']);
+  });
+
+  // §15 — the diagnostic channel: a Tailwind v4 CSS-first project checked out
+  // without node_modules must report `undefined-class-disabled` on the phase
+  // path (re-homed from the deleted legacy `initTailwindProbe`) rather than
+  // silently suppressing the detector.
+  it('emits undefined-class-disabled on the diagnostic channel for a Tailwind v4 project without node_modules', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'phase-tw-v4-'));
+    try {
+      writeFileSync(join(dir, 'global.css'), '@theme { --color-primary: #000000; }');
+
+      const diagnostics: Array<{ kind: string; message: string; file: string; line: number }> = [];
+      const fresh = await undefinedClassRule.analyze({
+        facts: {
+          'style-declarations': [{
+            declarations: [],
+            tokens: [],
+            classUsage: [
+              { className: 'bg-primary', filePath: 'src/component.tsx', line: 5, mechanism: 'className' as const, unresolvable: false },
+            ],
+          }],
+          'defined-classes': [],
+        },
+        formats: ['css', 'scss', 'typescript', 'tsx', 'javascript'],
+        thresholds: {},
+        projectRoot: dir,
+        emitDiagnostic: (d) => { diagnostics.push(d); },
+      });
+
+      // No finding ships (fail-open), but the silence is reported.
+      expect(fresh).toEqual([]);
+      const disabled = diagnostics.filter((d) => d.kind === 'undefined-class-disabled');
+      expect(disabled.length).toBe(1);
+      expect(disabled[0].message).toContain('skipped');
+      expect(disabled[0].file).toContain('global.css');
+      expect(disabled[0].line).toBeGreaterThanOrEqual(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      resetTailwindExpander();
+    }
   });
 });

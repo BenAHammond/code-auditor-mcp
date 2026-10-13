@@ -1005,6 +1005,13 @@ async function applyPhaseModelSplit(inputs: {
       });
     }
 
+    // §15 — a rule that could not run (fail-open, missing dependency) reported
+    // itself on the phase result's diagnostic channel. Merge those alongside the
+    // receiver-diagnostics the pre-pass re-derived, so the styles
+    // `undefined-class-disabled` diagnostic (re-homed from the deleted
+    // `initTailwindProbe`) reaches the same off-ladder surface.
+    receiverDiagnostics.push(...phaseResult.diagnostics);
+
     // Strip the migrated rules' legacy emission from every analyzer result.
     let strippedCount = 0;
     for (const result of Object.values(analyzerResults)) {

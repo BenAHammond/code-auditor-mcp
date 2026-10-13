@@ -56,7 +56,7 @@ import type {
   UnresolvedQuerySite,
   WithinFileProvenanceFact,
 } from './types.js';
-import type { IndexHandle } from '../types.js';
+import type { CoverageDiagnostic, IndexHandle } from '../types.js';
 import type { UnprovenQueryReceiver } from '../analyzers/receiverResolution.js';
 import type { UnparseableSql } from '../analyzers/universal/schema/codeAnalysis.js';
 import type { HandleVerdict } from '../analyzers/handleIdentification.js';
@@ -74,6 +74,11 @@ import { withRuleTiming, withRuleTimingAsync } from '../analyzers/ruleTiming.js'
  */
 export interface PhaseModelResult {
   findings: Finding[];
+  /** §15 — coverage diagnostics a rule emitted through `ctx.emitDiagnostic`
+   *  when it could not run (fail-open, missing dependency, unreadable project
+   *  config). Off-ladder: never counted in finding totals, never gated. Merged
+   *  into the run's receiver diagnostics by the caller. */
+  diagnostics: readonly CoverageDiagnostic[];
   /** Fact kind → the built fact array, the raw producer output before rules
    *  classify it into findings. Exposed so tests can assert a producer still
    *  emits (or, for a rejected candidate, does not emit) a fact at a site drawn
@@ -226,10 +231,10 @@ export async function runPhaseModel(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  if (MIGRATED_RULES.length === 0) return { findings: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
+  if (MIGRATED_RULES.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return { findings: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
+  if (active.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -303,9 +308,10 @@ export async function runPhaseModelOverFiles(
   unread: readonly UnreadStyleSourceFact[] = [],
 ): Promise<PhaseModelResult> {
   const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql, unprovenModules } = await buildFacts(files, infra, unread);
-  const findings = await analyzeAll(facts, thresholdsByRule, infra);
+  const { findings, diagnostics } = await analyzeAll(facts, thresholdsByRule, infra);
   return {
     findings,
+    diagnostics,
     facts,
     incompleteFacts,
     oracleShortfalls,
@@ -723,9 +729,10 @@ async function analyzeAll(
   facts: Map<FactKind, unknown>,
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra: PhaseInfra,
-): Promise<Finding[]> {
+): Promise<{ findings: Finding[]; diagnostics: CoverageDiagnostic[] }> {
   await infra?.beforeAnalyze?.();
   const findings: Finding[] = [];
+  const diagnostics: CoverageDiagnostic[] = [];
   for (const rule of activeRules(infra?.enabledRules)) {
     const ruleFacts = Object.fromEntries(
       rule.needs.facts.map((f: FactKind) => [f, facts.get(f)]),
@@ -735,6 +742,12 @@ async function analyzeAll(
       formats: rule.needs.formats,
       thresholds: thresholdsByRule.get(rule.id) ?? {},
       projectRoot: infra.projectRoot,
+      // §15 — a rule that cannot run pushes its coverage diagnostic onto the
+      // run's single diagnostic channel; collected here and carried out on the
+      // result rather than left to each rule's private return shape.
+      emitDiagnostic: (diagnostic: CoverageDiagnostic) => {
+        diagnostics.push(diagnostic);
+      },
     };
     // Spec 38 R2 — per-rule timing on the phase path (the legacy `withRuleTiming`
     // wrappers no longer run for migrated rules). Records the full async analyze
@@ -742,5 +755,5 @@ async function analyzeAll(
     // rule again, not `(no rules recorded)`.
     findings.push(...(await withRuleTimingAsync(rule.id, () => rule.analyze(ctx as never)) as readonly Finding[]));
   }
-  return findings;
+  return { findings, diagnostics };
 }

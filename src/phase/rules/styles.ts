@@ -16,14 +16,14 @@
  * it cannot share the eight rules' `StylesNeeds` tuple. It reads the fact's
  * `classUsage` against that catalog in memory (membership + Levenshtein ≤2
  * near-miss) and resolves candidates through the shared `getTailwindExpander()`
- * singleton. The compile-probe never initializes on the phase path — the rule's
- * `AnalysisContext` carries no `projectRoot`, exactly as the legacy reducer
- * passed none — so `resolve()` degrades to the user's `tailwindClasses`
- * custom-set + bare utilities + structural patterns, byte-identical to the
- * legacy `detectUndefinedClasses` run under the same (projectRoot-absent)
- * production config. The two off-ladder diagnostics (`undefined-class-not-found`
- * / `undefined-class-disabled`) have no `Finding` shape and stay on the legacy
- * path until §15 re-homes them.
+ * singleton, seeded with the threaded `ctx.projectRoot` so the compile-probe
+ * initializes on the phase path exactly as it did under the legacy reducer.
+ * §15 re-homes the fail-open diagnostic here: when the probe cannot validate but
+ * Tailwind is present on disk, the rule emits `undefined-class-disabled` on the
+ * `ctx.emitDiagnostic` channel (byte-identical to the deleted `initTailwindProbe`)
+ * instead of suppressing outright. The `undefined-class-not-found` coverage gap
+ * still has no `Finding` shape — a genuinely-undefined class with no near-miss
+ * is a zero-finding case on both paths, never a fail-open.
  *
  * The detector logic is re-homed verbatim from `UniversalStylesAnalyzer.ts` —
  * copied, not imported, because that analyzer is deleted in §15 and the rules
@@ -58,6 +58,7 @@ import type {
 } from '../types.js';
 import { ciede2000 } from '../colorMath.js';
 import { DEFAULT_COLOR_DELTA_E } from '../../config/defaults.js';
+import { join } from 'node:path';
 import type { Severity, Resolution } from '../../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 import { getTailwindExpander, type TailwindUtilityExpander } from '../../styles/tailwindUtilityExpander.js';
@@ -1142,10 +1143,23 @@ export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
     // Fail-open (Spec 22 R1.3) — when the compile-probe cannot validate (no
     // tailwindcss available to compile against) but Tailwind is present on disk
     // (v4 CSS-first `@import "tailwindcss"` / `@theme`), a "class not found"
-    // claim has no authority and must not ship. The legacy path reports an
-    // `undefined-class-disabled` coverage diagnostic here; the phase rule has no
-    // diagnostic channel yet (§15), so it suppresses the findings outright.
+    // claim has no authority and must not ship. §15: instead of suppressing
+    // outright, report `undefined-class-disabled` on the diagnostic channel —
+    // byte-identical to the deleted legacy `initTailwindProbe` — so a rule that
+    // cannot run says so rather than going silent.
     if (expander.configFailed && expander.hasTailwindConfig) {
+      ctx.emitDiagnostic?.({
+        analyzerName: 'styles',
+        kind: 'undefined-class-disabled',
+        message:
+          `Tailwind probe unavailable (${expander.configFailureReason ?? 'unknown error'}) — ` +
+          `undefined-class detection skipped. Classes defined only in Tailwind ` +
+          `config will not be checked. Install tailwindcss in the project ` +
+          `for full class validation.`,
+        file: expander.tailwindConfigPath ?? join(ctx.projectRoot, 'package.json'),
+        line: 1,
+        details: { configFailureReason: expander.configFailureReason ?? 'unknown error' },
+      });
       return [];
     }
 

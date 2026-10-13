@@ -2002,6 +2002,13 @@ export type AnalysisContext<N extends Needs> = {
    *  to paper over. Making it non-optional lets the compiler surface every
    *  construction site that would otherwise hand the rule a hole. */
   readonly projectRoot: string;
+  /** §15 — the diagnostic channel. A rule that cannot run (fail-open, missing
+   *  dependency, unreadable project config) emits a coverage diagnostic here
+   *  instead of silently suppressing its findings: silence is wrong, so a
+   *  can't-run rule reports it can't run. Optional because the parity/slice
+   *  tests construct a partial ctx by hand and never reach a can't-run branch;
+   *  {@link analyzeAll} always wires it, so no real audit is ever silent. */
+  readonly emitDiagnostic?: (diagnostic: import('../types.js').CoverageDiagnostic) => void;
 };
 
 /** One finding, in the unified shape §7 converges on (one `ruleId` field). */
