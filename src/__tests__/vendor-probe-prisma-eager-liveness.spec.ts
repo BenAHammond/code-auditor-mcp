@@ -199,8 +199,8 @@ describe('eager-execution liveness (item B2c)', () => {
     }
   });
 
-  it('db.run(sql, params) is parameterized with the probe and flagged without it (sql-injection-risk)', async () => {
-    const root = mkdtempSync(path.join(tmpdir(), 'eager-live-'));
+  it('a 2-arg eager call whose template interpolates a value expression is flagged (sql-injection-risk)', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'eager-live-value-'));
     try {
       materializeBetterSqlite3(root);
       const resolved = resolveVendorSurfaces(root);
@@ -217,12 +217,38 @@ export function lookup(name: string) {
       const withoutProbe = await runDataAccessSlice(files, undefined, 'sqlite', EMPTY_VENDOR_SURFACES);
 
       const inj = (fs: { ruleId: string }[]) => fs.filter((f) => f.ruleId === 'sql-injection-risk').length;
-      // The probe supplies `run` (a better-sqlite3 Statement method), so the
-      // two-arg call is recognized as parameterized — no injection finding.
-      expect(inj(withProbe)).toBe(0);
-      // Without the probe, `run` is absent from the eager set → the raw
-      // interpolation is flagged. This is the finding that only the probe removes.
+      // Argument count is not evidence of parameterization. `${name}` carries a
+      // runtime value, so the finding fires even though `run` resolves and the
+      // call has two arguments — the probe must not clear value interpolation.
+      expect(inj(withProbe)).toBe(1);
       expect(inj(withoutProbe)).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('a 2-arg eager call whose only interpolation is a placeholder list stays clean (sql-injection-risk)', async () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'eager-live-placeholder-'));
+    try {
+      materializeBetterSqlite3(root);
+      const resolved = resolveVendorSurfaces(root);
+
+      const src = `import Database from 'better-sqlite3';
+const db = new Database(':memory:');
+export function lookup(ids: string[]) {
+  return db.run(\`SELECT * FROM users WHERE id IN (\${ids.map(() => '?').join(', ')})\`, ids);
+}
+`;
+      const files = [{ path: 'src/lookup.ts', content: src }];
+
+      const withProbe = await runDataAccessSlice(files, undefined, 'sqlite', resolved);
+      const withoutProbe = await runDataAccessSlice(files, undefined, 'sqlite', EMPTY_VENDOR_SURFACES);
+
+      const inj = (fs: { ruleId: string }[]) => fs.filter((f) => f.ruleId === 'sql-injection-risk').length;
+      // The only interpolation is a `.map(() => '?').join(', ')` placeholder list —
+      // structural, not a value — so it stays clean with or without the probe.
+      expect(inj(withProbe)).toBe(0);
+      expect(inj(withoutProbe)).toBe(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

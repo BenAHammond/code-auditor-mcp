@@ -85,34 +85,44 @@ const SQLITE_MAX_VARIABLES = 900;
  *    to the indexed project (test isolation + keeps stale foreign rows out).
  */
 interface FileScope {
-  apply(column: string): { clause: string; params: string[] };
+  readonly isScoped: boolean;
+  /** Bound values in SQL-text order: the scoped file paths, or `[<root>%]` for a
+   *  full-audit LIKE scope, or `[]` when there is no scope at all. */
+  readonly params: string[];
+  /** LIKE pattern for the full-audit scope; null when scoped or when no root. */
+  readonly likePattern: string | null;
 }
 
 function resolveFileScope(config: any): FileScope {
   const scopedFiles = config.isScoped ? ((config.scopedFiles as string[] | undefined) ?? []) : [];
   if (scopedFiles.length > 0) {
-    const chunks: string[][] = [];
-    for (let i = 0; i < scopedFiles.length; i += SQLITE_MAX_VARIABLES) {
-      chunks.push(scopedFiles.slice(i, i + SQLITE_MAX_VARIABLES));
-    }
-    return {
-      apply: (column) => ({
-        clause: `AND (${chunks.map((c) => `${column} IN (${c.map(() => '?').join(', ')})`).join(' OR ')})`,
-        params: scopedFiles,
-      }),
-    };
+    return { isScoped: true, params: scopedFiles, likePattern: null };
   }
   const projectRoot = config.projectRoot as string | undefined;
   const resolvedRoot = projectRoot ? path.resolve(projectRoot) : undefined;
   if (!resolvedRoot) {
-    return { apply: () => ({ clause: '', params: [] }) };
+    return { isScoped: false, params: [], likePattern: null };
   }
-  return {
-    apply: (column) => ({
-      clause: `AND ${column} LIKE ?`,
-      params: [`${resolvedRoot}%`],
-    }),
-  };
+  return { isScoped: false, params: [`${resolvedRoot}%`], likePattern: `${resolvedRoot}%` };
+}
+
+/** Build the file-scope SQL fragment for `column`: a chunked `column IN (?, …, ?)`
+ *  list (scoped audit) or `column LIKE ?` (full audit), or `''` when there is no
+ *  scope. The returned text is only `?` placeholders, SQL keywords, and the
+ *  in-code `column` identifier — the bound paths live in `scope.params` and are
+ *  never interpolated into the SQL. */
+function fileScopeClause(scope: FileScope, column: string): string {
+  if (scope.isScoped) {
+    const chunks: string[][] = [];
+    for (let i = 0; i < scope.params.length; i += SQLITE_MAX_VARIABLES) {
+      chunks.push(scope.params.slice(i, i + SQLITE_MAX_VARIABLES));
+    }
+    return `AND (${chunks.map((c) => `${column} IN (${c.map(() => '?').join(', ')})`).join(' OR ')})`;
+  }
+  if (scope.likePattern !== null) {
+    return `AND ${column} LIKE ?`;
+  }
+  return '';
 }
 
 /**
@@ -408,11 +418,10 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
 
   /** Count distinct files with schema_usage entries. */
   private countDistinctFiles(indexHandle: IndexHandle, scope: FileScope): number {
-    const fp = scope.apply('file_path');
     const rows = indexHandle
       .query(
-        `SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage WHERE 1=1 ${fp.clause}`,
-        fp.params,
+        `SELECT COUNT(DISTINCT file_path) as cnt FROM schema_usage WHERE 1=1 ${fileScopeClause(scope, 'file_path')}`,
+        scope.params,
       ) as Array<{ cnt: number }>;
     return rows[0]?.cnt ?? 0;
   }
@@ -433,14 +442,11 @@ export class CrossDomainAnalyzer extends UniversalAnalyzer {
  * non-builder row (raw SQL, tagged template, .sql, ORM) is still considered —
  * that is what lets a query-builder *read* balance a raw-SQL `create` (cp_test).
  */
-function nonQueryBuilderTableFilter(fp: { clause: string; params: string[] }): { clause: string; params: string[] } {
-  return {
-    clause: `AND table_name IN (
+function nonQueryBuilderClause(scope: FileScope): string {
+  return `AND table_name IN (
         SELECT DISTINCT table_name FROM schema_usage
-        WHERE (origin IS NULL OR origin != 'query-builder') ${fp.clause}
-      )`,
-    params: fp.params,
-  };
+        WHERE (origin IS NULL OR origin != 'query-builder') ${fileScopeClause(scope, 'file_path')}
+      )`;
 }
 
 /** Deduplicate query rows by table and emit one violation per unique table,
@@ -493,23 +499,31 @@ interface DirectionCheck {
  *  filters, ORDER BY, dedup, and emit live here once. `usage_type IN ('select')`
  *  is equivalent to `usage_type = 'select'`, so one IN path covers both. */
 function runUsageDirectionCheck(indexHandle: IndexHandle, scope: FileScope, check: DirectionCheck): Violation[] {
-  const fp = scope.apply('file_path');
-  const qb = nonQueryBuilderTableFilter(fp);
-  const inList = (types: readonly string[]) => types.map((t) => `'${t}'`).join(', ');
+  // `usage_type IN (?, …, ?)` — the type names are bound out-of-band, not
+  // interpolated into the SQL (the old `'${t}'` literal list was a value-bearing
+  // interpolation).
+  const placeholders = (types: readonly string[]) => types.map(() => '?').join(', ');
   const requireClause = check.requireTypes
-    ? `\n         AND table_name IN (\n           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type IN (${inList(check.requireTypes)}) ${fp.clause}\n         )`
+    ? `\n         AND table_name IN (\n           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type IN (${placeholders(check.requireTypes)}) ${fileScopeClause(scope, 'file_path')}\n         )`
     : '';
 
   const rows = indexHandle
     .query(`SELECT DISTINCT table_name, file_path, function_name, function_start_line, function_start_column, line, usage_type
        FROM schema_usage
-       WHERE usage_type IN (${inList(check.writeTypes)})
-         ${fp.clause}
-         ${qb.clause}
+       WHERE usage_type IN (${placeholders(check.writeTypes)})
+         ${fileScopeClause(scope, 'file_path')}
+         ${nonQueryBuilderClause(scope)}
          AND table_name NOT IN (
-           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type IN (${inList(check.readTypes)}) ${fp.clause}
+           SELECT DISTINCT table_name FROM schema_usage WHERE usage_type IN (${placeholders(check.readTypes)}) ${fileScopeClause(scope, 'file_path')}
          )${requireClause}
-       ORDER BY table_name, file_path`, [...fp.params, ...qb.params, ...fp.params, ...(check.requireTypes ? fp.params : [])]) as SchemaUsageRow[];
+       ORDER BY table_name, file_path`, [
+      ...check.writeTypes,
+      ...scope.params,
+      ...scope.params,
+      ...check.readTypes,
+      ...scope.params,
+      ...(check.requireTypes ? [...check.requireTypes, ...scope.params] : []),
+    ]) as SchemaUsageRow[];
 
   return emitTableViolations(rows, check.rule, check.severity, check.message);
 }
@@ -569,8 +583,6 @@ function detectTransactionBoundaryRisk(
   scope: FileScope,
   graph: CallGraphData,
 ): Violation[] {
-  const fp = scope.apply('su.file_path');
-
   // Query schema_usage directly (no JOIN on functions) so this detector
   // works whether or not deepSync has populated the functions table.
   // Amendment A — group by the coordinate identity, not the display name, so
@@ -580,9 +592,9 @@ function detectTransactionBoundaryRisk(
     .query(`SELECT su.function_name, su.function_start_line, su.function_start_column, su.file_path, su.table_name, MIN(su.line) as line
        FROM schema_usage su
        WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
-       ${fp.clause}
+       ${fileScopeClause(scope, 'su.file_path')}
        GROUP BY su.file_path, su.function_start_line, su.function_start_column, su.table_name
-       ORDER BY su.file_path, su.function_start_line, su.function_start_column`, fp.params) as Array<{
+       ORDER BY su.file_path, su.function_start_line, su.function_start_column`, scope.params) as Array<{
     function_name: string | null;
     function_start_line: number | null;
     function_start_column: number | null;
@@ -823,16 +835,14 @@ function detectValidationBypass(
   const validatorIds = buildValidatorIds(indexHandle, userValidators);
   if (validatorIds.size === 0) return violations;
 
-  const fp = scope.apply('su.file_path');
-
   const writers = indexHandle
     .query(`SELECT DISTINCT su.function_name, su.file_path, su.line, f.id as function_id
        FROM schema_usage su
        JOIN functions f ON f.name = su.function_name
                         AND f.file_path = su.file_path
        WHERE su.usage_type IN ('insert', 'update', 'delete', 'create')
-       ${fp.clause}
-       ORDER BY su.file_path, su.function_name`, fp.params) as WriterRow[];
+       ${fileScopeClause(scope, 'su.file_path')}
+       ORDER BY su.file_path, su.function_name`, scope.params) as WriterRow[];
 
   if (writers.length === 0) return violations;
 
@@ -911,13 +921,12 @@ function buildValidatorIds(indexHandle: IndexHandle, userValidators: string[]): 
   //     a zod-importing file only qualifies if its own body uses the
   //     validator package, not just because it cohabits the file.
   if (validatorIds.size === 0) {
-    const likeClauses = [...VALIDATOR_PACKAGES].map(() => 'used_imports LIKE ?');
     const likeParams = [...VALIDATOR_PACKAGES].map((pkg) => `%"${pkg}"%`);
 
     const validatorFuncs = indexHandle
       .query(`SELECT id FROM functions
          WHERE used_imports IS NOT NULL
-           AND (${likeClauses.join(' OR ')})
+           AND (${[...VALIDATOR_PACKAGES].map(() => 'used_imports LIKE ?').join(' OR ')})
            AND is_exported = 1`, likeParams) as Array<{ id: number }>;
     for (const f of validatorFuncs) validatorIds.add(f.id);
   }
@@ -1125,8 +1134,6 @@ function queryHighRiskFunctions(
   topRiskDecile: number,
   scope: FileScope,
 ): HighRiskFn[] {
-  const fp = scope.apply('f.file_path');
-
   // Param order matters: the CTE's `f.file_path` scope binds first (it appears
   // first in the SQL text), then the outer `pct <= ?` binds topRiskDecile.
   return indexHandle.query(
@@ -1142,12 +1149,12 @@ function queryHighRiskFunctions(
         LEFT JOIN hotspot_scores hs ON hs.target = (f.file_path || ':' || f.name)
           AND hs.type = 'function'
         WHERE f.is_exported = 1
-          ${fp.clause}
+          ${fileScopeClause(scope, 'f.file_path')}
       )
       SELECT id, name, file_path, line_number, risk_score
       FROM ranked
       WHERE pct <= ?
-      ORDER BY risk_score DESC`, [...fp.params, topRiskDecile]) as HighRiskFn[];
+      ORDER BY risk_score DESC`, [...scope.params, topRiskDecile]) as HighRiskFn[];
 }
 
 /** Flag high-risk functions not in the reachable set. */

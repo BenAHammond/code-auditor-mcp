@@ -252,10 +252,9 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
 
     // Query functions for file/line info. Scoped: only callers in in-scope files
     // are looked up, so out-of-scope callers are skipped in detectUsagePairForConvention.
-    const funcScope = scope.apply('file_path');
     const funcRows = indexHandle.query(
-      `SELECT id, name, file_path, line_number FROM functions${funcScope ? ` WHERE ${funcScope.clause}` : ''}`,
-      funcScope?.params,
+      `SELECT id, name, file_path, line_number FROM functions${scope.isScoped ? ` WHERE ${fileInClause(scope)}` : ''}`,
+      scope.params,
     ) as FunctionRow[];
     const funcById = buildFuncById(funcRows);
 
@@ -294,7 +293,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     const dirImports = buildDirImports(conventions);
 
     // Get unique file paths. Scoped: only read source for in-scope files.
-    const fileScope = options.scope?.apply('file_path');
+    const fileScope = options.scope;
     const fileRows = indexHandle.query(
       `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${andFileScope(fileScope)}`,
       fileScope?.params,
@@ -353,11 +352,10 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     // directory → dominantShape
     const dirShapes = buildDirShapes(conventions);
 
-    const fileScope = scope.apply('file_path');
     const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, body, language
-         FROM functions${fileScope ? ` WHERE ${fileScope.clause}` : ''}`,
-        fileScope?.params,
+         FROM functions${scope.isScoped ? ` WHERE ${fileInClause(scope)}` : ''}`,
+        scope.params,
       ) as FunctionRow[];
 
     // Report once per file, not once per row — the coverage channel is per-file.
@@ -425,7 +423,7 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     // directory → dominantForm
     const dirForms = buildDirForms(conventions);
 
-    const fileScope = scope?.apply('file_path');
+    const fileScope = scope;
     const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, is_exported
          FROM functions
@@ -458,12 +456,11 @@ export class UniversalConventionsAnalyzer extends UniversalAnalyzer {
     // directory → kind → convention
     const dirKindCases = buildDirKindCases(conventions);
 
-    const fileScope = scope.apply('file_path');
     const rows = indexHandle.query(
         `SELECT id, name, file_path, line_number, is_exported, entity_type, component_type
          FROM functions
-         WHERE is_exported = 1${andFileScope(fileScope)}`,
-        fileScope?.params,
+         WHERE is_exported = 1${andFileScope(scope)}`,
+        scope.params,
       ) as NamingFunctionRow[];
 
     for (const row of rows) {
@@ -544,7 +541,7 @@ function groupConventionsByDomain(conventions: ConventionRow[]): Map<string, Con
 
 /** Count distinct file paths in the function index (files conventions apply to). */
 function countUniqueFiles(indexHandle: IndexHandle, projectRoot?: string, scope?: FileScope): number {
-  const fileScope = scope?.apply('file_path');
+  const fileScope = scope;
   const rows = indexHandle.query(
     `SELECT DISTINCT file_path FROM functions WHERE file_path IS NOT NULL${andFileScope(fileScope)}`,
     fileScope?.params,
@@ -553,36 +550,36 @@ function countUniqueFiles(indexHandle: IndexHandle, projectRoot?: string, scope?
 }
 
 /**
- * Chunked `column IN (...)` scope for scoped/diff audits.
+ * Chunked `file_path IN (...)` scope for scoped/diff audits.
  *
  * Builds a parameterized IN clause over the in-scope file set, chunked at
  * SQLITE_MAX_VARIABLES (900) so a large diff can't exceed the bind limit.
- * Returns a non-scoped (no-op) scope when there is no in-scope set — the
- * convention corpus is then read whole, preserving full-run behaviour.
+ * Returns `''` when there is no in-scope set — the convention corpus is then
+ * read whole, preserving full-run behaviour. The clause text is only `?`
+ * placeholders; the bound paths live in `fileScope.params`.
  */
-function andFileScope(fileScope: { clause: string } | null | undefined): string {
-  return fileScope ? ` AND ${fileScope.clause}` : '';
+function fileInClause(fileScope: { isScoped: boolean; params: string[] } | null | undefined): string {
+  if (!fileScope || !fileScope.isScoped) return '';
+  const chunks: string[][] = [];
+  for (let i = 0; i < fileScope.params.length; i += SQLITE_MAX_VARIABLES) {
+    chunks.push(fileScope.params.slice(i, i + SQLITE_MAX_VARIABLES));
+  }
+  return chunks.map((c) => `file_path IN (${c.map(() => '?').join(', ')})`).join(' OR ');
+}
+
+/** ` AND file_path IN (?, …, ?)` for the scoped file set, or `''` when unscoped. */
+function andFileScope(fileScope: { isScoped: boolean; params: string[] } | null | undefined): string {
+  return fileScope && fileScope.isScoped ? ` AND ${fileInClause(fileScope)}` : '';
 }
 
 interface FileScope {
   isScoped: boolean;
-  apply(column: string): { clause: string; params: string[] } | null;
+  params: string[];
 }
 
 function buildFileScope(scopedFiles: string[] | undefined, isScoped: boolean | undefined): FileScope {
   const files = isScoped && Array.isArray(scopedFiles) && scopedFiles.length > 0 ? scopedFiles : [];
-  if (files.length === 0) {
-    return { isScoped: false, apply: () => null };
-  }
-  const chunks: string[][] = [];
-  for (let i = 0; i < files.length; i += SQLITE_MAX_VARIABLES) chunks.push(files.slice(i, i + SQLITE_MAX_VARIABLES));
-  return {
-    isScoped: true,
-    apply: (column: string) => ({
-      clause: chunks.map((c) => `${column} IN (${c.map(() => '?').join(', ')})`).join(' OR '),
-      params: files,
-    }),
-  };
+  return { isScoped: files.length > 0, params: files };
 }
 
 /** Index call rows in both directions: caller→callees and callee→callers. */

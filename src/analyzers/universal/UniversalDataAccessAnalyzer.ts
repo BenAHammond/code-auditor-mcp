@@ -1744,11 +1744,31 @@ function isInExecChain(
  * the union of whichever driver surfaces resolved in the analyzed tree. A tree
  * with only better-sqlite3 gets better-sqlite3's methods and nothing else.
  */
+/**
+ * True when every `${…}` interpolation in the eager-execution call's SQL
+ * argument is provably structural — a placeholder list (`.map(() => '?').join`),
+ * a literal clause fragment, or a safe identifier — and NOT a bound runtime
+ * value. Argument count alone does not establish this: `db.run(\`…\${name}\`,
+ * [name])` carries two arguments yet interpolates a value, so the site stays
+ * flagged. Reuses {@link isSafeDynamicPart}, the same classifier the non-eager
+ * path applies, so "structural vs value-bearing" has one definition.
+ */
+function allInterpolationsStructural(
+  node: ASTNode,
+  scan: DataAccessScanContext,
+): boolean {
+  const { adapter, sourceCode } = scan;
+  if (!adapter.getDynamicParts) return false;
+  const parts = adapter.getDynamicParts(node, sourceCode);
+  return parts.every((part) => isSafeDynamicPart(part, scan.ast, scan));
+}
+
 function isEagerExecutionCall(
   node: ASTNode,
   adapter: LanguageAdapter,
   sourceCode: string,
   eagerExecutionMethods: ReadonlySet<string> | null,
+  scan: DataAccessScanContext,
 ): boolean {
   const call = findCallFromEntry(node, adapter);
   if (!call) return false;
@@ -1757,8 +1777,10 @@ function isEagerExecutionCall(
   const method = callee ? memberPropertyName(callee, adapter, sourceCode) : null;
   if (!method || !eagerExecutionMethods || !eagerExecutionMethods.has(method)) return false;
 
-  // Bind params as a second argument → fully parameterized and safe.
-  return countArgs(call, adapter) >= 2;
+  // Bind params as a second argument AND every interpolation structural → fully
+  // parameterized. Argument count is not evidence of parameterization: a value
+  // interpolation (`${name}`) stays flagged even with a bind-params argument.
+  return countArgs(call, adapter) >= 2 && allInterpolationsStructural(node, scan);
 }
 
 /**
@@ -1779,6 +1801,7 @@ function isWrapperFunctionWithBindParams(
   adapter: LanguageAdapter,
   sourceCode: string,
   wrapperNames: string[],
+  scan: DataAccessScanContext,
 ): boolean {
   if (wrapperNames.length === 0) return false;
   if (adapter.getNodeType(node) !== 'template_string') return false;
@@ -1799,12 +1822,14 @@ function isWrapperFunctionWithBindParams(
   const calleeName = adapter.getNodeText(callee, sourceCode);
   if (!wrapperNames.includes(calleeName)) return false;
 
-  // Check for a second argument — the bind params.  A single-arg call
-  // like d1Query(sql) without params has no runtime parameterization.
+  // Check for a second argument — the bind params — AND every interpolation
+  // structural. A single-arg call (d1Query(sql) without params) has no runtime
+  // parameterization, and a two-arg call whose template interpolates a value is
+  // raw assembly, not parameterized (same discriminant as eager-execution).
   const realArgs = adapter.getChildren(args).filter(
     c => !['(', ')', ','].includes(adapter.getNodeType(c)),
   );
-  return realArgs.length >= 2;
+  return realArgs.length >= 2 && allInterpolationsStructural(node, scan);
 }
 
 /**
@@ -2189,16 +2214,14 @@ function isUnfilteredRead(call: DatabaseCall, config: DataAccessAnalyzerConfig):
  */
 function isParameterizedByChain(
   node: ASTNode,
-  adapter: LanguageAdapter,
-  sourceCode: string,
-  config: DataAccessAnalyzerConfig,
+  scan: DataAccessScanContext,
   wrapperNames: string[],
-  eagerExecutionMethods: ReadonlySet<string> | null,
 ): boolean {
+  const { adapter, sourceCode, vendor } = scan;
   if (isInPrepareBindChain(node, adapter, sourceCode)) return true;
   if (isInExecChain(node, adapter, sourceCode)) return true;
-  if (isEagerExecutionCall(node, adapter, sourceCode, eagerExecutionMethods)) return true;
-  if (isWrapperFunctionWithBindParams(node, adapter, sourceCode, wrapperNames)) return true;
+  if (isEagerExecutionCall(node, adapter, sourceCode, vendor.eagerExecutionMethods, scan)) return true;
+  if (isWrapperFunctionWithBindParams(node, adapter, sourceCode, wrapperNames, scan)) return true;
   return false;
 }
 
@@ -2344,7 +2367,7 @@ function checkQuerySecurity(
 
   // Parameterized chains (.prepare().bind(), .exec() spread, eager-execution
   // method, DB wrappers) and explicit parameterization are always safe.
-  if (isParameterizedByChain(node, adapter, sourceCode, config, effectiveWrapperNames(scan), vendor.eagerExecutionMethods)) {
+  if (isParameterizedByChain(node, scan, effectiveWrapperNames(scan))) {
     return { parameterized: true, injectionRisk: false, escaped: false };
   }
   // A drizzle `sql`/`db` tagged template parameterizes bare `${id}` interpolations
