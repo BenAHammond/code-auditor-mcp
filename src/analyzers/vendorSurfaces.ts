@@ -118,10 +118,23 @@ interface VendorTypeSpec {
   types: readonly string[];
 }
 
+// Package specifiers shared by VENDOR_TYPE_SPECS (what to probe) and SURFACE_FIELDS
+// (the resolved field name per probe). Extracted so a rename lands in one place and
+// the duplicate-string-literal rule stays quiet on the three driver package names.
+const PKG_BETTER_SQLITE3_TYPES = '@types/better-sqlite3';
+const PKG_NODE_TYPES = '@types/node';
+const PKG_CLOUDFLARE_WORKERS_TYPES = '@cloudflare/workers-types';
+
+// The Prisma probe's target type name, and the version fallback rendered when a
+// package carries no resolvable version. Each repeats across every
+// `resolvePrismaSurface` / `resolveType` return branch, so a single constant names it.
+const PRISMA_DELEGATE_TYPE = '*Delegate';
+const VERSION_UNKNOWN = 'version unknown';
+
 const VENDOR_TYPE_SPECS: readonly VendorTypeSpec[] = [
-  { pkg: '@types/better-sqlite3', entry: 'index.d.ts', types: ['Database', 'Statement'] },
-  { pkg: '@types/node', entry: 'sqlite.d.ts', types: ['DatabaseSync', 'StatementSync'] },
-  { pkg: '@cloudflare/workers-types', entry: 'index.d.ts', types: ['D1Database', 'D1PreparedStatement'] },
+  { pkg: PKG_BETTER_SQLITE3_TYPES, entry: 'index.d.ts', types: ['Database', 'Statement'] },
+  { pkg: PKG_NODE_TYPES, entry: 'sqlite.d.ts', types: ['DatabaseSync', 'StatementSync'] },
+  { pkg: PKG_CLOUDFLARE_WORKERS_TYPES, entry: 'index.d.ts', types: ['D1Database', 'D1PreparedStatement'] },
   { pkg: 'kysely', entry: null, types: ['QueryCreator', 'SelectQueryBuilder'] },
   // `@types/pg` and `mysql2` contribute only their single eager-execution member
   // (`query` / `execute` respectively) — a Pool/Connection surface is a *client*
@@ -365,7 +378,7 @@ function resolvePrismaSurface(projectRoot: string): {
       verbs: null,
       resolution: {
         pkg: '.prisma/client',
-        type: '*Delegate',
+        type: PRISMA_DELEGATE_TYPE,
         path: null,
         version: null,
         reason: `generated Prisma client \`.prisma/client\` is not present under ${path.join(path.resolve(projectRoot), 'node_modules')} (run \`prisma generate\` in the analyzed tree)`,
@@ -379,10 +392,10 @@ function resolvePrismaSurface(projectRoot: string): {
       verbs: null,
       resolution: {
         pkg: '.prisma/client',
-        type: '*Delegate',
+        type: PRISMA_DELEGATE_TYPE,
         path: null,
         version,
-        reason: `generated Prisma client has no index.d.ts (${version ?? 'version unknown'})`,
+        reason: `generated Prisma client has no index.d.ts (${version ?? VERSION_UNKNOWN})`,
       },
     };
   }
@@ -394,7 +407,7 @@ function resolvePrismaSurface(projectRoot: string): {
       verbs: null,
       resolution: {
         pkg: '.prisma/client',
-        type: '*Delegate',
+        type: PRISMA_DELEGATE_TYPE,
         path: null,
         version,
         reason: `could not read ${indexDts}`,
@@ -407,7 +420,7 @@ function resolvePrismaSurface(projectRoot: string): {
       verbs: null,
       resolution: {
         pkg: '.prisma/client',
-        type: '*Delegate',
+        type: PRISMA_DELEGATE_TYPE,
         path: null,
         version,
         reason: `could not parse ${indexDts}`,
@@ -420,16 +433,16 @@ function resolvePrismaSurface(projectRoot: string): {
       verbs: null,
       resolution: {
         pkg: '.prisma/client',
-        type: '*Delegate',
+        type: PRISMA_DELEGATE_TYPE,
         path: null,
         version,
-        reason: `no \`*Delegate\` declaration found in the generated client (${version ?? 'version unknown'})`,
+        reason: `no \`*Delegate\` declaration found in the generated client (${version ?? VERSION_UNKNOWN})`,
       },
     };
   }
   return {
     verbs,
-    resolution: { pkg: '.prisma/client', type: '*Delegate', path: indexDts, version, reason: null },
+    resolution: { pkg: '.prisma/client', type: PRISMA_DELEGATE_TYPE, path: indexDts, version, reason: null },
   };
 }
 
@@ -498,7 +511,7 @@ function resolveType(
       type,
       path: null,
       version,
-      reason: `type \`${type}\` is not declared in the shipped \`${spec.pkg}\` declarations (${version ?? 'version unknown'})`,
+      reason: `type \`${type}\` is not declared in the shipped \`${spec.pkg}\` declarations (${version ?? VERSION_UNKNOWN})`,
     },
   };
 }
@@ -510,12 +523,12 @@ const SURFACE_FIELDS: readonly {
   type: string;
   field: keyof Omit<VendorSurfaces, 'resolutions'>;
 }[] = [
-  { pkg: '@types/better-sqlite3', type: 'Database', field: 'betterSqlite3Database' },
-  { pkg: '@types/better-sqlite3', type: 'Statement', field: 'betterSqlite3Statement' },
-  { pkg: '@types/node', type: 'DatabaseSync', field: 'nodeSqliteDatabase' },
-  { pkg: '@types/node', type: 'StatementSync', field: 'nodeSqliteStatement' },
-  { pkg: '@cloudflare/workers-types', type: 'D1Database', field: 'd1Database' },
-  { pkg: '@cloudflare/workers-types', type: 'D1PreparedStatement', field: 'd1PreparedStatement' },
+  { pkg: PKG_BETTER_SQLITE3_TYPES, type: 'Database', field: 'betterSqlite3Database' },
+  { pkg: PKG_BETTER_SQLITE3_TYPES, type: 'Statement', field: 'betterSqlite3Statement' },
+  { pkg: PKG_NODE_TYPES, type: 'DatabaseSync', field: 'nodeSqliteDatabase' },
+  { pkg: PKG_NODE_TYPES, type: 'StatementSync', field: 'nodeSqliteStatement' },
+  { pkg: PKG_CLOUDFLARE_WORKERS_TYPES, type: 'D1Database', field: 'd1Database' },
+  { pkg: PKG_CLOUDFLARE_WORKERS_TYPES, type: 'D1PreparedStatement', field: 'd1PreparedStatement' },
   { pkg: 'kysely', type: 'QueryCreator', field: 'kyselyQueryCreator' },
   { pkg: 'kysely', type: 'SelectQueryBuilder', field: 'kyselySelectQueryBuilder' },
   { pkg: '@types/pg', type: 'Pool', field: 'pgPool' },
@@ -526,6 +539,11 @@ const SURFACE_FIELDS: readonly {
  * Resolve every vendor surface from the tree under analysis. One pass per run;
  * nothing is cached across runs and nothing is fetched — a tree on a given
  * vendor version is judged by that version's own declarations.
+ *
+ * @param projectRoot - The root of the tree under analysis; its `node_modules`
+ *   (walked upward to the workspace root) is where each vendor's declarations resolve.
+ * @returns Every vendor surface, each either the resolved member set or `null`
+ *   with a per-surface `resolution` record carrying the reason.
  */
 export function resolveVendorSurfaces(projectRoot: string): VendorSurfaces {
   const surfaces: Record<string, ReadonlySet<string> | null> = {};
@@ -588,6 +606,10 @@ function addIfPublished(
  * keeps the seven irreducible lists). The probe supplies exactly what that grammar
  * misses and only a vendor publishes — `iterate` (better-sqlite3), `mergeInto` /
  * `replaceInto` and `fullJoin` / `*JoinLateral` (Kysely).
+ *
+ * @param s - The resolved vendor surfaces to derive the analyzer's method sets from.
+ * @returns The derived method sets (`eagerMethods`, `ormTableVerbs`, `ormJoinVerbs`,
+ *   `prismaVerbs`, `eagerExecutionMethods`) the data-access analyzer reads.
  */
 export function deriveVendorSets(s: VendorSurfaces): DerivedVendorSets {
   // Irreducible baseline: the generic eager-I/O and builder-verb grammar.

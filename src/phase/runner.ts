@@ -112,6 +112,8 @@ export function formatFor(path: string): Format {
  * @param projectRoot - The optional project root threaded into the parsed file.
  * @param sqlDialect - The corpus's named SQL dialect (null means cannot-fire for
  *   the SQL-reading producers: `ddl-declarations` and `data-access-calls`).
+ * @param vendorSurfaces - The resolved vendor surfaces, threaded onto the parsed
+ *   file so the data-access producers know which driver methods resolved.
  * @returns The parsed file, or `null` when no adapter resolves or the parse fails.
  */
 export async function parseOne(
@@ -329,6 +331,7 @@ async function buildReceiverConsumer<PK extends 'data-access-calls' | 'loop-quer
  *
  * @param files - The input files to parse and process.
  * @param sqlDialect - The corpus's named dialect for SQL parsing, or null/undefined.
+ * @param vendorSurfaces - The resolved vendor surfaces threaded into the producers.
  * @returns The assembled `data-access-calls` corpus fact.
  */
 export async function buildDataAccessCalls(
@@ -363,6 +366,7 @@ export async function analyzeDataAccessCalls(
  * @param files - The input files to parse and process.
  * @param thresholds - The data-access rule thresholds (defaults to `{}`).
  * @param sqlDialect - The corpus's named dialect (null means cannot-fire).
+ * @param vendorSurfaces - The resolved vendor surfaces threaded into the producers.
  * @returns The data-access rules' findings over the assembled facts.
  */
 export async function runDataAccessSlice(files: readonly InputFile[], thresholds?: ThresholdValues, sqlDialect?: Dialect | null, vendorSurfaces?: VendorSurfaces): Promise<Finding[]> {
@@ -383,6 +387,7 @@ export async function runDataAccessSlice(files: readonly InputFile[], thresholds
  *
  * @param files - The input files to parse and process.
  * @param sqlDialect - The corpus's named dialect (null means cannot-fire).
+ * @param vendorSurfaces - The resolved vendor surfaces threaded into the producers.
  * @returns The assembled `loop-queries` corpus fact.
  */
 export async function buildLoopQueries(
@@ -413,6 +418,7 @@ export async function analyzeLoopQueries(
  * @param files - The input files to parse and process.
  * @param thresholds - The loop-query rule thresholds (defaults to `{}`).
  * @param sqlDialect - The corpus's named dialect (null means cannot-fire).
+ * @param vendorSurfaces - The resolved vendor surfaces threaded into the producers.
  * @returns The loop-query rule's findings over the assembled facts.
  */
 export async function runLoopQueriesSlice(
