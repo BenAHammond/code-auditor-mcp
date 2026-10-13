@@ -95,6 +95,13 @@ const EMIT_FILES = [
   // two files join rather than replace that entry.
   'src/phase/rules/documentation.ts',
   'src/phase/rules/fileDocumentation.ts',
+  // Spec 68 §15 — the 3 dependency-graph *suggestion* rules' severity lives in the
+  // `SUGGESTION_SEVERITY` map here (their legacy `HEALTH_SEVERITY` in
+  // `createDependencyGraphReducer` was deleted), and `unreferenced-module` emits
+  // its `ruleId`/`severity` `Finding` here after the reducer's file-reachability
+  // block was deleted.
+  'src/phase/rules/dependencyGraph.ts',
+  'src/phase/rules/unreferencedModule.ts',
 ];
 
 /** Session 15 recorded the Go-subprocess rules under `analyzer/rule` notation;

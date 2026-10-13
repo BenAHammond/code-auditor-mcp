@@ -70,11 +70,7 @@ import {
   createStylesReducer,
   createInvariantsReducer,
   createSchemaCodeVisitor,
-  type ReactVisitorBundle,
-  type SolidVisitorBundle,
 } from './pipelineAdapters.js';
-import { computeSizeDistributions } from './reporting/sizeDistribution.js';
-import { splitRoutes, attributeRoutes, enabledMigratedRules } from './phase/routing.js';
 import { runPhaseModel, type PhaseInfra } from './phase/phaseModel.js';
 import { resolveVendorSurfaces } from './analyzers/vendorSurfaces.js';
 import { resolvePhaseThresholds } from './phase/config.js';
@@ -615,7 +611,6 @@ interface PipelineRunResult {
   pipelineTestCoverage: TestCoverageReport | undefined;
   pipelineDeadClusters: DeadCluster[] | undefined;
   pipelineSizeDistributions: SizeDistribution[] | undefined;
-  routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
   indexFactsWritten: number;
   writeIndexFactsMs: number;
 }
@@ -667,8 +662,6 @@ interface PipelineAdapterBundle {
   pipelineVisitors: Stage2Visitor[];
   pipelineReducers: Stage3Reducer[];
   pipelineDerivedReducers: Stage4Reducer[];
-  reactBundle: ReactVisitorBundle | undefined;
-  solidBundle: SolidVisitorBundle | undefined;
 }
 
 /**
@@ -682,9 +675,6 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
   const pipelineVisitors: Stage2Visitor[] = [];
   const pipelineReducers: Stage3Reducer[] = [];
   const pipelineDerivedReducers: Stage4Reducer[] = [];
-
-  let reactBundle: ReactVisitorBundle | undefined;
-  let solidBundle: SolidVisitorBundle | undefined;
 
   // Always-on infrastructure: function-index visitor populates the
   // `functions` table so conventions + cross-domain reducers have data
@@ -722,8 +712,6 @@ function buildPipelineAdapters(analyzers: string[]): PipelineAdapterBundle {
     pipelineVisitors,
     pipelineReducers,
     pipelineDerivedReducers,
-    reactBundle,
-    solidBundle,
   };
 }
 
@@ -892,11 +880,12 @@ function buildPipelineConfig(inputs: {
 }
 
 /**
- * Run the both-paths split (Spec 68 §11.1): strip migrated rules' legacy
- * emission and re-emit phase findings into the correct analyzer buckets.
- * Mutates `analyzerResults` and `pipelineAnalyzerConfig` (dry divergence).
+ * Run the phase model — the single analysis path (Spec 68 §15) — and re-emit its
+ * findings into the correct analyzer buckets. The legacy analyzer path is
+ * deleted; there is no route split to choose between. Mutates `analyzerResults`
+ * and `pipelineAnalyzerConfig` (dry divergence).
  */
-async function applyPhaseModelSplit(inputs: {
+async function runPhaseModelStage(inputs: {
   mergedOptions: AuditRunnerOptions;
   root: string;
   files: string[];
@@ -907,7 +896,6 @@ async function applyPhaseModelSplit(inputs: {
 }): Promise<{
   phaseFindings: Finding[];
   phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>>;
-  routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
   /** Spec 69 §10 + Part 2b — the `cannot-fire` (unproven receivers + unresolved
    *  imports) and `manifest-stale` diagnostics, re-homed here from the deleted
    *  pre-pass, to be merged into the pipeline's metadata diagnostics. */
@@ -916,13 +904,9 @@ async function applyPhaseModelSplit(inputs: {
   const { mergedOptions, root, files, isScoped, pipelineAnalyzerConfig, analyzerResults, pipelineIndexHandle } = inputs;
   let phaseFindings: Finding[] = [];
   let phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>> = new Map();
-  let routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
   let receiverDiagnostics: CoverageDiagnostic[] = [];
 
-  const { migrated } = splitRoutes();
-  routeAttribution = Object.fromEntries(attributeRoutes());
-
-  if (migrated.size > 0) {
+  if (MIGRATED_RULES.length > 0) {
     // The `dry/diverging-clone` rule reads its knobs from `dry.divergence`.
     const topLevelDivergence = (mergedOptions as { divergence?: Record<string, unknown> }).divergence;
     if (topLevelDivergence && !pipelineAnalyzerConfig['dry']?.divergence) {
@@ -967,7 +951,7 @@ async function applyPhaseModelSplit(inputs: {
       tsconfigAliases: infraConfig.tsconfigAliases as PhaseInfra['tsconfigAliases'],
       packageEntryPoints: infraConfig.packageEntryPoints as string[] | undefined,
       indexHandle: pipelineIndexHandle,
-      enabledRules: enabledMigratedRules(),
+      enabledRules: new Set(MIGRATED_RULES.map((r) => r.id)),
       externalTables,
       workerCount: resolveWorkerCount(),
       sqlDialect: infraConfig.sqlDialect as Dialect | null | undefined,
@@ -1018,12 +1002,15 @@ async function applyPhaseModelSplit(inputs: {
     // `initTailwindProbe`) reaches the same off-ladder surface.
     receiverDiagnostics.push(...phaseResult.diagnostics);
 
-    // Strip the migrated rules' legacy emission from every analyzer result.
-    let strippedCount = 0;
+    // Strip the migrated rules' legacy emission from every analyzer result —
+    // the phase model is their single source of truth now (§15), and the legacy
+    // factories that keep running for their infra side-effect (styles reducer,
+    // schema-code visitor) still emit their migrated findings alongside. This is
+    // a direct projection of MIGRATED_RULES, not a route split: there is no
+    // "phase vs legacy" choice anymore, only discarding a stale duplicate.
+    const migratedRules = new Set(MIGRATED_RULES.map((r) => r.id));
     for (const result of Object.values(analyzerResults)) {
-      const before = result.violations.length;
-      result.violations = result.violations.filter((v) => !migrated.has(v.rule));
-      strippedCount += before - result.violations.length;
+      result.violations = result.violations.filter((v) => !migratedRules.has(v.rule));
     }
 
     // Re-emit phase findings as violations, bucketed by the rule's analyzer.
@@ -1074,15 +1061,9 @@ async function applyPhaseModelSplit(inputs: {
         analyzerResults[analyzer] = makeEmptyAnalyzerResult(analyzer, phaseFiles.length);
       }
     }
-
-    logMcpInfo('analysis', 'phase model (both paths)', {
-      migrated: migrated.size,
-      stripped: strippedCount,
-      reemitted: phaseFindings.length,
-    });
   }
 
-  return { phaseFindings, phaseIncompleteFacts, routeAttribution, receiverDiagnostics };
+  return { phaseFindings, phaseIncompleteFacts, receiverDiagnostics };
 }
 
 /**
@@ -1216,35 +1197,6 @@ export async function persistDryPairs(dryPairs: DryPairSeed[], root: string): Pr
 }
 
 /**
- * Run the React analyzer's cross-component finalization (require-error-boundary
- * / raw-element checks), appending extra violations into the `react` result.
- */
-async function finalizeReact(
-  reactBundle: ReactVisitorBundle | undefined,
-  analyzerResults: Record<string, AnalyzerResult>,
-  pipelineAnalyzerConfig: Record<string, Record<string, unknown>>,
-): Promise<void> {
-  if (reactBundle) {
-    try {
-      const reactResult = analyzerResults['react'];
-      if (reactResult) {
-        // Pass the react namespace (not the whole namespaced config) so
-        // finalize reads `requireErrorBoundaries`/`rawElementCheck` at the
-        // same level the visitor's `context.config` does.
-        const extraViolations = await reactBundle.finalizeCrossComponent(
-          pipelineAnalyzerConfig['react'] ?? {},
-        );
-        reactResult.violations.push(...extraViolations);
-      }
-    } catch (err) {
-      logMcpInfo('analysis', 'react finalization failed (non-fatal)', {
-        error: err instanceof Error ? err.message : String(err)
-      });
-    }
-  }
-}
-
-/**
  * Build the pipeline, run it, and fold its outputs — plus the both-paths phase
  * split and derived coverage — into a single result bundle for `run`.
  */
@@ -1273,7 +1225,6 @@ async function runPipelineStage(inputs: {
 
   const {
     pipelineVisitors, pipelineReducers, pipelineDerivedReducers,
-    reactBundle, solidBundle,
   } = buildPipelineAdapters(analyzers);
 
   // ── Safeguard warnings ────────────────────────────────────────────────
@@ -1305,7 +1256,6 @@ async function runPipelineStage(inputs: {
   let pipelineTestCoverage: TestCoverageReport | undefined;
   let pipelineDeadClusters: DeadCluster[] | undefined;
   let pipelineSizeDistributions: SizeDistribution[] | undefined;
-  let routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
   let receiverDiagnostics: CoverageDiagnostic[] = [];
 
   if (hasPipelineAnalyzers) {
@@ -1337,14 +1287,11 @@ async function runPipelineStage(inputs: {
         });
       }
 
-      await finalizeReact(reactBundle, analyzerResults, pipelineAnalyzerConfig);
-
-      const split = await applyPhaseModelSplit({
+      const split = await runPhaseModelStage({
         mergedOptions, root, files, isScoped, pipelineAnalyzerConfig, analyzerResults, pipelineIndexHandle,
       });
       phaseFindings = split.phaseFindings;
       phaseIncompleteFacts = split.phaseIncompleteFacts;
-      routeAttribution = split.routeAttribution;
       receiverDiagnostics = split.receiverDiagnostics;
 
       // Spec 68 §8 — derived coverage, computed AFTER the split so phaseFindings
@@ -1353,7 +1300,7 @@ async function runPipelineStage(inputs: {
         rules: MIGRATED_RULES,
         findings: phaseFindings,
         presentFormats: presentFormatsOf(files),
-        enabledRules: enabledMigratedRules(),
+        enabledRules: new Set(MIGRATED_RULES.map((r) => r.id)),
         incompleteFacts: phaseIncompleteFacts,
         groupOf: (ruleId) => RULE_ANALYZER.get(ruleId) ?? ruleId,
       });
@@ -1376,12 +1323,6 @@ async function runPipelineStage(inputs: {
       ];
       pipelineTestCoverage = pipelineResult.metadata?.testCoverage;
       pipelineDeadClusters = pipelineResult.metadata?.deadClusters;
-
-      // Spec 60 R2 — aggregate the SOLID analyzer's raw size readings.
-      if (solidBundle) {
-        const samples = await solidBundle.getSizeSamples();
-        pipelineSizeDistributions = computeSizeDistributions(samples);
-      }
     } catch (error) {
       if (error instanceof AuditAbortedError) {
         throw error;
@@ -1440,7 +1381,6 @@ async function runPipelineStage(inputs: {
     pipelineTestCoverage,
     pipelineDeadClusters,
     pipelineSizeDistributions,
-    routeAttribution,
     indexFactsWritten,
     writeIndexFactsMs,
   };
@@ -1714,7 +1654,6 @@ interface FinalizeInputs {
   configPath: string | null;
   baselineMetadata: AuditResult['metadata']['baseline'];
   pipelineCoverage: RuleCoverage[] | undefined;
-  routeAttribution: Record<string, 'phase' | 'legacy'> | undefined;
   pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
   pipelineStageTiming: Record<string, number> | undefined;
   thresholdChanges: Array<{ key: string; defaultValue: unknown; effectiveValue: unknown }>;
@@ -1743,7 +1682,7 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
     indexFactsWritten, writeIndexFactsMs, startTime, startCpu, provenanceTiming,
     blastRadius, zeroFilesDiagnostics, pipelineDiagnostics, rejected,
     lintConfigDiagnostics, configPath, baselineMetadata, pipelineCoverage,
-    routeAttribution, pipelineTableCatalog, pipelineStageTiming, thresholdChanges,
+    pipelineTableCatalog, pipelineStageTiming, thresholdChanges,
     thresholdSources, pipelineSkippedFiles, pipelineUnparsedFiles, skippedExtensions,
     pipelineInputPresence, pipelineRuleTiming, pipelineFileAccounting,
     pipelineTestCoverage, pipelineDeadClusters, pipelineSizeDistributions,
@@ -1794,7 +1733,6 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
       }),
       ...(baselineMetadata && { baseline: baselineMetadata }),
       ...(pipelineCoverage && { coverage: pipelineCoverage }),
-      ...(routeAttribution && { routeAttribution }),
       ...(pipelineTableCatalog && { tableCatalog: pipelineTableCatalog }),
       ...(pipelineStageTiming && { stageTiming: pipelineStageTiming }),
       ...(thresholdChanges.length > 0 && { thresholdChanges }),
@@ -1943,7 +1881,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       pipelineTableCatalog, pipelineStageTiming, pipelineSkippedFiles,
       pipelineUnparsedFiles, pipelineInputPresence, pipelineRuleTiming,
       pipelineFileAccounting, pipelineDiagnostics, pipelineTestCoverage,
-      pipelineDeadClusters, pipelineSizeDistributions, routeAttribution,
+      pipelineDeadClusters, pipelineSizeDistributions,
       indexFactsWritten, writeIndexFactsMs,
     } = pipeline;
 
@@ -2002,7 +1940,6 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       configPath,
       baselineMetadata,
       pipelineCoverage,
-      routeAttribution,
       pipelineTableCatalog,
       pipelineStageTiming,
       thresholdChanges,

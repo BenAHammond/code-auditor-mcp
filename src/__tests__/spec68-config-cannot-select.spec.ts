@@ -3,11 +3,11 @@
  *
  * Config sets threshold values. It does not enable, disable, gate, or scope a
  * rule. The `configGate` / `offByDefault` / `handledLanguages` selection fields
- * are gone from the entry type, and `enabledMigratedRules()` is a pure function
- * of `MIGRATED_RULES` — no config key reaches it. This pins that three ways:
+ * are gone from the entry type, and the enabled set is derived inline from
+ * `MIGRATED_RULES` — no config key reaches it. This pins that three ways:
  *
- *   1. structural — `enabledMigratedRules()` returns exactly the migrated id
- *      set, and no `RuleDefinition` carries a selection flag;
+ *   1. structural — the enabled set is exactly the migrated id set, and no
+ *      `RuleDefinition` carries a selection flag;
  *   2. behavioral — two runs with different threshold maps produce the *same*
  *      set of rule ids in derived coverage (every rule in exactly one state);
  *   3. behavioral — a rule with no config entry still runs against its
@@ -22,7 +22,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../languages/index.js';
 import { MIGRATED_RULES } from '../phase/rules/registry.js';
-import { enabledMigratedRules } from '../phase/routing.js';
 import { runPhaseModelOverFiles } from '../phase/phaseModel.js';
 import { deriveCoverage } from '../phase/coverage.js';
 import type { ThresholdValues } from '../phase/types.js';
@@ -39,8 +38,8 @@ const THREE_PARAM_FN = 'function combine(a, b, c) {\n  return a + b + c;\n}\n';
 const FIXTURE_ROOT = '/tmp/codeauditor-fixture';
 
 describe('Spec 68 §16.10 — config cannot select', () => {
-  it('enabledMigratedRules is the full migrated set, with no config key in the path', () => {
-    const enabled = enabledMigratedRules();
+  it('the enabled set is exactly the migrated ids, with no config key in the path', () => {
+    const enabled = new Set(MIGRATED_RULES.map((r) => r.id));
     expect(enabled.size).toBe(MIGRATED_RULES.length);
     for (const rule of MIGRATED_RULES) {
       expect(enabled.has(rule.id)).toBe(true);
@@ -72,14 +71,14 @@ describe('Spec 68 §16.10 — config cannot select', () => {
       rules: MIGRATED_RULES,
       findings: empty.findings,
       presentFormats: new Set(['typescript']),
-      enabledRules: enabledMigratedRules(),
+      enabledRules: new Set(MIGRATED_RULES.map((r) => r.id)),
       incompleteFacts: empty.incompleteFacts,
     });
     const configuredCoverage = deriveCoverage({
       rules: MIGRATED_RULES,
       findings: configured.findings,
       presentFormats: new Set(['typescript']),
-      enabledRules: enabledMigratedRules(),
+      enabledRules: new Set(MIGRATED_RULES.map((r) => r.id)),
       incompleteFacts: configured.incompleteFacts,
     });
 
