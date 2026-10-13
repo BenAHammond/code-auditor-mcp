@@ -8,12 +8,13 @@
  * pure, threshold-independent derivation from the raw declaration value, exactly
  * the "one level up from raw source text" computation a processor should own.
  *
- * These three functions are the conversion (`parseColorToRGB`, `rgbToLab`) plus
- * the ΔE76 distance over Lab (`labDistance`). The `color-values` corpus producer
+ * These four functions are the conversion (`parseColorToRGB`, `rgbToLab`) plus
+ * two colour-difference metrics over Lab: `labDistance` (CIE76, ΔE76) and
+ * `ciede2000` (CIE DE2000, ΔE00). The `color-values` corpus producer
  * (`producers.ts`) imports the conversion and stores the Lab triple in the fact;
- * the rule imports only `labDistance` — the comparison metric its clustering and
- * flagging decisions use — so it reads pre-computed Lab and never re-parses a
- * color. The rule decides; the processor computes.
+ * the rule imports only the distance it clusters with — the comparison metric its
+ * clustering and flagging decisions use — so it reads pre-computed Lab and never
+ * re-parses a color. The rule decides; the processor computes.
  */
 
 /** A CIELAB Lab triple (L, a, b), D65 reference white. */
@@ -121,4 +122,99 @@ export function labDistance(a: Lab, b: Lab): number {
   const da = a[1] - b[1];
   const db = a[2] - b[2];
   return Math.sqrt(dl * dl + da * da + db * db);
+}
+
+const DEG2RAD = Math.PI / 180;
+
+/** CIELAB hue angle in degrees, in [0, 360), from an (a*, b*) pair. */
+function hueAngle(ap: number, b: number): number {
+  if (ap === 0 && b === 0) return 0;
+  const h = Math.atan2(b, ap) / DEG2RAD;
+  return h < 0 ? h + 360 : h;
+}
+
+/** ΔE00 — the CIEDE2000 color-difference between two Lab triples.
+ *
+ * The Sharma/Wu/Dalal (2005) formulation. CIEDE2000 corrects the two known
+ * CIE76 (ΔE76) failures — it is more perceptually uniform in the blue/saturated
+ * regions and handles chroma/hue asymmetries the plain Euclidean distance
+ * mis-ranks — at the cost of a nonlinear, hue- and chroma-weighted term.
+ *
+ * @param a The first Lab triple.
+ * @param b The second Lab triple.
+ * @returns The CIEDE2000 color distance (ΔE00).
+ */
+export function ciede2000(a: Lab, b: Lab): number {
+  const [L1, a1, b1] = a;
+  const [L2, a2, b2] = b;
+
+  const C1 = Math.sqrt(a1 * a1 + b1 * b1);
+  const C2 = Math.sqrt(a2 * a2 + b2 * b2);
+  const Cbar = (C1 + C2) / 2;
+
+  const Cbar7 = Cbar ** 7;
+  const G = 0.5 * (1 - Math.sqrt(Cbar7 / (Cbar7 + 25 ** 7)));
+
+  const a1p = a1 * (1 + G);
+  const a2p = a2 * (1 + G);
+
+  const C1p = Math.sqrt(a1p * a1p + b1 * b1);
+  const C2p = Math.sqrt(a2p * a2p + b2 * b2);
+
+  const h1p = hueAngle(a1p, b1);
+  const h2p = hueAngle(a2p, b2);
+
+  const dLp = L2 - L1;
+  const dCp = C2p - C1p;
+
+  let dhp: number;
+  if (C1p * C2p === 0) {
+    dhp = 0;
+  } else if (Math.abs(h2p - h1p) <= 180) {
+    dhp = h2p - h1p;
+  } else if (h2p - h1p > 180) {
+    dhp = h2p - h1p - 360;
+  } else {
+    dhp = h2p - h1p + 360;
+  }
+
+  const dHp = 2 * Math.sqrt(C1p * C2p) * Math.sin((dhp / 2) * DEG2RAD);
+
+  const Lbarp = (L1 + L2) / 2;
+  const Cbarp = (C1p + C2p) / 2;
+
+  let hbarp: number;
+  if (C1p * C2p === 0) {
+    hbarp = h1p + h2p;
+  } else if (Math.abs(h1p - h2p) <= 180) {
+    hbarp = (h1p + h2p) / 2;
+  } else if (h1p + h2p < 360) {
+    hbarp = (h1p + h2p + 360) / 2;
+  } else {
+    hbarp = (h1p + h2p - 360) / 2;
+  }
+
+  const T = 1
+    - 0.17 * Math.cos((hbarp - 30) * DEG2RAD)
+    + 0.24 * Math.cos((2 * hbarp) * DEG2RAD)
+    + 0.32 * Math.cos((3 * hbarp + 6) * DEG2RAD)
+    - 0.20 * Math.cos((4 * hbarp - 63) * DEG2RAD);
+
+  const dTheta = 30 * Math.exp(-(((hbarp - 275) / 25) ** 2));
+
+  const Cbarp7 = Cbarp ** 7;
+  const RC = 2 * Math.sqrt(Cbarp7 / (Cbarp7 + 25 ** 7));
+
+  const LbarpMinus50sq = (Lbarp - 50) * (Lbarp - 50);
+  const SL = 1 + (0.015 * LbarpMinus50sq) / Math.sqrt(20 + LbarpMinus50sq);
+  const SC = 1 + 0.045 * Cbarp;
+  const SH = 1 + 0.015 * Cbarp * T;
+
+  const RT = -Math.sin((2 * dTheta) * DEG2RAD) * RC;
+
+  const dLpSL = dLp / SL;
+  const dCpSC = dCp / SC;
+  const dHpSH = dHp / SH;
+
+  return Math.sqrt(dLpSL * dLpSL + dCpSC * dCpSC + dHpSH * dHpSH + RT * dCpSC * dHpSH);
 }
