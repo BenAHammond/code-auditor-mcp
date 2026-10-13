@@ -1,7 +1,7 @@
 {
   "analyzer": "styles",
   "config": {
-    "colorDeltaE": 2.5,
+    "colorDeltaE": 1.0,
     "zIndexMaxDistinct": 6,
     "mechanismFragmentationMinMechanisms": 3,
     "declarationSetMinDeclarations": 5,
@@ -12,7 +12,7 @@
     {
       "file": "src/fixture.tsx",
       "rule": "styles/value-drift",
-      "symbol": "background-color: #4e5568",
+      "symbol": "background-color: #06131c",
       "severity": "high"
     },
     {
@@ -52,5 +52,5 @@
     }
   ],
   "nearMissFiles": [],
-  "description": "Tests for the Styles analyzer — all 7 detectors. Value-drift is pairwise CIELAB ΔE76 (Spec 67): #4e5568 is ΔE76 = 1.51 from #4a5568 (background-color) → one finding naming the more-used canonical; #535568 is ΔE76 = 3.45 from #4a5568 (color) → a negative guard that must NOT fire. The border-radius length-drift section is a second negative guard (value-drift is color-only, Spec 66 #253)."
+  "description": "Tests for the Styles analyzer — all 7 detectors. Value-drift is pairwise CIEDE2000 ΔE00 (Spec 67): #06131c is ΔE00 = 0.78 from #06121a (background-color) → one finding naming the more-used canonical; #4e5568 is ΔE00 = 1.93 from #4a5568 (color) → a negative guard that must NOT fire. The border-radius length-drift section is a second negative guard (value-drift is color-only, Spec 66 #253)."
 }
