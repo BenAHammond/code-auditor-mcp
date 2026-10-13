@@ -436,7 +436,7 @@ function hasChainCompanion(methods: readonly string[]): boolean {
 const PRISMA_VERBS = new Set([
   'create', 'createMany', 'update', 'updateMany', 'upsert',
   'delete', 'deleteMany', 'findUnique', 'findFirst', 'findMany',
-  'findUniqueOrThrow', 'findFirstOrThrow', 'findRaw', 'count', 'groupBy', 'aggregate',
+  'findUniqueOrThrow', 'findFirstOrThrow', 'count', 'groupBy', 'aggregate',
 ]);
 
 /** Collect the property keys of an object literal, including its nested objects. */

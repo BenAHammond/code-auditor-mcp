@@ -125,9 +125,21 @@ declaration:
 
 - **List:** `SELECT INSERT UPDATE DELETE FROM WHERE JOIN CREATE DROP ALTER
   TRUNCATE`
-- **Judgment:** a *security* subset feeding only `checkQuerySecurity` (the
-  host-language dataflow gate). It is deliberately **not** the SQL-ness
-  admission gate (that is provenance/shape/tag-based).
+- **Judgment:** whether a *dynamically-constructed* string — a fragment carrying
+  `${}` interpolations or a partial clause — contains SQL structure at all. It is
+  the admission signal for `checkQuerySecurity`'s injection finding, and it is
+  deliberately **not** the SQL-ness admission gate (that is provenance/shape/tag
+  based, and the *static* path routes through `parseSql`).
+- **What the parser cannot decide — the specific answer.** This repo owns
+  `parseSql` (`src/languages/sql/sqlAst.ts`), and the *static* SQL path already
+  routes through it (`buildDatabaseCall`, line 915). `checkQuerySecurity` is the
+  *dynamic* path, and `parseSql` **cannot** decide its admission: the parser
+  requires a complete, syntactically-valid SQL statement, and a dynamic fragment
+  is exactly the input it cannot parse — `${id}` makes the text invalid SQL, and
+  a partial clause (`WHERE x = ${id}`) is not a statement. Routing the decision
+  through `parseSql` would drop every fragment-level injection surface
+  (keyword-less fragments, partial clauses) — the same regression R2 already
+  rejected when it deleted the keyword gate from the *admission* decision.
 - **Unobtainable:** no vendor has a notion of "keywords that evidence a
   dynamic-string injection surface." The SQL keyword list itself is a *spec*
   artifact (the SQL standard), not a declaration; and the *selection* — which
@@ -142,39 +154,71 @@ declaration:
   non-DB method collision (`map.delete(k)`, `createHash().update(b)`,
   `cookies.delete(n)`, `stripe.customers.update(id, data)` all lack the
   companion and fail).
-- **Unobtainable:** this is a **cross-builder grammar**, not any one vendor's
-  method list. No `.d.ts` declares "`.select` must be followed by `.from` to
-  count as a table query." The companion relation is a chain-shape judgment over
-  callee text; a vendor publishes *methods*, not the *grammar* that constrains
-  their admissible ordering.
+- **Builder attribution — the specific answer.** The verb spellings are the
+  **Drizzle and knex** spellings, not Kysely's (which are `selectFrom` /
+  `insertInto` / `updateTable` / `deleteFrom`, already carried by the
+  `ORM_TABLE_VERBS` baseline):
+
+  | Pair | Builder | That builder's types declare the verbs? |
+  |------|---------|------------------------------------------|
+  | `.select` / `.selectDistinct` / `.selectDistinctOn` ⇒ `.from` | Drizzle (`db.select().from()`), knex (`db('t').select().from()`) | Yes — `select`/`from` are real methods (Drizzle and knex both declare them) |
+  | `.insert` ⇒ `.values` | Drizzle (`db.insert(t).values()`), knex (`db('t').insert().values()`) | Yes — `insert`/`values` declared |
+  | `.update` ⇒ `.set`/`.where` | Drizzle (`db.update(t).set().where()`), knex | Yes — `update`/`set`/`where` declared |
+  | `.delete` ⇒ `.where` | Drizzle (`db.delete(t).where()`), knex | Yes — `delete`/`where` declared |
+
+  Each builder's own types declare the individual verbs *and* the companion
+  methods. What no declaration publishes is the **pairing** — "`.select` must be
+  followed by `.from` to count as a table query." A `.d.ts` declares methods, not
+  the grammar constraining their admissible ordering; the verb→companion relation
+  is the analyzer's chain-shape judgment over callee text. It is irreducible
+  regardless of whether Drizzle or knex is resolved (and neither is currently in
+  `VENDOR_TYPE_SPECS`), because the grammar is a cross-builder union of spellings
+  no one vendor is the authority for.
 
 ### 3. `PRISMA_VERBS`
 
 - **List:** `create createMany update updateMany upsert delete deleteMany
-  findUnique findFirst findMany findUniqueOrThrow findFirstOrThrow findRaw count
-  groupBy aggregate`
+  findUnique findFirst findMany findUniqueOrThrow findFirstOrThrow count groupBy
+  aggregate`
 - **Judgment:** the Prisma Client object-form admitter's verb core
   (`<recv>.<Model>.<verb>({ … })` with a `where`/`data` key).
-- **Unobtainable:** Prisma Client verbs are **generated per-schema** from the
-  user's `schema.prisma` by `prisma generate`; model verbs like `findUnique`,
-  `upsert`, and `groupBy` exist only *after* generation, emitted into the
-  project's `node_modules/.prisma/client` at install time. There is no fixed
-  shipped list to read from a pinned package. (Known drift: `findRaw` is not a
-  real Prisma verb — the raw entry point is `$queryRaw` — so this list is
-  *already* a judgment and stays hand-written until a schema-generation probe is
-  warranted.)
+- **What cannot be read — the specific answer.** The model verbs are declared on
+  `<Model>Delegate` types in Prisma's *generated* client, and three independent
+  facts put them out of reach of the resolver's fixed-declaration model:
+  1. **Generated per-schema** — `prisma generate` emits the client from the
+     user's `schema.prisma` into `node_modules/.prisma/client`; `@prisma/client`
+     ships no fixed list (its `.d.ts` re-exports the generated output).
+  2. **Declared on type aliases, not interfaces/classes** — each `<Model>Delegate`
+     is a `type … = … & { findUnique(…): … }` alias, and the resolver's
+     `readTypeMemberSurface` reads only `interface_declaration` /
+     `class_declaration` / `abstract_class_declaration` bodies, so it cannot
+     extract the member surface from a type-alias intersection.
+  3. **The declaration name is per-schema** — the delegate is named
+     `<Model>Delegate`, so there is no fixed type name to resolve (the resolver
+     resolves *named* types like `QueryCreator` / `SelectQueryBuilder`).
+- **Correction in this pass:** `findRaw` was stale drift — it is not a Prisma
+  verb (the raw entry point is `$queryRaw`). It is removed; the list above is the
+  corrected verb core.
 
 ### 4. `D1_CONVENIENCE`
 
 - **List:** `all first run query execute`
-- **Judgment:** a *discriminator vocabulary* for the parameterized
-  single-arg-vs-two-arg check — D1's statement convenience methods (`all`,
-  `first`, `run`) plus the generic `query`/`execute`.
-- **Unobtainable:** the set is **intentionally broader than any one vendor
-  surface.** `execute` is not even a D1 method (D1 uses `exec` on the database,
-  `run` on the statement); `query` is a generic abstraction. No single vendor
-  declares this union — it is the analyzer's own admission predicate, not a
-  replica of one vendor's API.
+- **Judgment:** the *discriminator vocabulary* for the parameterized
+  single-arg-vs-two-arg check — an eager-execution method that takes a
+  bind-params second argument (`db.run(query, params)`) is fully parameterized
+  and safe.
+- **What the published interface lacks — the specific answer.** The name is a
+  misnomer: the set is a **cross-driver union**, not D1's surface.
+  `@cloudflare/workers-types` publishes only the D1 third — `all`/`first`/`run`
+  on `D1PreparedStatement` (already resolved as `d1PreparedStatement`). What the
+  published interface **lacks** is `query` and `execute`: neither is a D1 method
+  (D1 uses `exec` on the database, `run` on the statement); `query` is
+  node-postgres / the tool's own `IndexHandle`, `execute` is mysql2, and
+  `all`/`run` are also better-sqlite3 / node:sqlite. No single vendor declares
+  the union, and deriving only the D1 half would *regress* the check — a
+  better-sqlite3 tree (no workers-types installed) would lose `all`/`run` and
+  stop recognizing its own parameterized shorthand. The set is the analyzer's
+  own cross-driver admission predicate, irreducible.
 
 ### 5. `LLM_PROVIDER_RE`
 
