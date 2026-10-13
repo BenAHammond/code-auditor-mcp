@@ -28,14 +28,17 @@ type UnreferencedModuleNeeds = {
 
 const META = RULE_REGISTRY['unreferenced-module'];
 
-/** The legacy finding's exact anchor and message, re-homed verbatim. */
-const MESSAGE = 'Module is not imported by any other file and is not a framework entry point — dead code candidate.';
+/** The finding's claim is what the analysis proves: no importer was resolved from
+ *  this tree. "Dead" would overclaim — a module reachable only via a computed
+ *  specifier or an external entry the tree cannot see would be reported dead when
+ *  it is merely unresolved. */
+const MESSAGE = 'Module is exported but has no importer resolved from this tree and is not a framework entry point — unreferenced within this tree.';
 
 export const unreferencedModuleRule: RuleDefinition<UnreferencedModuleNeeds> = {
   id: 'unreferenced-module',
   analyzer: 'dependency-graph',
   needs: { formats: ['typescript', 'tsx', 'javascript', 'go'], facts: ['file-imports', 'reachability'] },
-  severity: 'severe',
+  severity: 'high',
   message: MESSAGE,
   docs: META.docs,
   thresholds: META.thresholds,
@@ -63,7 +66,7 @@ export const unreferencedModuleRule: RuleDefinition<UnreferencedModuleNeeds> = {
       if ((importersOf[info.file]?.length ?? 0) > 0) continue;
       out.push({
         ruleId: 'unreferenced-module',
-        severity: 'severe',
+        severity: 'high',
         message: MESSAGE,
         file: info.file,
         line: 1,

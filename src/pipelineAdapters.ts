@@ -2643,10 +2643,12 @@ export function createDependencyGraphReducer(): Stage4Reducer {
             violations.push({
               file: fp,
               line: 1,
-              // A module that exports and is imported by nothing is a genuine
-              // dead-code signal — anchored severe. Validated across four corpora.
-              severity: 'severe',
-              message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
+              // A module that exports and has no importer resolved from this
+              // tree is unreferenced — but "dead" would overclaim (a computed
+              // specifier or external entry the tree cannot see keeps it live).
+              // Anchored high, not severe: the evidence is absence, not proof.
+              severity: 'high',
+              message: 'Module is exported but has no importer resolved from this tree and is not a framework entry point — unreferenced within this tree.',
               rule: 'unreferenced-module',
               type: 'unreferenced-module',
               analyzer: 'dependency-graph',

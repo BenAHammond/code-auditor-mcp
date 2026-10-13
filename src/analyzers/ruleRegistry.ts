@@ -1447,7 +1447,7 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
   'unreferenced-module': {
     input: ['cross-language-entities'],
     resolvable: false,
-    message: 'Module is not imported by any other file and is not a framework entry point — dead code candidate.',
+    message: 'Module is exported but has no importer resolved from this tree and is not a framework entry point — unreferenced within this tree.',
     docs: 'unreferenced-module',
     thresholds: [],
     samples: {

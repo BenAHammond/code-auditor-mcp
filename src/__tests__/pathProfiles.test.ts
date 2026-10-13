@@ -338,7 +338,7 @@ describe('pathProfiles — integration', () => {
 
     // Scope to documentation: the profile test is about doc severity + gate
     // exclusion. §15 removed `enabledAnalyzers`, so dependency-graph now also
-    // fires `unreferenced-module` (severe) on the standalone fixture — a
+    // fires `unreferenced-module` (high) on the standalone fixture — a
     // legitimate finding, but not what this test measures.
     const srcV = violationsFor(result, 'src/module.ts').filter((v: any) => v.analyzer === 'documentation');
     const scriptsV = violationsFor(result, 'scripts/deploy.ts').filter((v: any) => v.analyzer === 'documentation');

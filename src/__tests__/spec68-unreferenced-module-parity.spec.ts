@@ -3,9 +3,12 @@
  * old Stage-4 reducer's file-level reachability findings exactly.
  *
  * The legacy emission lived inside `createDependencyGraphReducer`'s file
- * reachability block: a file that exports symbols yet is imported by nothing
- * and is not a framework/package entry point is a dead module, anchored at
- * `line:1`, `severity: severe`. The phase model splits that into:
+ * reachability block: a file that exports symbols yet has no importer resolved
+ * from this tree and is not a framework/package entry point is *unreferenced*,
+ * anchored at `line:1`, `severity: high`. The claim is "no importer resolved",
+ * never "dead": a computed specifier or external entry this tree cannot see
+ * keeps such a module live, so the finding must not overclaim deadness. The
+ * phase model splits that into:
  *
  *   - a `file-imports` producer (`extractFileImports` — the re-homed
  *     `clCollectFileInfo` walk);
@@ -128,6 +131,32 @@ describe('Spec 68 unreferenced-module parity (new analyze(ctx) === old reducer)'
     }).map((f) => f.file).sort();
 
     expect(files).toEqual(['/fixture/lib/dead.ts', '/fixture/lib/plain.ts']);
+  });
+
+  it('claims only "no importer resolved from this tree", never "dead", at severity high', async () => {
+    const byFile: Record<string, ReturnType<typeof produce>> = {};
+    const flat: FileImportsFact[] = [];
+    for (const { path, source } of FIXTURE) {
+      const produced = produce(path, source);
+      byFile[path] = produced;
+      flat.push({ file: path, imports: produced.imports, hasExports: produced.hasExports, unresolvedDynamicImports: produced.unresolvedDynamicImports });
+    }
+    const reachability = CORPUS_PRODUCERS['reachability'].process({ 'file-imports': flat });
+    const findings = unreferencedModuleRule.analyze({
+      projectRoot: '/tmp/codeauditor-fixture',
+      facts: { 'file-imports': flat, 'reachability': reachability },
+      formats: ['typescript', 'tsx', 'javascript', 'go'],
+      thresholds: {},
+    });
+
+    expect(findings.length).toBeGreaterThan(0);
+    for (const f of findings) {
+      expect(f.severity).toBe('high');
+      // The overclaim ("dead code") must be gone: the analysis proves only
+      // absence of a resolved importer, not death.
+      expect(f.message).not.toContain('dead');
+      expect(f.message).toContain('no importer resolved from this tree');
+    }
   });
 });
 

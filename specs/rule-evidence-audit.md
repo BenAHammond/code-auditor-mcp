@@ -628,7 +628,7 @@ Seven rules over the `cross-language-entities` fact + the `file-imports`/`reacha
 
 ### `unreferenced-module` (75)
 
-- **Claim**: `Module is not imported by any other file and is not a framework entry point — dead code candidate.` (`ruleRegistry.ts:1450`).
+- **Claim**: `Module is exported but has no importer resolved from this tree and is not a framework entry point — unreferenced within this tree.` (`ruleRegistry.ts:1450`).
 - **Firing condition**: emit when `hasExports` AND not test file AND not entry point AND `importersOf[file]` empty (`unreferencedModule.ts:50-64`).
 - **Input position**: `file-imports` → `hasExports`/`file`/`imports`; `reachability` → `importersOf[file]` + `packageEntryPoints`.
 - **Grammar checklist**: `hasExports` = TS/JS `export_statement` or Go capitalized top-level name; import edges = TS `import_statement` `source`, Go `import_declaration`→`import_spec` `path`, re-export `source`, static-string dynamic `import()`/`require()`.

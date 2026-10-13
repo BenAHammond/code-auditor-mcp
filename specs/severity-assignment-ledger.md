@@ -8,8 +8,8 @@ audit trail that the reassignment is real, not a mechanical rename.
 
 - **Assigned:** 102 / 102 live severity rules
 - **critical:** 11
-- **severe:** 37
-- **high:** 54
+- **severe:** 36
+- **high:** 55
 - **diagnostics (off-ladder, no severity):** 4 — `config-error`, `engine-error`,
   `undefined-class-not-found`, `undefined-class-disabled`
 - **cannot-fire (no severity):** 0
@@ -442,3 +442,20 @@ drops 10 → 0; the live severity total is unchanged at 102. The
 `api-contract` analyzer is now a no-op (returns no violations) pending real
 endpoint/call extraction; the `schema-validator` aliases and the schema
 `file-error` path were deleted with their emission sites.
+
+---
+
+## Session 20 — unreferenced-module overclaim (directive E)
+
+Session 10 anchored `unreferenced-module` at `severe` on the claim "a module
+nothing imports is dead code." That claim overstates what the analysis proves:
+the filter shows only that *no importer was resolved from this tree*, not that
+the module is dead. A module reachable only via a computed specifier
+(`import(someVar)`) or an external entry this tree cannot see would be reported
+dead when it is merely unresolved. The finding wording and disposition are
+corrected to the proven claim; severity drops `severe` → `high` (absence of
+evidence is not proof of a defect).
+
+| Rule | Current (effective) | New level | Reason | Disagrees |
+|---|---|---|---|---|
+| `unreferenced-module` | severe | high | "No importer resolved from this tree" proves unreferenced, not dead — a computed specifier or external entry keeps it live. The evidence is absence, so the defect has not bitten. | yes |

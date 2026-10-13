@@ -103,9 +103,9 @@ describe('createDependencyGraphReducer — orphan + reachability', () => {
     const unreferenced = result.violations.filter((v) => v.type === 'unreferenced-module');
     expect(unreferenced).toHaveLength(1);
     expect(unreferenced[0].file).toBe('src/exportedDead.ts');
-    // Anchored severe (Spec 11 R5): the method-dispatch fix made the
-    // dead-module signal precise enough to block.
-    expect(unreferenced[0].severity).toBe('severe');
+    // Anchored high: the analysis proves only "no importer resolved from this
+    // tree", not death — a computed specifier or external entry keeps it live.
+    expect(unreferenced[0].severity).toBe('high');
   });
 
   it('does not flag an imported module or an entry-point file', async () => {

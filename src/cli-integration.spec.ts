@@ -205,10 +205,10 @@ describe('CLI integration — foreign CWD with -p', () => {
 
     // The finding path is project-relative, not resolved from the CWD — the audit
     // ran against the project -p named. §15 deleted GLOBAL_ONLY_ANALYZERS, so the
-    // exported helper also produces a severe `unreferenced-module` finding (no
-    // in-scope importer), which sorts ahead of the high `function-documentation`
-    // finding. Both are anchored at `src/helper.ts`, so `violations[0].file` still
-    // proves -p forwarding; assert the high finding is present rather than first.
+    // exported helper also produces a high `unreferenced-module` finding (no
+    // in-scope importer) alongside the high `function-documentation` finding.
+    // Both are anchored at `src/helper.ts`, so `violations[0].file` still proves
+    // -p forwarding; assert the documentation finding is present rather than first.
     expect(exitCode).toBe(2);
     const parsed = JSON.parse(stdout.trim());
     expect(Array.isArray(parsed.violations)).toBe(true);
@@ -250,7 +250,7 @@ describe('CLI integration — foreign CWD with -p', () => {
     // resolve the project via -p and emit parseable JSON on stdout. The function
     // is fully documented (no documentation finding), but corpus-level rules now
     // fire in changed scope: the exported module has no in-scope importer, so
-    // `unreferenced-module` (severe) fires and the command exits 2.
+    // `unreferenced-module` (high) fires and the command exits 2.
     let stdout = '';
     let exitCode = 0;
     try {
