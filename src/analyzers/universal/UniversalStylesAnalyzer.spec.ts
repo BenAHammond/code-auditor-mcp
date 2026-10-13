@@ -20,6 +20,7 @@ import { LanguageRegistry } from '../../languages/LanguageRegistry.js';
 import { extractDeclarationsFromCSSAst } from '../../styles/cssAstExtractor.js';
 import { harvestDefinedClasses } from '../../styles/definedClasses.js';
 import type { LanguageAdapter } from '../../languages/types.js';
+import { rgbToLab, labDistance } from '../../phase/colorMath.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -179,7 +180,7 @@ describe('Detector 1 — Value Drift', () => {
       return this.parseColorToRGB(raw);
     }
     distance(a: [number, number, number], b: [number, number, number]): number {
-      return this.deltaE(a, b);
+      return labDistance(rgbToLab(a), rgbToLab(b));
     }
   }
 
