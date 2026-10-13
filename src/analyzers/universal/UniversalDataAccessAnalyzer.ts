@@ -63,6 +63,27 @@ import {
   whereColumnRefs,
   isDdlStatementKind,
 } from '../../languages/sql/sqlAst.js';
+// Item B — the vendor-declaration snapshot. `scripts/generate-vendor-declarations.mjs`
+// reads each vendor's shipped `.d.ts` (kysely, @cloudflare/workers-types,
+// better-sqlite3, node:sqlite) and writes this manifest; the method-name lists
+// below derive from it rather than hand-copying vendor names. See
+// specs/vendor-replica-probes.md for the full reducible/irreducible mapping.
+import vendorDeclarations from './vendor-declarations.json' with { type: 'json' };
+
+// ─── Vendor method-name surfaces (item B) ─────────────────────────────────────
+// Each method-name list below derives from these surfaces, which
+// `scripts/generate-vendor-declarations.mjs` reads from the vendor's shipped
+// `.d.ts` (never hand-copied). The *selection* of which names are table verbs /
+// join verbs / eager I/O is a documented judgment (specs/vendor-replica-probes.md);
+// the *spelling and completeness* of the names is the vendor's.
+const KYSELY_QUERY_CREATOR: ReadonlySet<string> = new Set(vendorDeclarations.vendors.kysely.types.QueryCreator);
+const KYSELY_SELECT_QB: ReadonlySet<string> = new Set(vendorDeclarations.vendors.kysely.types.SelectQueryBuilder);
+const BETTER_SQLITE3_STATEMENT: ReadonlySet<string> = new Set(vendorDeclarations.vendors['better-sqlite3'].types.Statement);
+const BETTER_SQLITE3_DATABASE: ReadonlySet<string> = new Set(vendorDeclarations.vendors['better-sqlite3'].types.Database);
+const NODE_SQLITE_STATEMENT: ReadonlySet<string> = new Set(vendorDeclarations.vendors['node:sqlite'].types.StatementSync);
+const NODE_SQLITE_DATABASE: ReadonlySet<string> = new Set(vendorDeclarations.vendors['node:sqlite'].types.DatabaseSync);
+const D1_DATABASE: ReadonlySet<string> = new Set(vendorDeclarations.vendors['@cloudflare/workers-types'].types.D1Database);
+const D1_PREPARED_STATEMENT: ReadonlySet<string> = new Set(vendorDeclarations.vendors['@cloudflare/workers-types'].types.D1PreparedStatement);
 
 /**
  * SQL keywords recognized as evidence that a *dynamically-constructed* string is
@@ -1459,15 +1480,30 @@ function dbCallMethodName(node: ASTNode, adapter: LanguageAdapter, sourceCode: s
  * which only construct a statement object). Used to decide whether a
  * prepare/bind call is chained into an eager execution.
  *
- * `.get()` is the single-row read shared by better-sqlite3, `node:sqlite`, and
- * `bun:sqlite` that D1 does not expose (D1's closest is `.first()`). It was
- * absent, so `db.prepare(…).get(…)` in a loop was misread as statement
- * construction and skipped — the exact false negative the corpus pins at
- * `n-plus-one.ts:51`/`:62`. The wider driver-method gap (`.iterate()`, bun's
- * `.values()`) is documented in specs/rule-evidence-corpus/REPORT.md; it is
- * deliberately left out until it is measured, not silently dropped.
+ * Derived from the vendor-declaration snapshot (item B): each name is read from
+ * a vendor's shipped `.d.ts` surface and *validated* against it, rather than
+ * hand-copied. The eager classification is a cross-vendor judgment (which
+ * statement methods return rows vs. only configure the statement), so the
+ * selection is the documented judgment and the *names* are the vendor's — the
+ * vendor surfaces that this union reads are:
+ *   - better-sqlite3 `Statement` (run/get/all/iterate/raw) + `Database` (exec);
+ *   - node:sqlite `StatementSync` (run/get/all/iterate) + `DatabaseSync` (exec);
+ *   - Cloudflare D1 `D1PreparedStatement` (all/first/run/raw) + `D1Database`
+ *     (batch/exec).
+ * `query` is the generic driver abstraction (`IndexHandle.query`), not a single
+ * vendor. `.iterate()` was previously deferred "until measured" — reading the
+ * vendor surface restores it, and the before/after corpus diff (specs/
+ * vendor-replica-probes.md) records the zero-finding effect of that addition.
  */
-const EAGER_DB_METHODS = new Set(['run', 'all', 'first', 'raw', 'exec', 'batch', 'query', 'get']);
+export const EAGER_DB_METHODS: ReadonlySet<string> = new Set([
+  ...['run', 'get', 'all', 'iterate', 'raw'].filter((m) => BETTER_SQLITE3_STATEMENT.has(m)),
+  ...['exec'].filter((m) => BETTER_SQLITE3_DATABASE.has(m)),
+  ...['run', 'get', 'all', 'iterate'].filter((m) => NODE_SQLITE_STATEMENT.has(m)),
+  ...['exec'].filter((m) => NODE_SQLITE_DATABASE.has(m)),
+  ...['all', 'first', 'run', 'raw'].filter((m) => D1_PREPARED_STATEMENT.has(m)),
+  ...['batch', 'exec'].filter((m) => D1_DATABASE.has(m)),
+  'query',
+]);
 
 /**
  * True when `node` (a `.prepare()`/`.bind()` call) is chained into an eager
@@ -1969,10 +2005,32 @@ function ormTableNameFromArgument(
   return literal && literal.length > 0 ? literal : null;
 }
 
-/** Kysely builder verbs whose first argument is the table name. */
-const ORM_TABLE_VERBS = new Set(['selectFrom', 'deleteFrom', 'insertInto', 'updateTable']);
-/** ORM join verbs whose first argument is the joined table. */
-const ORM_JOIN_VERBS = new Set(['join', 'leftJoin', 'rightJoin', 'innerJoin']);
+/**
+ * Kysely `QueryCreator` entry points whose first argument is the table name.
+ * Read from the vendor-declaration snapshot (item B) and *validated* against it:
+ * `selectFrom`/`deleteFrom`/`insertInto`/`updateTable`/`mergeInto`/`replaceInto`
+ * all take a table first. `selectNoFrom` is part of the same vendor surface but
+ * takes a *selection* (a column list, not a table), so it is deliberately
+ * excluded — the judgment of which QueryCreator members are table-entry vs.
+ * selection/CTE/schema members is documented in specs/vendor-replica-probes.md.
+ */
+export const ORM_TABLE_VERBS: ReadonlySet<string> = new Set(
+  ['selectFrom', 'deleteFrom', 'insertInto', 'updateTable', 'mergeInto', 'replaceInto']
+    .filter((m) => KYSELY_QUERY_CREATOR.has(m)),
+);
+/**
+ * ORM join verbs whose first argument is the joined table. Read from the Kysely
+ * `SelectQueryBuilder` surface (item B): every member in the `Join` family —
+ * `fullJoin`/`innerJoin`/`innerJoinLateral`/`leftJoin`/`leftJoinLateral`/
+ * `rightJoin`. The lateral variants end in `JoinLateral`, not `Join`, so both
+ * suffixes are matched. The bare `join` is NOT a Kysely verb; it is retained as
+ * an irreducible judgment for non-Kysely builders (`knex('t').join('u', …)`,
+ * Objection-style `.join`), which no single vendor `.d.ts` models here.
+ */
+export const ORM_JOIN_VERBS: ReadonlySet<string> = new Set([
+  ...[...KYSELY_SELECT_QB].filter((m) => m.endsWith('Join') || m.endsWith('JoinLateral')),
+  'join',
+]);
 
 /**
  * Walk the callee chain of an ORM candidate, reading table references from the
@@ -3059,8 +3117,17 @@ function walkSubtree(
  * Array methods that transform one collection into another collection (a batch):
  * the elements of a `.slice()`/`.splice()`/`.map()`/`.filter()`/`.concat()`/
  * `.flatMap()` result are a *sub*-collection, not a single row.
+ *
+ * Read from the ECMAScript runtime (item B): each name is validated against
+ * `Array.prototype` rather than hand-copied. The *selection* — which array
+ * methods return a collection (`map`/`filter`/`concat`/`flatMap`/`slice`/
+ * `splice`) vs. which consume or reduce one (`forEach`/`reduce`/`find`/`some`/
+ * `every`) — is the documented judgment; the names are the runtime's.
  */
-const COLLECTION_TRANSFORM_METHODS = new Set(['slice', 'splice', 'map', 'filter', 'concat', 'flatMap']);
+export const COLLECTION_TRANSFORM_METHODS: ReadonlySet<string> = new Set(
+  ['slice', 'splice', 'map', 'filter', 'concat', 'flatMap']
+    .filter((m) => typeof (Array.prototype as unknown as Record<string, unknown>)[m] === 'function'),
+);
 
 /**
  * Free-function callee names that chunk a collection into batches — `chunk(ids,
