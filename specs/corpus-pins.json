@@ -4,27 +4,27 @@
     "content": "bcb539c825c4a3e786803c86dde26cafb1952876"
   },
   "endless-guessing": {
-    "sha": "4a0f27928c6c56a3bf0f4c256094210734e94b6d",
-    "content": "9ad5bc5a63e98cb8d320770d8b6415cf669217a9"
+    "sha": "b265770e1194a0b80b686fd33aacf2f7b6cef204",
+    "content": "807115aa36abe4da07c024eed3e621d1da992fba"
   },
   "hhra-org": {
-    "sha": "56bb7c877dd84bb224c9f57714a64b183ca17c9b",
-    "content": "55045b31c8a864866638341e601076e1a628459f"
+    "sha": "528807e05adfbb7f581aacc7be688432e7e5a308",
+    "content": "67fad3bfb08c60f2eea1de34551943f008981c9e"
   },
   "knex": {
     "sha": "e25d54bcb707714a17f5a5744eba5c4246bb4d1d",
     "content": "bf724ec9d325b90b4e4a74fb9ddb2608d07fe96f"
   },
   "openstatus": {
-    "sha": "444a06b851fc3d88bbfd5291c4d036045e6841ca",
-    "content": "49d117f56055c5f5d88d630a39fbe119596709dd"
+    "sha": "32527be753c192206efed04729dc2d7accb515de",
+    "content": "b322ff06c50ae4c18b5cedd99cb52faaff8a836f"
   },
   "primer-css": {
-    "sha": "48826969ac851a46c4efc514db39b845f4f2cc39",
-    "content": "f90db060da705deba524982191fc177e2bc5b8a0"
+    "sha": "a7128cf02234570d9c42330c8f241b5c261f5824",
+    "content": "d3a007c7e898088fdba42278325da46e97ff6b2b"
   },
   "recall-protocol": {
-    "sha": "c007f6ed29c06fede6bdb6edd4d6bf8c35eb346e",
-    "content": "877aebb2405f8f31d77c237007ce12f65ded8b43"
+    "sha": "47cf2ced5d3c49026880dbafe69864f8d4652256",
+    "content": "997a8e0531c26473f0d2ca150641ea66138dd2ff"
   }
 }
