@@ -125,6 +125,41 @@ export function computeReachability(
   return { importersOf: plain, packageEntryPoints: [...packageEntries] };
 }
 
+/**
+ * Derive the per-file reachability ranking the audit runner uses to order
+ * findings within a severity tier. 1.0 for a framework/package entry point
+ * (`isEntryPointFile` route/page/worker/script/etc. or a package.json entry),
+ * 0.5 for a file imported by another, 0.0 for a file the graph references by
+ * nothing (dead code). Only corpus files are scored; a file absent from the
+ * corpus (a finding on something the graph never saw) is omitted so the caller
+ * can fall back to a neutral 0.5 and never demote on absent data.
+ *
+ * The filename heuristic is the same `isEntryPointFile` the `unreferenced-module`
+ * rule uses to withhold a dead-code finding: a `/scripts/` or `worker.ts` file
+ * that nothing imports is a framework entry point, not dead code, and must rank
+ * live (1.0) rather than dead (0.0).
+ *
+ * @param fileImports - The per-file import facts (the full corpus file set).
+ * @param reachability - The reverse import adjacency and package entry points.
+ * @returns A score per corpus file, keyed by its path.
+ */
+export function computeReachabilityScores(
+  fileImports: readonly FileImportsFact[],
+  reachability: ReachabilityFact,
+): Map<string, number> {
+  const entrySet = new Set(reachability.packageEntryPoints);
+  const importersOf = reachability.importersOf;
+
+  const scores = new Map<string, number>();
+  for (const info of fileImports) {
+    const file = info.file;
+    if (isEntryPointFile(file) || entrySet.has(file)) scores.set(file, 1);
+    else if ((importersOf[file]?.length ?? 0) > 0) scores.set(file, 0.5);
+    else scores.set(file, 0);
+  }
+  return scores;
+}
+
 /** The reason `unreferenced-module` reports a module as `unproven` rather than dead. */
 const UNPROVEN_REASON =
   'A computed specifier could not be resolved, so this module may be imported dynamically and is not provably dead code.';

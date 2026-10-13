@@ -106,7 +106,6 @@ function transformAnalyzerResults(analyzerResults: AuditResult['analyzerResults'
         // which never matched the subprocess's real labels. Preserve everything;
         // only normalize the one field that needs it.
         ...violation,
-        ...(violation.hotspot !== undefined && violation.hotspot > 0 && { hotspot: Math.round(violation.hotspot * 1000) / 1000 }),
         // Spec 57 — surface the fingerprint so `code-audit dismiss <fp>` can
         // address exactly this finding (same tuple SARIF's partialFingerprints uses).
         fingerprint: fingerprint(buildFingerprintInput(violation)),

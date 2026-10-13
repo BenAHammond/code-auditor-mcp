@@ -76,7 +76,8 @@ import { resolveVendorSurfaces } from './analyzers/vendorSurfaces.js';
 import { resolvePhaseThresholds } from './phase/config.js';
 import { deriveCoverage, presentFormatsOf } from './phase/coverage.js';
 import { MIGRATED_RULES, RULE_ANALYZER } from './phase/rules/registry.js';
-import type { Finding, FactKind, CodeBlockFact } from './phase/types.js';
+import type { Finding, FactKind, CodeBlockFact, FileImportsFact, ReachabilityFact } from './phase/types.js';
+import { computeReachabilityScores } from './phase/reachability.js';
 import { seedDryPairs, resolveBlockConfig, type DryPairSeed } from './phase/rules/dry.js';
 import { checkUnresolvedReceiverImports, checkUnprovenQueryReceivers, checkUnresolvedQueries, checkUnparseableSql, dedupeCannotFireByReceiver, type UnparseableSql } from './analyzers/universal/schema/codeAnalysis.js';
 import { readProjectManifest, computeManifestStaleness } from './analyzers/manifestStaleness.js';
@@ -599,6 +600,7 @@ interface PipelineRunResult {
   analyzerResults: Record<string, AnalyzerResult>;
   phaseFindings: Finding[];
   phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>>;
+  phaseReachability: Map<string, number> | undefined;
   pipelineCoverage: RuleCoverage[] | undefined;
   pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
   pipelineStageTiming: Record<string, number> | undefined;
@@ -896,6 +898,7 @@ async function runPhaseModelStage(inputs: {
 }): Promise<{
   phaseFindings: Finding[];
   phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>>;
+  phaseReachability: Map<string, number> | undefined;
   /** Spec 69 §10 + Part 2b — the `cannot-fire` (unproven receivers + unresolved
    *  imports) and `manifest-stale` diagnostics, re-homed here from the deleted
    *  pre-pass, to be merged into the pipeline's metadata diagnostics. */
@@ -904,6 +907,7 @@ async function runPhaseModelStage(inputs: {
   const { mergedOptions, root, files, isScoped, pipelineAnalyzerConfig, analyzerResults, pipelineIndexHandle } = inputs;
   let phaseFindings: Finding[] = [];
   let phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>> = new Map();
+  let phaseReachability: Map<string, number> | undefined;
   let receiverDiagnostics: CoverageDiagnostic[] = [];
 
   if (MIGRATED_RULES.length > 0) {
@@ -972,6 +976,11 @@ async function runPhaseModelStage(inputs: {
     });
     phaseFindings = phaseResult.findings;
     phaseIncompleteFacts = phaseResult.incompleteFacts;
+    const reachabilityFact = phaseResult.facts.get('reachability') as ReachabilityFact | undefined;
+    const fileImports = phaseResult.facts.get('file-imports') as FileImportsFact[] | undefined;
+    phaseReachability = reachabilityFact && fileImports
+      ? computeReachabilityScores(fileImports, reachabilityFact)
+      : undefined;
 
     // Spec 69 §10 + Part 2b — re-home the pre-pass's diagnostics (deleted from
     // `pipeline.ts`) on the phase result. Cannot-fire: re-derive per file from
@@ -1063,7 +1072,7 @@ async function runPhaseModelStage(inputs: {
     }
   }
 
-  return { phaseFindings, phaseIncompleteFacts, receiverDiagnostics };
+  return { phaseFindings, phaseIncompleteFacts, phaseReachability, receiverDiagnostics };
 }
 
 /**
@@ -1244,6 +1253,7 @@ async function runPipelineStage(inputs: {
   // Outputs hoisted so derived coverage (after the split) can read them.
   let phaseFindings: Finding[] = [];
   let phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>> = new Map();
+  let phaseReachability: Map<string, number> | undefined;
   let pipelineCoverage: RuleCoverage[] | undefined;
   let pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
   let pipelineStageTiming: Record<string, number> | undefined;
@@ -1292,6 +1302,7 @@ async function runPipelineStage(inputs: {
       });
       phaseFindings = split.phaseFindings;
       phaseIncompleteFacts = split.phaseIncompleteFacts;
+      phaseReachability = split.phaseReachability;
       receiverDiagnostics = split.receiverDiagnostics;
 
       // Spec 68 §8 — derived coverage, computed AFTER the split so phaseFindings
@@ -1369,6 +1380,7 @@ async function runPipelineStage(inputs: {
     analyzerResults,
     phaseFindings,
     phaseIncompleteFacts,
+    phaseReachability,
     pipelineCoverage,
     pipelineTableCatalog,
     pipelineStageTiming,
@@ -1505,82 +1517,45 @@ function stampAnalyzerFields(ordered: Record<string, AnalyzerResult>): void {
 }
 
 /**
- * Spec 13 R2 — attach hotspot + reachability scores to every violation and
- * reorder within severity tiers (live code first, then higher hotspot, original
- * order as tiebreaker). Advisory — failure is non-fatal (no churn/hotspot data
- * is common on a first run).
+ * Spec 13 R2 — attach a reachability score to every violation and reorder within
+ * severity tiers (live code first: entry point → imported → dead), original
+ * order as tiebreaker. Derived from the phase `reachability` fact (reverse
+ * import adjacency + package entry points); no DB read. Advisory — a missing
+ * fact (a run where the phase model produced no reachability) leaves every
+ * finding at the neutral 0.5 and preserves original order.
  */
-async function applyHotspotScoring(
+function applyReachabilityRanking(
   ordered: Record<string, AnalyzerResult>,
-  root: string,
-): Promise<void> {
-  try {
-    const indexDb = CodeIndexDB.getInstance(undefined, root);
-    await indexDb.initialize();
+  reachabilityByFile: Map<string, number> | undefined,
+): void {
+  const severityOrder: Record<string, number> = {
+    critical: 0,
+    severe: 1,
+    high: 2,
+    info: 3,
+  };
 
-    const hotspotRows = indexDb.rawDb
-      .prepare('SELECT target, type, score FROM hotspot_scores')
-      .all() as Array<{ target: string; type: string; score: number }>;
+  for (const result of Object.values(ordered)) {
+    const violations = result.violations;
 
-    const hotspotByTarget = new Map<string, number>();
-    const hotspotByFile = new Map<string, number>();
-    for (const row of hotspotRows) {
-      hotspotByTarget.set(row.target, row.score);
-      if (row.type === 'file') {
-        hotspotByFile.set(row.target, row.score);
-      }
+    for (const v of violations) {
+      // A file absent from the corpus graph gets a neutral 0.5 so we never
+      // demote a finding we know nothing about.
+      v.reachability = reachabilityByFile?.get(v.file as string) ?? 0.5;
     }
 
-    const reachabilityByFile = new Map<string, number>();
-    const reachRows = indexDb.rawDb
-      .prepare("SELECT node_key, weight FROM graph_cache WHERE graph_type = 'reachability'")
-      .all() as Array<{ node_key: string; weight: number }>;
-    for (const row of reachRows) {
-      reachabilityByFile.set(row.node_key, row.weight);
-    }
+    const indexed = violations.map((v, i) => ({ v, i }));
+    indexed.sort((a, b) => {
+      const sevA = severityOrder[a.v.severity] ?? 99;
+      const sevB = severityOrder[b.v.severity] ?? 99;
+      if (sevA !== sevB) return sevA - sevB;
+      const reachA = a.v.reachability ?? 0.5;
+      const reachB = b.v.reachability ?? 0.5;
+      if (reachA !== reachB) return reachB - reachA;
+      return a.i - b.i;
+    });
 
-    for (const analyzerName of Object.keys(ordered)) {
-      const result = ordered[analyzerName];
-      const violations = result.violations;
-
-      for (const v of violations) {
-        const funcName = v.symbol as string | undefined;
-        const file = v.file as string;
-        // Try function-level hotspot first: "filePath::symbol"
-        const funcTarget = funcName ? `${file}::${funcName}` : undefined;
-        v.hotspot = (funcTarget ? hotspotByTarget.get(funcTarget) : undefined)
-          ?? hotspotByFile.get(file)
-          ?? 0;
-        // Files with no cross-language entities (no reachability data) get a
-        // neutral 0.5 so we never demote a finding we know nothing about.
-        v.reachability = reachabilityByFile.get(file) ?? 0.5;
-      }
-
-      const severityOrder: Record<string, number> = {
-        critical: 0,
-        severe: 1,
-        high: 2,
-        info: 3,
-      };
-
-      const indexed = violations.map((v, i) => ({ v, i }));
-      indexed.sort((a, b) => {
-        const sevA = severityOrder[a.v.severity] ?? 99;
-        const sevB = severityOrder[b.v.severity] ?? 99;
-        if (sevA !== sevB) return sevA - sevB;
-        const reachA = a.v.reachability ?? 0.5;
-        const reachB = b.v.reachability ?? 0.5;
-        if (reachA !== reachB) return reachB - reachA;
-        const hsA = a.v.hotspot ?? 0;
-        const hsB = b.v.hotspot ?? 0;
-        if (hsA !== hsB) return hsB - hsA;
-        return a.i - b.i;
-      });
-
-      result.violations = indexed.map((x) => x.v);
-    }
-  } catch {
-    // Hotspot/reachability reordering is advisory — failure is non-fatal
+    result.violations = indexed.map((x) => x.v);
   }
 }
 
@@ -1877,7 +1852,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       styleConsumedFiles, styleContributingFiles, analyzers, provenanceTiming,
     });
     const {
-      analyzerResults, phaseFindings, phaseIncompleteFacts, pipelineCoverage,
+      analyzerResults, phaseFindings, phaseIncompleteFacts, phaseReachability, pipelineCoverage,
       pipelineTableCatalog, pipelineStageTiming, pipelineSkippedFiles,
       pipelineUnparsedFiles, pipelineInputPresence, pipelineRuleTiming,
       pipelineFileAccounting, pipelineDiagnostics, pipelineTestCoverage,
@@ -1902,8 +1877,8 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // single source of truth — see stampAnalyzerFields).
     stampAnalyzerFields(orderedAnalyzerResults);
 
-    // Spec 13 R2 — hotspot scoring & finding reordering (advisory).
-    await applyHotspotScoring(orderedAnalyzerResults, root);
+    // Spec 13 R2 — reachability scoring & finding reordering (advisory).
+    applyReachabilityRanking(orderedAnalyzerResults, phaseReachability);
 
     // Hook-contract guard: no violation may carry an empty file path, line 0, or
     // missing line. A sentinel violation with file:'' broke the Claude Code hook's

@@ -100,13 +100,12 @@ export interface Violation {
   suggestion?: string;
   /** Path profile that matched this file (last matching profile wins). */
   profile?: string;
-  /** Hotspot score [0,1] — churn percentile × complexity percentile. */
-  hotspot?: number;
   /**
    * Reachability score for the finding's file — 1.0 = framework entry point
-   * (live), 0.5 = imported by another file (live) or unknown, 0.0 = referenced
-   * by nothing (dead code). Set by the dependency-graph reducer and used to
-   * rank findings within a severity tier: dead code sinks, live code rises.
+   * (live), 0.5 = imported by another file (live), 0.0 = referenced by nothing
+   * (dead code). Derived from the phase `reachability` fact (reverse import
+   * adjacency + package entry points) and used to rank findings within a
+   * severity tier: dead code sinks, live code rises.
    */
   reachability?: number;
 
