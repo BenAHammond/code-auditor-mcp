@@ -1,13 +1,10 @@
 {
-  "projectRoot": "../..",
-  "reportTitle": "HHRA Architecture & Code Quality Audit",
-  
   "includePaths": [
     "app/**/*.{ts,tsx}",
     "src/**/*.{ts,tsx}",
     "scripts/**/*.ts"
   ],
-  
+
   "excludePaths": [
     "**/node_modules/**",
     "**/.next/**",
@@ -22,47 +19,12 @@
     "**/public/**",
     "code-auditor/**"
   ],
-  
-  "analyzerConfig": {
-    "security": {
-      "authPatterns": [
-        "withAuth",
-        "withAdminAuth",
-        "requireAuth",
-        "SessionAuth",
-        "useSession"
-      ],
-      "adminPatterns": [
-        "withAdminAuth",
-        "requireAdmin",
-        "adminOnly"
-      ],
-      "rateLimitPatterns": [
-        "rateLimit",
-        "withRateLimit",
-        "rateLimitGuard"
-      ],
-      "publicPatterns": [
-        "public",
-        "noAuth",
-        "skipAuth"
-      ]
+
+  "analyzerConfigs": {
+    "react": {
+      "maxComponentComplexity": 15
     },
-    
-    "component": {
-      "frameworkPatterns": {
-        "react": {
-          "components": ["*.tsx", "*.jsx"],
-          "hooks": ["use*"],
-          "context": ["*Context", "*Provider"]
-        }
-      },
-      "checkErrorBoundaries": true,
-      "checkPropTypes": false,
-      "maxComplexity": 15,
-      "maxNesting": 4
-    },
-    
+
     "data-access": {
       "databasePatterns": {
         "postgres": ["app-db", "org-tracker-db", "@neondatabase", "neon"],
@@ -80,7 +42,7 @@
         "warnOnSelectStar": true
       }
     },
-    
+
     "solid": {
       "maxMethodsPerClass": 10,
       "maxLinesPerMethod": 50,
@@ -88,7 +50,7 @@
       "maxImportsPerFile": 20,
       "maxMethodComplexity": 10
     },
-    
+
     "dry": {
       "minLineThreshold": 5,
       "similarityThreshold": 0.85,
@@ -102,55 +64,10 @@
       "checkStrings": true
     }
   },
-  
-  "customPatterns": {
-    "components": [
-      "**/app/**/page.{ts,tsx}",
-      "**/app/**/layout.{ts,tsx}",
-      "**/app/**/error.{ts,tsx}",
-      "**/app/**/loading.{ts,tsx}",
-      "**/app/**/not-found.{ts,tsx}",
-      "**/components/**/*.{ts,tsx}",
-      "**/app/components/**/*.{ts,tsx}"
-    ],
-    "endpoints": [
-      "**/app/api/**/route.{ts,tsx}",
-      "**/pages/api/**/*.{ts,tsx}",
-      "**/api/**/*.{ts,tsx}"
-    ],
-    "tests": [
-      "**/*.test.{ts,tsx}",
-      "**/*.spec.{ts,tsx}",
-      "**/tests/**",
-      "**/e2e/**",
-      "**/__tests__/**"
-    ]
-  },
-  
-  "outputFormats": ["html", "json"],
-  "outputDirectory": "./audit-reports",
-  
+
   "minSeverity": "high",
-  "failOnCritical": false,
-  "verbose": false,
-  "showProgress": true,
-  
+
   "thresholds": {
     "minHealthScore": 75
-  },
-  
-  "reportTheme": {
-    "primaryColor": "#0070f3",
-    "criticalColor": "#e00",
-    "warningColor": "#f5a623",
-    "suggestionColor": "#0070f3"
-  },
-  
-  "integrations": {
-    "ci": {
-      "provider": "github",
-      "failOnThreshold": true,
-      "commentOnPR": false
-    }
   }
 }

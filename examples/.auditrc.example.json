@@ -1,14 +1,11 @@
 {
-  "projectRoot": ".",
-  "reportTitle": "Code Quality Audit Report",
-  
   "includePaths": [
     "src/**/*.{ts,tsx,js,jsx}",
     "app/**/*.{ts,tsx,js,jsx}",
     "lib/**/*.{ts,tsx,js,jsx}",
     "components/**/*.{ts,tsx,js,jsx}"
   ],
-  
+
   "excludePaths": [
     "**/node_modules/**",
     "**/.next/**",
@@ -19,8 +16,8 @@
     "**/*.spec.{ts,tsx,js,jsx}",
     "**/__tests__/**"
   ],
-  
-  "analyzerConfig": {
+
+  "analyzerConfigs": {
     "solid": {
       "maxMethodsPerClass": 10,
       "maxLinesPerMethod": 50,
@@ -30,21 +27,11 @@
     "dry": {
       "minLineThreshold": 5,
       "similarityThreshold": 0.85
-    },
-    "security": {
-      "authPatterns": ["withAuth", "requireAuth", "isAuthenticated"],
-      "rateLimitPatterns": ["rateLimit", "withRateLimit"]
     }
   },
-  
-  "outputFormats": ["html", "json"],
-  "outputDirectory": "./audit-reports",
-  
+
   "minSeverity": "high",
-  "failOnCritical": false,
-  "verbose": false,
-  "showProgress": true,
-  
+
   "thresholds": {
     "minHealthScore": 80
   }

@@ -1,7 +1,4 @@
 {
-  "projectRoot": ".",
-  "reportTitle": "Node.js API Audit",
-  
   "includePaths": [
     "src/**/*.{ts,js}",
     "lib/**/*.{ts,js}",
@@ -11,7 +8,7 @@
     "services/**/*.{ts,js}",
     "models/**/*.{ts,js}"
   ],
-  
+
   "excludePaths": [
     "**/node_modules/**",
     "**/dist/**",
@@ -21,17 +18,8 @@
     "**/__tests__/**",
     "**/coverage/**"
   ],
-  
-  "analyzerConfig": {
-    "security": {
-      "authPatterns": ["authenticate", "authorize", "requireAuth", "passport"],
-      "rateLimitPatterns": ["rateLimit", "throttle", "limiter"],
-      "securityHeaders": [
-        "helmet",
-        "cors",
-        "Content-Security-Policy"
-      ]
-    },
+
+  "analyzerConfigs": {
     "data-access": {
       "databasePatterns": {
         "postgres": ["pg", "postgres"],
@@ -53,21 +41,10 @@
       "maxParametersPerMethod": 5
     }
   },
-  
-  "outputFormats": ["json", "html"],
-  "outputDirectory": "./audit-reports",
-  
+
   "minSeverity": "severe",
-  "failOnCritical": true,
-  
+
   "thresholds": {
     "minHealthScore": 90
-  },
-  
-  "integrations": {
-    "ci": {
-      "provider": "github",
-      "failOnThreshold": true
-    }
   }
 }

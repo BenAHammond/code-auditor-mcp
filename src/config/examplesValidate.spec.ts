@@ -14,6 +14,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * Now a bad value throws, so this test loads every shipped example config
  * exactly as a user would and asserts it resolves. A stale value here is a hard
  * failure, not a documentation nit.
+ *
+ * Directive B (single rejection path): an unknown key now *throws* rather than
+ * soft-rejecting into the `rejected` array, so the remaining dispositions are
+ * `outside-project-root` and `output-directory-refused` — neither of which any
+ * shipped example may produce. The empty-`rejected` assertion pins that no
+ * example config silently drops a key: loading clean means loading with
+ * `rejected.length === 0`, not merely "resolves".
  */
 
 function shippedConfigFiles(): Array<{ file: string; projectRoot: string }> {
@@ -44,8 +51,12 @@ describe('shipped example configs validate under loadConfig (Spec 61 R1.5)', () 
   });
 
   for (const { file, projectRoot } of configs) {
-    it(`${path.basename(file)} loads and validates`, async () => {
-      await expect(loadConfig({ configPath: file, projectRoot })).resolves.toBeTruthy();
+    it(`${path.basename(file)} loads with nothing rejected`, async () => {
+      // `loadConfig` rejecting here fails the test (nothing thrown); the
+      // `rejected` assertion below fails it if any key is silently dropped.
+      const { config, rejected } = await loadConfig({ configPath: file, projectRoot });
+      expect(config).toBeTruthy();
+      expect(rejected).toEqual([]);
     });
   }
 });

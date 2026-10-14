@@ -1,11 +1,8 @@
 {
-  "projectRoot": ".",
-  "reportTitle": "React Project Audit",
-  
   "includePaths": [
     "src/**/*.{ts,tsx,js,jsx}"
   ],
-  
+
   "excludePaths": [
     "**/node_modules/**",
     "**/build/**",
@@ -16,18 +13,10 @@
     "**/coverage/**",
     "**/*.stories.{ts,tsx,js,jsx}"
   ],
-  
-  "analyzerConfig": {
-    "component": {
-      "checkErrorBoundaries": true,
-      "checkPropTypes": true,
-      "maxComplexity": 12,
-      "frameworkPatterns": {
-        "react": {
-          "hooks": ["use*"],
-          "context": ["*Context", "*Provider"]
-        }
-      }
+
+  "analyzerConfigs": {
+    "react": {
+      "maxComponentComplexity": 12
     },
     "solid": {
       "maxMethodsPerClass": 8,
@@ -38,13 +27,9 @@
       "checkImports": true
     }
   },
-  
-  "outputFormats": ["html", "json"],
-  "outputDirectory": "./audit-reports",
-  
+
   "minSeverity": "severe",
-  "showProgress": true,
-  
+
   "thresholds": {
     "minHealthScore": 75
   }

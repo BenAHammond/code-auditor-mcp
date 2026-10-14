@@ -7,15 +7,20 @@ import { promises as fs, realpathSync } from 'fs';
 import path from 'path';
 import { AuditConfig, PathProfile, ProjectFileConfig, PROJECT_FILE_CONFIG_KEYS } from '../types.js';
 import { getDefaultConfig, DEFAULT_CODE_INDEX_CONFIG, mergePathProfiles } from './defaults.js';
+import { RUNTIME_DEFAULT_CONFIGS } from './effectiveConfig.js';
 
 /**
  * A config key dropped by `sanitizeProjectFileConfig`, with why.
  * Surfaced in CLI output — a silent drop is how this class of bug survives.
+ *
+ * Only *value-level* rejections remain here: a path that escapes the project
+ * root, or a file-sourced output directory (refused for security). Unknown keys
+ * no longer land in this array — they throw (see `sanitizeProjectFileConfig`).
  */
 export interface RejectedConfigEntry {
   key: string;
   value: string;
-  reason: 'unknown-key' | 'outside-project-root' | 'output-directory-refused';
+  reason: 'outside-project-root' | 'output-directory-refused';
 }
 
 /**
@@ -68,29 +73,34 @@ function isWithinProjectRoot(candidate: string, projectRootReal: string): boolea
   return candidate === projectRootReal || candidate.startsWith(projectRootReal + path.sep);
 }
 
-function safeStringify(value: unknown): string {
-  try {
-    const s = JSON.stringify(value);
-    return s === undefined ? String(value) : s;
-  } catch {
-    return String(value);
-  }
-}
+/**
+ * Top-level config keys that were renamed; the live key each one moved to. Used
+ * by `sanitizeProjectFileConfig` to turn an unknown key into a migration message
+ * (`analyzerConfig` → `analyzerConfigs`) instead of a bare "not recognised".
+ */
+const RENAMED_TOP_LEVEL_KEYS: Record<string, string> = {
+  analyzerConfig: 'analyzerConfigs',
+};
 
 /**
  * Spec 61 R1.2 — strip every key not in `PROJECT_FILE_CONFIG_KEYS` and contain
  * path-valued keys to the project root. `raw` is the untrusted `JSON.parse`
  * result of a `.codeauditor.json` found inside the project being audited.
  *
- * `scope` is the canonical example of what this drops: it was never declared on
- * `AuditConfig`, reached `execSync(\`git diff --name-only ${ref}\`)` only
+ * `scope` is the canonical example of what this rejects: it was never declared
+ * on `AuditConfig`, reached `execSync(\`git diff --name-only ${ref}\`)` only
  * because `mergeConfig` iterated raw JSON keys, and is absent from
  * `PROJECT_FILE_CONFIG_KEYS`.
+ *
+ * An unknown key is NOT silently dropped — it throws, naming the key and (where
+ * one exists) the live key it was renamed to. This is the *single* disposition
+ * for unknown keys in the loader: the same path `validateThresholds` uses, not
+ * a soft-reject into a `rejected` array.
  *
  * @param raw The untrusted `JSON.parse` result of a `.codeauditor.json` file.
  * @param configPath The path to the config file, used to resolve relative paths.
  * @param projectRoot The project root that path-valued keys must stay within.
- * @returns The sanitized config fragment plus every entry that was rejected.
+ * @returns The sanitized config fragment plus every value-level rejection.
  */
 export function sanitizeProjectFileConfig(
   raw: unknown,
@@ -102,15 +112,25 @@ export function sanitizeProjectFileConfig(
     return { config: {}, rejected };
   }
 
+  const entries = Object.entries(raw as Record<string, unknown>);
+  const unknownKeys = entries
+    .filter(([key]) => !(PROJECT_FILE_CONFIG_KEYS as readonly string[]).includes(key))
+    .map(([key]) => key);
+  if (unknownKeys.length > 0) {
+    const lines = unknownKeys.map((key) => {
+      const live = RENAMED_TOP_LEVEL_KEYS[key];
+      return live
+        ? `"${key}" is not recognised — the live key is "${live}"`
+        : `"${key}" is not recognised and has no live equivalent — remove it`;
+    });
+    throw new Error(`Unknown configuration keys in ${configPath}:\n${lines.map((l) => `  - ${l}`).join('\n')}`);
+  }
+
   const configDir = path.dirname(configPath);
   const projectRootReal = realpathIfExists(projectRoot);
   const config: Partial<ProjectFileConfig> = {};
 
-  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
-    if (!(PROJECT_FILE_CONFIG_KEYS as readonly string[]).includes(key)) {
-      rejected.push({ key, value: safeStringify(value), reason: 'unknown-key' });
-      continue;
-    }
+  for (const [key, value] of entries) {
     if (value === undefined) continue;
 
     if (key === 'includePaths' || key === 'excludePaths') {
@@ -253,15 +273,20 @@ async function loadFromFile(
   configPath: string,
   projectRoot: string,
 ): Promise<{ config: AuditConfig; rejected: RejectedConfigEntry[] }> {
+  // Only read/parse failures are tolerated (missing file, malformed JSON). An
+  // unknown key thrown by `sanitizeProjectFileConfig` must propagate to
+  // `loadConfig`'s caller — swallowing it here would silently re-open the
+  // write-only-rejection channel this loader just closed.
+  let fileConfig: unknown;
   try {
     const content = await fs.readFile(configPath, 'utf-8');
-    const fileConfig = JSON.parse(content);
-    const { config: sanitized, rejected } = sanitizeProjectFileConfig(fileConfig, configPath, projectRoot);
-    return { config: mergeConfig(baseConfig, sanitized), rejected };
+    fileConfig = JSON.parse(content);
   } catch (error) {
     console.warn(`Failed to load config from ${configPath}:`, error);
     return { config: baseConfig, rejected: [] };
   }
+  const { config: sanitized, rejected } = sanitizeProjectFileConfig(fileConfig, configPath, projectRoot);
+  return { config: mergeConfig(baseConfig, sanitized), rejected };
 }
 
 /**
@@ -341,6 +366,10 @@ export function validateConfig(config: AuditConfig): string[] {
 
   // Validate the health-score floor (Spec 11 sweep follow-up)
   errors.push(...validateThresholds(config.thresholds));
+
+  // Validate analyzer-config namespaces — a phantom namespace (e.g. `component`,
+  // `security`) configures nothing and must not be silently dropped either.
+  errors.push(...validateAnalyzerConfigNamespaces(config.analyzerConfigs));
 
   return errors;
 }
@@ -428,6 +457,44 @@ function validateThresholds(thresholds: AuditConfig['thresholds']): string[] {
   const m = (thresholds as { minHealthScore?: unknown }).minHealthScore;
   if (m !== undefined && (typeof m !== 'number' || !Number.isFinite(m) || m < 0 || m > 100)) {
     errors.push(`thresholds.minHealthScore must be a number 0-100 — got "${String(m)}"`);
+  }
+  return errors;
+}
+
+/**
+ * Validate the `analyzerConfigs` namespace keys against the live set
+ * (`RUNTIME_DEFAULT_CONFIGS`). A namespace that is not in that set configures
+ * nothing — every analyzer reads its namespace by name and silently ignores the
+ * rest — so an unknown namespace is the same class of "key does nothing" defect
+ * as an unknown top-level key, and gets the same disposition: a throw.
+ *
+ * `component` and `security` are the two historical phantom namespaces the
+ * shipped examples carried; `component` moved to `react`, `security` had no
+ * live replacement (its `authPatterns`/`rateLimitPatterns` never mapped to any
+ * analyzer config).
+ */
+function validateAnalyzerConfigNamespaces(
+  analyzerConfigs: AuditConfig['analyzerConfigs'],
+): string[] {
+  const errors: string[] = [];
+  if (analyzerConfigs === undefined || analyzerConfigs === null) return errors;
+  if (typeof analyzerConfigs !== 'object' || Array.isArray(analyzerConfigs)) {
+    errors.push('analyzerConfigs must be an object');
+    return errors;
+  }
+
+  const LIVE_NAMESPACES = new Set(Object.keys(RUNTIME_DEFAULT_CONFIGS));
+  const RENAMED_NAMESPACES: Record<string, string> = {
+    component: 'react',
+  };
+  for (const ns of Object.keys(analyzerConfigs as Record<string, unknown>)) {
+    if (LIVE_NAMESPACES.has(ns)) continue;
+    const live = RENAMED_NAMESPACES[ns];
+    if (live) {
+      errors.push(`analyzerConfigs.${ns} is not recognised — the live namespace is "${live}"`);
+    } else {
+      errors.push(`analyzerConfigs.${ns} is not recognised and has no live namespace — remove it`);
+    }
   }
   return errors;
 }

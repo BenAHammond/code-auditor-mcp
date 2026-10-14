@@ -1,11 +1,7 @@
 {
   "$schema": "https://code-auditor.vercel.app/schemas/config.json",
-  "projectType": "nextjs",
   "databaseType": "sqlite",
   "rules": {},
-  "dataAccess": {
-    "enabled": true
-  },
   "analyzerConfigs": {
     "data-access": {
       "skipTestFiles": false

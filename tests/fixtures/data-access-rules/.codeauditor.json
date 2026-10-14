@@ -1,14 +1,13 @@
 {
   "$schema": "https://code-auditor.vercel.app/schemas/config.json",
-  "projectType": "nextjs",
   "databaseType": "sqlite",
   "rules": {},
-  "dataAccess": {
-    "enabled": true
-  },
   "analyzerConfigs": {
     "data-access": {
-      "orgFilterTables": ["projects", "users"],
+      "orgFilterTables": [
+        "projects",
+        "users"
+      ],
       "skipTestFiles": false
     }
   }
