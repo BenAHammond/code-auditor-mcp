@@ -82,6 +82,18 @@ describe('resolvePersistedIndexPath', () => {
       path.join(xdg, 'code-auditor', 'projects', hash, 'index.db')
     );
   });
+
+  it('keys two directories inside one project to the same DB (project identity, not cwd)', () => {
+    const xdg = makeTempDir('ca-xdg-');
+    process.env.XDG_CACHE_HOME = xdg;
+    const root = makeTempDir('ca-project-');
+    fs.writeFileSync(path.join(root, 'package.json'), '{"name":"repro"}');
+    const nested = path.join(root, 'src', 'a', 'b', 'c');
+    fs.mkdirSync(nested, { recursive: true });
+    // The subdirectory must resolve to the SAME database as the project root:
+    // the key derives from the project (package.json / git root), not from cwd.
+    expect(resolvePersistedIndexPath(nested)).toBe(resolvePersistedIndexPath(root));
+  });
 });
 
 describe('resolveDaemonSocketPath', () => {

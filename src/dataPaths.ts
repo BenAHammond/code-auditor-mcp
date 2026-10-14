@@ -42,12 +42,15 @@ export function resolvePersistedIndexPath(projectRoot?: string): string {
   const raw = dataDirEnv();
   if (raw) {
     if (projectRoot) {
-      return path.join(path.resolve(raw), 'projects', projectHash(projectRoot), 'index.db');
+      return path.join(path.resolve(raw), 'projects', projectHash(discoverProjectRoot(projectRoot)), 'index.db');
     }
     return path.join(path.resolve(raw), 'index.db');
   }
 
-  const root = path.resolve(projectRoot || process.cwd());
+  // Key on the project's own identity (its git root / package.json dir), never
+  // on where the process happened to start. Two invocations started from
+  // different directories inside one project must land on the same DB.
+  const root = discoverProjectRoot(projectRoot || process.cwd());
   return path.join(getFallbackCacheRoot(), 'projects', projectHash(root), 'index.db');
 }
 
@@ -166,6 +169,43 @@ function resolveRealPath(p: string): string {
     // The path may not exist yet (fresh cache dir, brand-new project) — fall
     // back to lexical resolution so we still get a stable key.
     return path.resolve(p);
+  }
+}
+
+/**
+ * Project-identity markers: a directory that contains any of these is treated
+ * as a project root. Walked upward from the process start (or the `-p` path) so
+ * the cache key reflects *what* is being audited, not *where* the process was
+ * started — two invocations from different directories inside one project must
+ * land on the same database.
+ *
+ * `.git` may be a file (git worktree / submodule) or a directory.
+ */
+const PROJECT_ROOT_MARKERS = ['.git', 'package.json', 'go.mod'];
+
+/**
+ * Discover the project root for a starting directory by walking up until a
+ * marker (`PROJECT_ROOT_MARKERS`) is found. Returns the resolved start directory
+ * when no marker is found — the caller then hashes whatever it was given, which
+ * is the correct fallback for a bare directory with no project identity.
+ *
+ * @param startDir - Directory to begin the upward search from.
+ * @returns The nearest ancestor carrying a project marker, or the resolved start.
+ */
+export function discoverProjectRoot(startDir: string): string {
+  let current = resolveRealPath(startDir);
+  for (;;) {
+    for (const marker of PROJECT_ROOT_MARKERS) {
+      if (fs.existsSync(path.join(current, marker))) {
+        return current;
+      }
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      // Reached the filesystem root with no marker — fall back to the start dir.
+      return resolveRealPath(startDir);
+    }
+    current = parent;
   }
 }
 
