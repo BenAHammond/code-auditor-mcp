@@ -74,7 +74,6 @@ async function writeConfig(
       includePaths: ['src/**/*.ts'],
       excludePaths: ['**/node_modules/**', '**/*.test.ts'],
       minSeverity: 'high',
-      showProgress: false,
       ...overrides,
     }, null, 2),
     'utf-8',
@@ -113,7 +112,6 @@ describe('isExempt — wired in the documentation analyzer file loop', () => {
     const result = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -163,7 +161,6 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
     const result1 = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -183,7 +180,6 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
     const result2 = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -198,7 +194,6 @@ describe('R6.1 — baseline suppresses known findings (real audit pipeline)', ()
     const result3 = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -234,7 +229,6 @@ describe('Spec 28 — report-shape contract (real audit result)', () => {
     const result = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -262,7 +256,6 @@ describe('Spec 28 — report-shape contract (real audit result)', () => {
     const result = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -284,7 +277,6 @@ describe('Spec 28 — report-shape contract (real audit result)', () => {
     const result = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -309,7 +301,6 @@ describe('Spec 28 — report-shape contract (real audit result)', () => {
     const result = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -330,7 +321,6 @@ describe('Spec 28 — report-shape contract (real audit result)', () => {
     const result = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 

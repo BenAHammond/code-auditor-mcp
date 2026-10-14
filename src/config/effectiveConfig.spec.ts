@@ -122,7 +122,7 @@ describe('computeEffectiveConfig — source attribution (Spec 38 R1)', () => {
 });
 
 describe('computeTopLevelConfig — source attribution (Spec 38 R1)', () => {
-  const base = { includePaths: ['./src'], outputFormats: ['json'] };
+  const base = { includePaths: ['./src'], minSeverity: 'high' };
 
   it('attributes unset keys to `default` even when present in project with equal value', () => {
     const out = computeTopLevelConfig(base, { ...base });
@@ -133,11 +133,11 @@ describe('computeTopLevelConfig — source attribution (Spec 38 R1)', () => {
   });
 
   it('attributes a differing key to `project-config`', () => {
-    const out = computeTopLevelConfig(base, { ...base, outputFormats: ['csv'] });
-    const key = out.find((k) => k.key === 'outputFormats')!;
+    const out = computeTopLevelConfig(base, { ...base, minSeverity: 'severe' });
+    const key = out.find((k) => k.key === 'minSeverity')!;
     expect(key.source).toBe('project-config');
     expect(key.differsFromDefault).toBe(true);
-    expect(key.defaultValue).toEqual(['json']);
+    expect(key.defaultValue).toEqual('high');
   });
 
   it('surfaces project-only keys (no default) with an undefined defaultValue', () => {

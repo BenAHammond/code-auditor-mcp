@@ -85,7 +85,6 @@ describe('Bug #3 — own-output exclusion (run twice, no finding cites the repor
         runAudit({
           projectRoot: testDir,
           indexFunctions: false,
-          showProgress: false,
           scope: 'all',
         });
 

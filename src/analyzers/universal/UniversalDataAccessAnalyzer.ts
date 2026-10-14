@@ -96,7 +96,6 @@ const SQL_KEYWORDS = [
  */
 export interface DataAccessAnalyzerConfig {
   // Enable/disable checks
-  checkOrgFilters?: boolean;
   checkSQLInjection?: boolean;
 
   /** Spec 55 R3 — exclude the query-shape rules (loop-query, unfiltered-query)
@@ -126,19 +125,11 @@ export interface DataAccessAnalyzerConfig {
   // `sql` regex list is deleted, not kept as a fallback.
   tablePatterns?: {
     orm?: RegExp[];
-    queryBuilder?: RegExp[];
   };
 
   // Performance thresholds
   performanceThresholds?: {
-    complexQueryCount?: number;
-    unfilteredQueryCount?: number;
     joinedTableCount?: number;
-  };
-
-  // Security patterns
-  securityPatterns?: {
-    sqlInjectionRisks?: string[];
   };
 
   /** DB wrapper function names that represent parameterized calls (e.g. d1Query, d1Exec).
@@ -176,7 +167,6 @@ export interface DataAccessAnalyzerConfig {
 }
 
 export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
-  checkOrgFilters: true,
   checkSQLInjection: true,
   skipTestFiles: true,
 
@@ -194,15 +184,9 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
     orm: [
       /table\s*[:=]\s*["'`]?([\p{L}\p{N}_]+)["'`]?/giu
     ],
-    queryBuilder: [/\.from\s*\(\s*["'`]?([\p{L}\p{N}_]+)["'`]?\s*\)/giu]
   },
   performanceThresholds: {
-    complexQueryCount: 3,
-    unfilteredQueryCount: 3,
     joinedTableCount: 4
-  },
-  securityPatterns: {
-    sqlInjectionRisks: ['${', 'concat', 'string interpolation'],
   },
   // DB wrapper functions that accept (sql, params) — same as .prepare().bind()
   // but expressed as a simple function call.  Must match the provenance system's

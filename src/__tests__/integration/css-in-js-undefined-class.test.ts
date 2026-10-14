@@ -81,7 +81,6 @@ describe('CSS-in-JS defined class resolves in markup (Spec 45 Piece 3)', () => {
 
     const result = await runAudit({
       projectRoot: testDir,
-      showProgress: false,
     });
 
     const stylesViolations = result.analyzerResults['styles']?.violations ?? [];

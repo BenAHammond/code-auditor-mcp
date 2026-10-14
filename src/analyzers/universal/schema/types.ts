@@ -19,7 +19,6 @@ export interface SchemaAnalyzerConfig {
   enableTableUsageTracking?: boolean;
   checkMissingReferences?: boolean;
   checkNamingConventions?: boolean;
-  detectUnusedTables?: boolean;
   validateQueryPatterns?: boolean;
   /** Spec 58 R1 — report DB-call SQL held in an unresolvable identifier as an
    *  `unresolved-query` coverage diagnostic (rather than silently skipping it).
@@ -53,7 +52,6 @@ export interface SchemaAnalyzerConfig {
     data: string | string[];
   }>;
   strictMode?: boolean;
-  allowAdditionalProperties?: boolean;
 
   // Spec-17 R2 additions — SQL context detection
   // Default values live in DEFAULT_SCHEMA_CONFIG — the single source of truth.

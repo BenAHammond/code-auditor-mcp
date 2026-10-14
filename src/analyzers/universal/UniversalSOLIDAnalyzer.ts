@@ -12,10 +12,6 @@ import { detectFunctionConcerns, countConcernGroups, votingConcerns, CONCERN_LAB
 
 /**
  * Configuration for SOLID analyzer
- *
- * Spec-17 R5: maxClassComplexity (heuristic) is DEPRECATED — replaced by
- * maxMethodComplexity (per-method cyclomatic complexity, solid/method-complexity)
- * and classAggregateComplexity (class-size aggregation, solid/class-size).
  */
 function qualifiedMethod(clsName: string, methodName: string): string {
   return `${clsName}.${methodName}`;
@@ -25,8 +21,6 @@ export interface SOLIDAnalyzerConfig {
   maxMethodsPerClass?: number;
   maxLinesPerMethod?: number;
   maxParametersPerMethod?: number;
-  /** @deprecated Use maxMethodComplexity instead — this was a heuristic (1 + 2×methods + 5×extends + Σ(lines/10)) */
-  maxClassComplexity?: number;
   maxInterfaceMembers?: number;
   // R5.1: Per-method cyclomatic complexity threshold (true McCC via adapter.getComplexity())
   maxMethodComplexity?: number;
@@ -49,7 +43,6 @@ export const DEFAULT_SOLID_CONFIG: SOLIDAnalyzerConfig = {
   maxMethodsPerClass: 20,
   maxLinesPerMethod: 200,
   maxParametersPerMethod: 6,
-  maxClassComplexity: 50,              // DEPRECATED — kept for back-compat
   maxInterfaceMembers: 25,
   // R5.1: Per-method cyclomatic complexity (true McCC). Left at 50 — McCC 50 is
   // already a genuinely large function, not idiomatic code (33 findings on

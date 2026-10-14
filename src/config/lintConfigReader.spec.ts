@@ -193,7 +193,6 @@ describe('lint config as threshold authority (integration)', () => {
 
     const result = await runAudit({
       projectRoot: dir,
-      showProgress: false,
     });
 
     const source = (result.metadata.thresholdSources ?? []).find(
@@ -216,7 +215,6 @@ describe('lint config as threshold authority (integration)', () => {
 
     const result = await runAudit({
       projectRoot: dir,
-      showProgress: false,
     });
 
     const source = (result.metadata.thresholdSources ?? []).find(
@@ -240,7 +238,6 @@ describe('lint config as threshold authority (integration)', () => {
 
     const result = await runAudit({
       projectRoot: dir,
-      showProgress: false,
     });
 
     const source = (result.metadata.thresholdSources ?? []).find(
@@ -259,7 +256,6 @@ describe('lint config as threshold authority (integration)', () => {
 
     const result = await runAudit({
       projectRoot: dir,
-      showProgress: false,
     });
 
     const source = (result.metadata.thresholdSources ?? []).find(

@@ -70,7 +70,6 @@ describe('Spec 33 Item 8 — mixed-language fixture (Go + TS) wiring', () => {
     const result = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -90,7 +89,6 @@ describe('Spec 33 Item 8 — mixed-language fixture (Go + TS) wiring', () => {
     const result = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 

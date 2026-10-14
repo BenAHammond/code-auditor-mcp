@@ -52,7 +52,6 @@ describe('reason 7 — excludeFromAnalysis path profile', () => {
       pathProfiles: [
         { name: 'opt-out', paths: ['src/**'], overrides: { excludeFromAnalysis: true } },
       ],
-      showProgress: false,
     });
 
     const accounting = result.metadata?.fileAccounting;
@@ -84,7 +83,6 @@ describe('reason 7 — excludeFromAnalysis path profile', () => {
     const result = await runAudit({
       projectRoot: testDir,
       severityOverrides: { 'function-documentation': 'critical' as const },
-      showProgress: false,
     });
 
     const accounting = result.metadata?.fileAccounting;

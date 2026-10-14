@@ -17,11 +17,6 @@ import { basename } from 'node:path';
  * Default configuration for React analyzer
  */
 export const DEFAULT_REACT_CONFIG: ReactAnalyzerConfig = {
-  // Component Detection
-  detectFunctionalComponents: true,
-  detectClassComponents: true,
-  detectMemoComponents: true,
-  
   // Quality Checks
   requirePropTypes: false, // TypeScript provides type safety
   requireErrorBoundaries: true,
@@ -37,7 +32,6 @@ export const DEFAULT_REACT_CONFIG: ReactAnalyzerConfig = {
   
   // Best Practices
   checkAccessibility: true,
-  preventDirectDOMAccess: true,
   requireKeyProps: true,
 
   // Raw Element Detection (Spec 10 R4)

@@ -48,7 +48,6 @@ describe('partially analyzed — .astro dropped by stage 2, consumed by stage 3'
 
     const result = await runAudit({
       projectRoot: testDir,
-      showProgress: false,
     });
 
     const accounting = result.metadata?.fileAccounting;
@@ -87,7 +86,6 @@ describe('partially analyzed — .astro dropped by stage 2, consumed by stage 3'
 
     const result = await runAudit({
       projectRoot: testDir,
-      showProgress: false,
     });
 
     const accounting = result.metadata?.fileAccounting;

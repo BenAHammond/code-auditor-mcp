@@ -27,7 +27,6 @@ export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   enableTableUsageTracking: true,
   checkMissingReferences: true,
   checkNamingConventions: true,
-  detectUnusedTables: false,
   validateQueryPatterns: true,
   reportUnresolvedQueries: true,
   maxQueriesPerFunction: 5,
@@ -40,7 +39,6 @@ export const DEFAULT_SCHEMA_CONFIG: SchemaAnalyzerConfig = {
   schemaFilePatterns: ['*.schema.json', '*-schema.json'],
   dataFilePatterns: ['*.data.json', '*.example.json'],
   strictMode: false,
-  allowAdditionalProperties: true,
   // Spec-17 R2 defaults
   sqlTagNames: [...SQL_TAG_NAMES],
   dbBindingNames: [...DB_BINDING_NAMES],

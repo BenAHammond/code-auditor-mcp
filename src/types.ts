@@ -665,18 +665,9 @@ export interface AuditOptions {
   /** Spec 68 §15 — run the index-only harness (no analysis phases). Replaces the
    *  deleted `enabledAnalyzers: []` "select nothing" idiom. */
   indexOnly?: boolean;
-  outputFormats?: ReportFormat[];
   outputDir?: string;
-  failOnCritical?: boolean;
-  duplicateThreshold?: number;
   verbose?: boolean;
   configFile?: string;
-  thresholds?: {
-    maxCritical?: number;
-    maxSevere?: number;
-    maxHigh?: number;
-    minHealthScore?: number;
-  };
   unusedImportsConfig?: {
     checkLevel?: 'function' | 'file';
     includeTypeOnlyImports?: boolean;
@@ -913,25 +904,13 @@ export interface PathProfile {
 export interface AuditConfig {
   includePaths?: string[];
   excludePaths?: string[];
-  outputFormats?: ReportFormat[];
   outputDir?: string;
   outputDirectory?: string;
   minSeverity?: Severity;
-  failOnCritical?: boolean;
-  showProgress?: boolean;
-  parallel?: boolean;
-  thresholds?: {
-    maxCritical?: number;
-    maxSevere?: number;
-    maxHigh?: number;
-    minHealthScore?: number;
-  };
   /** Per-directory config overrides. Ordered array — later matching profiles win on merge. */
   pathProfiles?: PathProfile[];
   /** Set to false to disable all built-in profiles. */
   builtin?: boolean;
-  /** Spec 13 — Churn extraction config. */
-  churn?: ChurnConfig;
   /** Spec 13 — Diverging-clone detection config. */
   divergence?: DivergenceConfig;
   /** Spec 15 — Cross-domain analysis config. */
@@ -969,17 +948,11 @@ export interface AuditConfig {
 export interface ProjectFileConfig {
   includePaths?: string[];
   excludePaths?: string[];
-  outputFormats?: ReportFormat[];
   outputDir?: string;
   outputDirectory?: string;
   minSeverity?: Severity;
-  failOnCritical?: boolean;
-  showProgress?: boolean;
-  parallel?: boolean;
-  thresholds?: AuditConfig['thresholds'];
   pathProfiles?: PathProfile[];
   builtin?: boolean;
-  churn?: ChurnConfig;
   divergence?: DivergenceConfig;
   crossDomain?: CrossDomainConfig;
   analyzerOptions?: Record<string, any>;
@@ -1014,10 +987,10 @@ export interface ProjectFileConfig {
  * to update is the same bug with an extra step.
  */
 export const PROJECT_FILE_CONFIG_KEYS = [
-  'includePaths', 'excludePaths', 'outputFormats',
-  'outputDir', 'outputDirectory', 'minSeverity', 'failOnCritical',
-  'showProgress', 'parallel', 'thresholds', 'pathProfiles', 'builtin',
-  'churn', 'divergence', 'crossDomain', 'analyzerOptions', 'analyzerConfigs',
+  'includePaths', 'excludePaths',
+  'outputDir', 'outputDirectory', 'minSeverity',
+  'pathProfiles', 'builtin',
+  'divergence', 'crossDomain', 'analyzerOptions', 'analyzerConfigs',
   'rationales', 'importVirtualModules', 'daemon', 'databaseType', 'rules', '$schema',
 ] as const satisfies readonly (keyof ProjectFileConfig)[];
 
@@ -1482,27 +1455,6 @@ export interface ComponentResponsibility {
   details?: string;
 }
 
-export interface ComponentPattern {
-  name: string;
-  indicators: PatternIndicator[];
-  allowedResponsibilities: ResponsibilityType[];
-  relatedResponsibilities?: ResponsibilityType[][];
-  complexityMultiplier: number;
-  description: string;
-}
-
-export interface PatternIndicator {
-  type: 'name' | 'path' | 'hooks' | 'props' | 'imports';
-  pattern: RegExp | string;
-  weight?: number;
-}
-
-export interface ComponentPatternConfig {
-  patterns: ComponentPattern[];
-  customPatterns?: ComponentPattern[];
-  enablePatternDetection: boolean;
-}
-
 export interface RefactoringSuggestion {
   pattern: 'extract-hook' | 'split-component' | 'container-presenter' | 'compose-components' | 'extract-service';
   description: string;
@@ -1524,24 +1476,18 @@ export interface ReactViolation extends Violation {
 }
 
 export interface ReactAnalyzerConfig {
-  // Component Detection
-  detectFunctionalComponents: boolean;
-  detectClassComponents: boolean;
-  detectMemoComponents: boolean;
-  
   // Quality Checks
   requirePropTypes: boolean;
   requireErrorBoundaries: boolean;
   checkHooksRules: boolean;
   maxComponentComplexity: number;
-  
+
   // Performance
   checkUnnecessaryRerenders: boolean;
   requireMemoization: boolean;
-  
+
   // Best Practices
   checkAccessibility: boolean;
-  preventDirectDOMAccess: boolean;
   requireKeyProps: boolean;
 
   // Raw Element Detection (Spec 10 R4)
@@ -1894,8 +1840,6 @@ export interface DivergenceConfig {
   divergenceThreshold: number;
   /** Number of consecutive declining runs before flagging. Default 2. */
   divergenceRuns: number;
-  /** Minimum Jaccard similarity to seed a pair for tracking. Default 0.5. */
-  minPairSimilarity: number;
 }
 
 // Spec 21 — Language-Neutral Detection / Provenance

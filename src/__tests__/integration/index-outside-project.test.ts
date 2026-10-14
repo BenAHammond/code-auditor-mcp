@@ -84,7 +84,6 @@ describe('Spec 70 item 3 — the audit writes nothing into the project by defaul
       await runAudit({
         projectRoot: fixture,
         indexFunctions: true, // exercise the real index write path
-        showProgress: false,
         scope: 'all',
       });
 

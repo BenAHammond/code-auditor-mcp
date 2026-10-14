@@ -94,7 +94,6 @@ async function writeConfig(testDir: string, overrides: Record<string, any> = {})
       includePaths: ['src/**/*.ts'],
       excludePaths: ['**/node_modules/**', '**/*.test.ts', '**/*.spec.ts'],
       minSeverity: 'high',
-      showProgress: false,
       ...overrides,
     }, null, 2),
     'utf-8',
@@ -1341,7 +1340,6 @@ describe('Spec-18 — Report formats include baseline data', () => {
     const result1 = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -1365,7 +1363,6 @@ describe('Spec-18 — Report formats include baseline data', () => {
     const result2 = await runAudit({
       projectRoot: testDir,
       indexFunctions: false,
-      showProgress: false,
       scope: 'all',
     });
 
@@ -1526,10 +1523,9 @@ describe('Rule Registry', () => {
   it('Spec 37 R2 — every entry carries the contract; thresholds name real config keys', () => {
     // Authoritative config-key source is each analyzer's own DEFAULT_*_CONFIG —
     // the shape the analyzer actually reads at runtime — NOT the flat
-    // DEFAULT_ANALYZER_CONFIGS blob in defaults.ts. That blob has drifted: its
-    // dataAccess.performanceThresholds.maxJoins is dead, while the analyzer reads
-    // joinedTableCount. Flatten leaf paths so a threshold naming a real key
-    // resolves and one naming a phantom key fails.
+    // DEFAULT_ANALYZER_CONFIGS blob in defaults.ts, which has historically
+    // drifted from the enforced values. Flatten leaf paths so a threshold naming
+    // a real key resolves and one naming a phantom key fails.
     const flattenLeafPaths = (obj: unknown, prefix = ''): Set<string> => {
       const paths = new Set<string>();
       if (obj === null || typeof obj !== 'object') {

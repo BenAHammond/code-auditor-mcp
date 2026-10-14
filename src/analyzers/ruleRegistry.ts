@@ -530,9 +530,9 @@ export const RULE_REGISTRY: Record<string, Readonly<RuleRegistryEntry>> = {
     resolvable: false,
     message: 'Clone pair has diverged: similarity dropped {drop} (from {previous} to {current}) across {runs} consecutive runs. Review {file1}:{line1} and {file2}:{line2} for diverged logic.',
     docs: 'dry/diverging-clone',
-    // No thresholds: the divergence knobs (divergenceThreshold, divergenceRuns,
-    // minPairSimilarity) live in DivergenceConfig (types.ts), read by auditRunner's
-    // cross-run pass — not keys the dry analyzer's own DEFAULT_DRY_CONFIG reads.
+    // No thresholds: the divergence knobs (divergenceThreshold, divergenceRuns)
+    // live in DivergenceConfig (types.ts), read by auditRunner's cross-run pass —
+    // not keys the dry analyzer's own DEFAULT_DRY_CONFIG reads.
     thresholds: [],
     samples: {
       valid: [

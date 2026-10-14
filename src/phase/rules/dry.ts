@@ -737,13 +737,10 @@ export function seedDryPairs(codeBlocks: readonly CodeBlockFact[], config: DryBl
 
 // ── diverging-clone (cross-run pair tracking, Spec 13 R5) ─────────────────────
 
-/** Config surface the diverging-clone rule reads (subset of `DivergenceConfig`).
- *  `minPairSimilarity` is declared but the loop never reads it — matching the
- *  legacy Phase 2, which only consumed `divergenceThreshold`/`divergenceRuns`. */
+/** Config surface the diverging-clone rule reads (subset of `DivergenceConfig`). */
 interface DivergenceCfg {
   divergenceThreshold?: number;
   divergenceRuns?: number;
-  minPairSimilarity?: number;
 }
 
 /** The fallback the legacy auditRunner Phase 2 hardcoded when no divergence
@@ -751,7 +748,6 @@ interface DivergenceCfg {
 const DIVERGENCE_DEFAULTS: DivergenceCfg = {
   divergenceThreshold: 0.05,
   divergenceRuns: 2,
-  minPairSimilarity: 0.5,
 };
 
 /** Re-homes auditRunner Phase 2 verbatim: flag a pair whose similarity fell by

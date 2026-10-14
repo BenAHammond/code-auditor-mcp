@@ -27,18 +27,11 @@ export function getDefaultConfig(): AuditConfig {
       '**/*.test.{ts,tsx,js,jsx}',
       '**/*.spec.{ts,tsx,js,jsx}'
     ],
-    // Note: no `outputFormats`/`outputDirectory` default. Reports are written
-    // only to an explicit CLI `--output` path (or stdout); a config default here
-    // would advertise a key that `print-config` then shows and the loader then
-    // refuses/ignores. See configLoader.ts `output-directory-refused`.
+    // Note: no `outputDirectory` default. Reports are written only to an explicit
+    // CLI `--output` path (or stdout); a config default here would advertise a key
+    // that `print-config` then shows and the loader then refuses. See
+    // configLoader.ts `output-directory-refused`.
     minSeverity: 'high',
-    failOnCritical: false,
-    showProgress: true,
-    thresholds: {
-      maxCritical: 0,
-      maxSevere: 100,
-      minHealthScore: 75
-    },
     // Spec 54 R3 — severity is urgency, not permission. There is no
     // `severityOverrides` and no `gateSeverities`: every rule is assigned on the
     // urgency axis (critical/severe/high) and every finding blocks. Per-rule
@@ -99,21 +92,16 @@ export function getProjectTypeDefaults(projectType: string): Partial<AuditConfig
 export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
   switch (env) {
     case 'ci':
-      return {
-        failOnCritical: true,
-        showProgress: false
-      };
+      return {};
 
     case 'development':
       return {
-        showProgress: true,
         minSeverity: 'high'
       };
 
     case 'production':
       return {
-        minSeverity: 'severe',
-        failOnCritical: true
+        minSeverity: 'severe'
       };
     
     default:
@@ -145,9 +133,6 @@ export const DEFAULT_COLOR_DELTA_E = 1.0;
  * Default analyzer configurations
  */
 export const DEFAULT_ANALYZER_CONFIGS = {
-  // Spec-17 R5: maxComplexity (old heuristic) deprecated; use maxMethodComplexity
-  // and classAggregateComplexity for true cyclomatic complexity.
-  //
   // AUTHORITATIVE source is DEFAULT_SOLID_CONFIG (UniversalSOLIDAnalyzer.ts) —
   // the pipeline and `--print-config` resolve from there (RUNTIME_DEFAULT_CONFIGS),
   // NOT from this copy. This namespace is exported from the library (`src/index.ts`)
@@ -158,8 +143,6 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     maxMethodsPerClass: 20,
     maxLinesPerMethod: 200,
     maxParametersPerMethod: 6,
-    maxImportsPerFile: 5,                // Spec 11 R3 sweep: 20 → 5 (precision-first)
-    maxComplexity: 10,                   // DEPRECATED — old heuristic
     maxInterfaceMembers: 25,
     // R5.1: Per-method cyclomatic complexity threshold (true McCC)
     maxMethodComplexity: 50,
@@ -198,21 +181,10 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     divergence: {
       divergenceThreshold: 0.05,
       divergenceRuns: 2,
-      minPairSimilarity: 0.5,
     },
   },
   
   dataAccess: {
-
-    databasePatterns: {
-      postgres: ['pg', 'postgres', 'postgresql'],
-      mysql: ['mysql', 'mysql2'],
-      mongodb: ['mongodb', 'mongoose']
-    },
-    performanceThresholds: {
-      maxJoins: 5,
-      warnOnSelectStar: true
-    },
     // Spec 21 R3: shared detection mode — provenance-primary with name-fallback
     detection: {
       mode: 'hybrid' as const,
@@ -265,7 +237,6 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     enableTableUsageTracking: true,
     checkMissingReferences: true,
     checkNamingConventions: true,
-    detectUnusedTables: false,
     validateQueryPatterns: true,
     reportUnresolvedQueries: true,
     maxQueriesPerFunction: 1,      // Spec 11 R3 sweep: 5 → 1 (precision-first)
@@ -278,11 +249,6 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     detection: {
       mode: 'hybrid' as const,
     },
-    // Spec 21 R4: validator package list for provenanced validator detection
-    validatorPackageList: [
-      'zod', 'joi', 'ajv', 'valibot', 'yup', 'superstruct', 'arktype',
-      '@sinclair/typebox', 'class-validator',
-    ],
     // Spec 29: Declarative table-source registry — Tier 2 (ORM detection).
     // Adding an ORM becomes a config entry, not code.
     tableSources: [

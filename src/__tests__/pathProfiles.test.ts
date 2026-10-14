@@ -134,11 +134,8 @@ describe('validateConfig — pathProfiles', () => {
   const baseConfig: AuditConfig = {
     includePaths: ['**/*.ts'],
     excludePaths: [],
-    outputFormats: ['json'],
     outputDirectory: './reports',
     minSeverity: 'high',
-    failOnCritical: false,
-    showProgress: false,
   };
 
   // Test 15: severityCap has been removed (Spec-36 R4)
@@ -333,7 +330,6 @@ describe('pathProfiles — integration', () => {
         { name: 'source-strict', paths: ['src/**'], overrides: { requireFunctionDocs: true } },
         { name: 'scripts-lenient', paths: ['scripts/**'], overrides: { excludeFromGate: true } },
       ],
-      showProgress: false,
     });
 
     // Scope to documentation: the profile test is about doc severity + gate
@@ -389,7 +385,6 @@ export function foo() { return something(); }
 
     const result = await runAudit({
       projectRoot: testDir,
-      showProgress: false,
     });
 
     const invariantViolations = violationsFor(result, 'banned-import')
@@ -419,7 +414,6 @@ export function foo() { return something(); }
       pathProfiles: [
         { name: 'excluded', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
-      showProgress: false,
     });
 
     const docsV = violationsFor(result, 'src/module.ts').filter((v: any) => v.analyzer === 'documentation');
@@ -446,7 +440,6 @@ export function foo() { return something(); }
     // Audit 1: high severity, no exclusion
     const result1 = await runAudit({
       projectRoot: testDir,
-      showProgress: false,
     });
     const v1 = violationsFor(result1, 'src/module.ts').filter((v: any) => v.analyzer === 'documentation');
     expect(v1.length).toBeGreaterThan(0);
@@ -459,7 +452,6 @@ export function foo() { return something(); }
       pathProfiles: [
         { name: 'excluded', paths: ['src/**'], overrides: { excludeFromGate: true } },
       ],
-      showProgress: false,
     });
     const v2 = violationsFor(result2, 'src/module.ts').filter((v: any) => v.analyzer === 'documentation');
     expect(v2.length).toBeGreaterThan(0);
@@ -485,7 +477,6 @@ export function foo() { return something(); }
     const result = await runAudit({
       projectRoot: testDir,
       pathProfiles: BUILTIN_PATH_PROFILES,
-      showProgress: false,
     });
 
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
@@ -510,7 +501,6 @@ export function foo() { return something(); }
     // No pathProfiles — built-in scripts-and-tests still applies
     const result = await runAudit({
       projectRoot: testDir,
-      showProgress: false,
     });
 
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
@@ -535,7 +525,6 @@ export function foo() { return something(); }
     const result = await runAudit({
       projectRoot: testDir,
       builtin: false,
-      showProgress: false,
     });
 
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
@@ -563,7 +552,6 @@ export function foo() { return something(); }
       pathProfiles: [
         { name: 'source-strict', paths: ['src/**'], overrides: { requireFunctionDocs: true } },
       ],
-      showProgress: false,
     });
 
     const srcV = violationsFor(result, 'src/module.ts');

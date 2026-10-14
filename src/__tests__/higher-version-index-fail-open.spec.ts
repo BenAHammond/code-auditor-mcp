@@ -65,7 +65,6 @@ describe('higher-schema-version index fails open', () => {
       projectRoot: dir,
       scope: 'changed',
       explicitFiles: [file],
-      showProgress: false,
       writeToLedger: false,
     });
 

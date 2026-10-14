@@ -41,7 +41,6 @@ describe('Spec 36 R5 — threshold rationale guard', () => {
       runAudit({
         projectRoot: testDir,
         analyzerConfigs: { solid: { maxLinesPerMethod: 100 } },
-        showProgress: false,
       }),
     ).rejects.toThrow(/rationale/i);
   });
@@ -51,7 +50,6 @@ describe('Spec 36 R5 — threshold rationale guard', () => {
       projectRoot: testDir,
       analyzerConfigs: { solid: { maxLinesPerMethod: 100 } },
       rationales: { 'solid.maxLinesPerMethod': 'Calibrated for the fixture corpus.' },
-      showProgress: false,
     });
 
     expect(result.metadata.thresholdChanges).toEqual([
@@ -71,7 +69,6 @@ describe('Spec 36 R5 — threshold rationale guard', () => {
 
     const result = await runAudit({
       projectRoot: testDir,
-      showProgress: false,
     });
 
     expect(result.metadata.thresholdChanges).toEqual([

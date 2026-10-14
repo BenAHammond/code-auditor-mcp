@@ -1065,8 +1065,6 @@ export interface BuildProvenanceContextOptions {
    * DB-provenanced.
    */
   dbWrapperNames?: string[];
-  /** Validator package list override (defaults to VALIDATOR_PACKAGES) */
-  validatorPackageList?: string[];
   /**
    * The corpus's named SQL dialect for R3 (sql-argument) handle inference. When
    * non-null, a call whose argument parses as SQL under this dialect proves its

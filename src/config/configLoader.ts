@@ -269,10 +269,6 @@ function loadFromEnvironment(baseConfig: AuditConfig, prefix: string): AuditConf
     envConfig.outputDirectory = env[`${prefix}_OUTPUT_DIR`];
   }
 
-  if (env[`${prefix}_FAIL_ON_CRITICAL`]) {
-    envConfig.failOnCritical = env[`${prefix}_FAIL_ON_CRITICAL`] === 'true';
-  }
-
   // Code index environment variables
   const codeIndexConfig: any = {};
   if (env[`${prefix}_CODE_INDEX_DB_PATH`]) {
