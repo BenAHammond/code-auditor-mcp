@@ -487,7 +487,7 @@ interface FuncSeed {
  *  `(file, line, column, rule, severity)` multiset matches, and return it. */
 async function parityNoValidatorReachable(
   seeds: Seed[],
-  vb: { validators?: string[]; modeShare?: number; minCorpus?: number; depth?: number },
+  vb: { validators?: string[]; validatorPackageList?: string[]; modeShare?: number; minCorpus?: number; depth?: number },
   funcs: FuncSeed[],
   edges: Array<[number, number]>,
 ): Promise<string[]> {
@@ -655,6 +655,42 @@ describe('Spec 68 cross-domain parity — no-validator-reachable', () => {
       [],
     );
     expect(nu).toEqual([]);
+  });
+
+  it('ignores a private validator package under the default vocabulary', async () => {
+    // checkInput imports a package outside DEFAULT_VALIDATOR_PACKAGES. Its name
+    // does not match the validate*/assert* heuristic, so provenance is the only
+    // way it can be recognized — and the default vocabulary cannot see it.
+    const privateFuncs: FuncSeed[] = [
+      { id: 1, name: 'saveUser', filePath: '/p/src/users.ts' },
+      { id: 2, name: 'saveOrder', filePath: '/p/src/orders.ts' },
+      { id: 3, name: 'checkInput', filePath: '/p/src/validators.ts', usedImports: '["@acme/private-validators"]', isExported: 1 },
+    ];
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: [], modeShare: 0.5, minCorpus: 2, depth: 3 },
+      privateFuncs,
+      [[1, 3]],
+    );
+    expect(nu).toEqual([]);
+  });
+
+  it('admits a private validator package via validatorPackageList (config read)', async () => {
+    // Same seed, but validatorPackageList admits the private package: checkInput
+    // is provenanced, so saveOrder (which does not reach it) fires. This pins
+    // that the rule reads the config key, not a hardcoded list.
+    const privateFuncs: FuncSeed[] = [
+      { id: 1, name: 'saveUser', filePath: '/p/src/users.ts' },
+      { id: 2, name: 'saveOrder', filePath: '/p/src/orders.ts' },
+      { id: 3, name: 'checkInput', filePath: '/p/src/validators.ts', usedImports: '["@acme/private-validators"]', isExported: 1 },
+    ];
+    const nu = await parityNoValidatorReachable(
+      writes,
+      { validators: [], validatorPackageList: ['@acme/private-validators'], modeShare: 0.5, minCorpus: 2, depth: 3 },
+      privateFuncs,
+      [[1, 3]],
+    );
+    expect(nu).toEqual(['/p/src/orders.ts:20:0:cross-domain/no-validator-reachable:severe']);
   });
 });
 

@@ -65,7 +65,7 @@
 import * as path from 'node:path';
 import type { RuleDefinition, Finding, SchemaUsageFact, CallGraphFact, BatchFunctionFact, HotspotFact, CoverageFact } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
-import { VALIDATOR_PACKAGES } from '../../analyzers/provenance.js';
+import { DEFAULT_VALIDATOR_PACKAGES } from '../../config/defaults.js';
 
 /** The shared declaration for the TS cross-domain rules in this slice. */
 type CrossDomainNeeds = {
@@ -542,7 +542,11 @@ function collectWriters(usages: SchemaUsageFact[], graph: CallGraphFact): Writer
  * verbatim through the `call-graph` fact (no index column, no JSON string), so
  * the provenance test is a plain `array.includes(pkg)`.
  */
-function buildValidatorIdsFact(graph: CallGraphFact, userValidators: string[]): Set<number> {
+function buildValidatorIdsFact(
+  graph: CallGraphFact,
+  userValidators: string[],
+  validatorPackages: readonly string[],
+): Set<number> {
   const validatorIds = new Set<number>();
   const byName = new Map<string, number[]>();
   const byPathName = new Map<string, number[]>();
@@ -572,7 +576,7 @@ function buildValidatorIdsFact(graph: CallGraphFact, userValidators: string[]): 
   if (validatorIds.size === 0) {
     for (const f of graph.functions) {
       if (f.usedImports.length === 0 || !f.isExported) continue;
-      for (const pkg of VALIDATOR_PACKAGES) {
+      for (const pkg of validatorPackages) {
         if (f.usedImports.includes(pkg)) {
           validatorIds.add(f.id);
           break;
@@ -709,11 +713,12 @@ function detectValidationBypass(
   usages: SchemaUsageFact[],
   graph: CallGraphFact,
   userValidators: string[],
+  validatorPackages: readonly string[],
   modeShare: number,
   minCorpus: number,
   depth: number,
 ): Finding[] {
-  const validatorIds = buildValidatorIdsFact(graph, userValidators);
+  const validatorIds = buildValidatorIdsFact(graph, userValidators, validatorPackages);
   if (validatorIds.size === 0) return [];
 
   const writers = collectWriters(usages, graph);
@@ -1060,10 +1065,11 @@ const noValidatorReachable: RuleDefinition<ValidatorReachNeeds> = {
   samples: META['cross-domain/no-validator-reachable'].samples,
   analyze(ctx): Finding[] {
     const vb = ctx.thresholds['validatorBypass'] as
-      | { validators?: string[]; modeShare?: number; minCorpus?: number; depth?: number }
+      | { validators?: string[]; validatorPackageList?: string[]; modeShare?: number; minCorpus?: number; depth?: number }
       | undefined;
     if (!vb) return [];
     const userValidators = vb.validators ?? [];
+    const validatorPackages = vb.validatorPackageList ?? DEFAULT_VALIDATOR_PACKAGES;
     const modeShare = vb.modeShare ?? 0.8;
     const minCorpus = vb.minCorpus ?? 20;
     const depth = vb.depth ?? 3;
@@ -1071,6 +1077,7 @@ const noValidatorReachable: RuleDefinition<ValidatorReachNeeds> = {
       ctx.facts['schema-usage'],
       ctx.facts['call-graph'],
       userValidators,
+      validatorPackages,
       modeShare,
       minCorpus,
       depth,

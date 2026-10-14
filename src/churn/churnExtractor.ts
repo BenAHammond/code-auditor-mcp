@@ -16,6 +16,7 @@
 import { execFileSync } from 'child_process';
 import * as path from 'path';
 import type { ChurnConfig } from '../types.js';
+import { DEFAULT_CHURN_CONFIG } from '../config/defaults.js';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -26,10 +27,6 @@ export interface ChurnResult {
   functionCount: number;
   durationMs: number;
 }
-
-export const DEFAULT_CHURN_CONFIG: ChurnConfig = {
-  churnWindowMonths: 12,
-};
 
 /**
  * Extract git churn data and write it into the database.
@@ -46,7 +43,7 @@ export function extractChurn(
   config: ChurnConfig = DEFAULT_CHURN_CONFIG,
 ): ChurnResult {
   const startTime = Date.now();
-  const windowMonths = config.churnWindowMonths ?? 12;
+  const windowMonths = config.churnWindowMonths ?? DEFAULT_CHURN_CONFIG.churnWindowMonths;
 
   // ── Check git availability ──────────────────────────────────────────
   if (!hasGitRepo(targetPath)) {

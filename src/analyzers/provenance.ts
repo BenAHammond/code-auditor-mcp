@@ -34,6 +34,7 @@ import {
 } from './receiverRoot.js';
 import { identifyHandle } from './handleIdentification.js';
 import { stripSqlQuotes } from './sqlLiteral.js';
+import { DEFAULT_VALIDATOR_PACKAGES } from '../config/defaults.js';
 import type {
   TsExpressionDescriptor,
   TsWithinFileProvenanceExtract,
@@ -41,28 +42,6 @@ import type {
   OwnCall,
   ClassCall,
 } from './tsExpressionDescriptor.js';
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Constants — validator packages
-//
-// The DB ecosystem (DB_PACKAGES / ORM_METHODS) was TypeScript/npm-only and
-// moved behind the resolution interface to `tsEcosystem.ts`
-// (correction-seams-not-placement §4). What remains here is the
-// validator-package vocabulary, a distinct concern.
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Validator packages — spec R4.1 */
-export const VALIDATOR_PACKAGES: ReadonlySet<string> = new Set([
-  'zod',
-  'joi',
-  'ajv',
-  'valibot',
-  'yup',
-  'superstruct',
-  'arktype',
-  '@sinclair/typebox',
-  'class-validator',
-]);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -145,8 +124,8 @@ function basePackageName(specifier: string): string {
 }
 
 /** Check if a module specifier matches a validator package. */
-function matchesValidatorPackage(specifier: string): boolean {
-  return [...VALIDATOR_PACKAGES].some(
+function matchesValidatorPackage(specifier: string, packages: readonly string[] = DEFAULT_VALIDATOR_PACKAGES): boolean {
+  return packages.some(
     (pkg) => specifier === pkg || specifier.startsWith(pkg + '/'),
   );
 }
@@ -245,8 +224,9 @@ export function extractDBProvenancedImports(
 export function extractValidatorProvenancedImports(
   ast: AST,
   adapter: LanguageAdapter,
+  packages?: readonly string[],
 ): Map<string, ProvenanceEvidence> {
-  return extractProvenancedImports(ast, adapter, matchesValidatorPackage);
+  return extractProvenancedImports(ast, adapter, (specifier) => matchesValidatorPackage(specifier, packages));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1066,6 +1046,14 @@ export interface BuildProvenanceContextOptions {
    */
   dbWrapperNames?: string[];
   /**
+   * Validator package list override. When set, this list replaces the
+   * {@link DEFAULT_VALIDATOR_PACKAGES} vocabulary for validator-provenance
+   * matching — so a corpus whose validation lives behind a private package (or
+   * a package this tool does not yet know) can still feed the cross-domain
+   * validator rules. Defaults to {@link DEFAULT_VALIDATOR_PACKAGES}.
+   */
+  validatorPackageList?: string[];
+  /**
    * The corpus's named SQL dialect for R3 (sql-argument) handle inference. When
    * non-null, a call whose argument parses as SQL under this dialect proves its
    * receiver a DB handle (Spec 70 criterion 8) — the replacement for the deleted
@@ -1096,7 +1084,8 @@ export function buildProvenanceContext(
 
   // 1. Extract seed identifiers from imports
   const dbSeeds = extractDBProvenancedImports(ast, adapter);
-  const validatorSeeds = extractValidatorProvenancedImports(ast, adapter);
+  const validatorPackages = options.validatorPackageList ?? DEFAULT_VALIDATOR_PACKAGES;
+  const validatorSeeds = extractValidatorProvenancedImports(ast, adapter, validatorPackages);
 
   // 1a. Merge cross-file resolution seeds (declaration-based, not name-based).
   //     These replace the deleted name-list fallback (Spec 69 §10): the

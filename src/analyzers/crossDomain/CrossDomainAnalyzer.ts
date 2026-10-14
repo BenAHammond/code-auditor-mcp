@@ -28,7 +28,7 @@ import type { AnalyzerResult, Violation, ValidatorBypassConfig, CoverageConfig, 
 import { UniversalAnalyzer } from '../../languages/UniversalAnalyzer.js';
 import type { AST, ASTNode } from '../../languages/types.js';
 import { parseFile } from '../../languages/adapterBridge.js';
-import { VALIDATOR_PACKAGES } from '../provenance.js';
+import { DEFAULT_VALIDATOR_PACKAGES } from '../../config/defaults.js';
 import { makeVisitorStatus } from '../../pipeline.js';
 
 // ---------------------------------------------------------------------------
@@ -814,7 +814,8 @@ function loadCallGraphData(indexHandle: IndexHandle): CallGraphData {
  *
  * Validator identification (priority order):
  *   1. User-configured validators list
- *   2. Provenanced: exported functions in files importing VALIDATOR_PACKAGES
+ *   2. Provenanced: exported functions in files importing a validator package
+ *      from `validatorPackageList` (defaults to DEFAULT_VALIDATOR_PACKAGES)
  *   3. Heuristic fallback: name GLOB 'validate*' OR 'assert*' (when both
  *      above are silent)
  */
@@ -827,12 +828,13 @@ function detectValidationBypass(
   const violations: Violation[] = [];
   const {
     validators: userValidators = [],
+    validatorPackageList = DEFAULT_VALIDATOR_PACKAGES,
     modeShare = 0.8,
     minCorpus = 20,
     depth = 3,
   } = config;
 
-  const validatorIds = buildValidatorIds(indexHandle, userValidators);
+  const validatorIds = buildValidatorIds(indexHandle, userValidators, validatorPackageList);
   if (validatorIds.size === 0) return violations;
 
   const writers = indexHandle
@@ -881,7 +883,11 @@ function computeWriterCoverage(
  * used_imports includes a validator package), then a name-based heuristic
  * fallback only when both prior sources are silent.
  */
-function buildValidatorIds(indexHandle: IndexHandle, userValidators: string[]): Set<number> {
+function buildValidatorIds(
+  indexHandle: IndexHandle,
+  userValidators: string[],
+  validatorPackages: readonly string[],
+): Set<number> {
   const validatorIds = new Set<number>();
 
   // 1a. User-configured validators (format: "funcName" or "path#funcName").
@@ -921,12 +927,12 @@ function buildValidatorIds(indexHandle: IndexHandle, userValidators: string[]): 
   //     a zod-importing file only qualifies if its own body uses the
   //     validator package, not just because it cohabits the file.
   if (validatorIds.size === 0) {
-    const likeParams = [...VALIDATOR_PACKAGES].map((pkg) => `%"${pkg}"%`);
+    const likeParams = validatorPackages.map((pkg) => `%"${pkg}"%`);
 
     const validatorFuncs = indexHandle
       .query(`SELECT id FROM functions
          WHERE used_imports IS NOT NULL
-           AND (${[...VALIDATOR_PACKAGES].map(() => 'used_imports LIKE ?').join(' OR ')})
+           AND (${validatorPackages.map(() => 'used_imports LIKE ?').join(' OR ')})
            AND is_exported = 1`, likeParams) as Array<{ id: number }>;
     for (const f of validatorFuncs) validatorIds.add(f.id);
   }

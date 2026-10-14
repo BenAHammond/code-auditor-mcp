@@ -21,6 +21,7 @@ import { getPersistedStorageRoot, resolvePersistedIndexPath } from './dataPaths.
 import { ContextualError, getErrnoCode } from './mcpToolErrors.js';
 import { extractChurn } from './churn/churnExtractor.js';
 import { computeHotspots } from './hotspots/hotspotScorer.js';
+import { DEFAULT_CHURN_CONFIG } from './config/defaults.js';
 import { populateCallGraphCache } from './graph/callGraph.js';
 import { populateImportGraphCache } from './graph/importGraph.js';
 import type {
@@ -741,7 +742,17 @@ export class CodeIndexDB {
     // available for reordering. Degrades gracefully when no repo exists.
     if (projectRoot) {
       try {
-        extractChurn(this.db, projectRoot, { churnWindowMonths: 12 });
+        // Read the `churn` config key (Spec 13 R1) instead of hardcoding a
+        // 12-month lookback. The literal `{ churnWindowMonths: 12 }` was the
+        // orphan the config sweep removed the key for; the window now resolves
+        // from `.codeauditor.json` with DEFAULT_CHURN_CONFIG as the single default.
+        const { findConfigFileUp, loadConfig } = await import('./config/configLoader.js');
+        const configPath = await findConfigFileUp(projectRoot);
+        const { config } = await loadConfig({
+          configPath: configPath ?? undefined,
+          projectRoot,
+        });
+        extractChurn(this.db, projectRoot, config.churn ?? DEFAULT_CHURN_CONFIG);
         // Compute hotspot scores from churn data
         computeHotspots(this.db);
       } catch (err) {

@@ -911,6 +911,8 @@ export interface AuditConfig {
   pathProfiles?: PathProfile[];
   /** Set to false to disable all built-in profiles. */
   builtin?: boolean;
+  /** Spec 13 — Churn extraction config. */
+  churn?: ChurnConfig;
   /** Spec 13 — Diverging-clone detection config. */
   divergence?: DivergenceConfig;
   /** Spec 15 — Cross-domain analysis config. */
@@ -953,6 +955,7 @@ export interface ProjectFileConfig {
   minSeverity?: Severity;
   pathProfiles?: PathProfile[];
   builtin?: boolean;
+  churn?: ChurnConfig;
   divergence?: DivergenceConfig;
   crossDomain?: CrossDomainConfig;
   analyzerOptions?: Record<string, any>;
@@ -989,7 +992,7 @@ export interface ProjectFileConfig {
 export const PROJECT_FILE_CONFIG_KEYS = [
   'includePaths', 'excludePaths',
   'outputDir', 'outputDirectory', 'minSeverity',
-  'pathProfiles', 'builtin',
+  'pathProfiles', 'builtin', 'churn',
   'divergence', 'crossDomain', 'analyzerOptions', 'analyzerConfigs',
   'rationales', 'importVirtualModules', 'daemon', 'databaseType', 'rules', '$schema',
 ] as const satisfies readonly (keyof ProjectFileConfig)[];
@@ -1949,6 +1952,14 @@ export interface SchemaLifecycleConfig {
 export interface ValidatorBypassConfig {
   /** User-configured validator function names or "path#name". */
   validators: string[];
+  /**
+   * The npm packages whose import marks an identifier validator-provenanced —
+   * the step-1b provenance source for the rule. Defaults to
+   * `DEFAULT_VALIDATOR_PACKAGES` (zod, joi, ajv, valibot, yup, superstruct,
+   * arktype, @sinclair/typebox, class-validator). Override to admit a private
+   * validation package the tool does not yet know.
+   */
+  validatorPackageList?: string[];
   /** Minimum share of peer writers that must reach a validator. Default 0.8. */
   modeShare: number;
   /** Minimum directory corpus size before detection activates. Default 20. */

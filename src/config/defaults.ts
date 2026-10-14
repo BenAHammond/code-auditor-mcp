@@ -2,7 +2,7 @@
  * Default configurations for the code auditor
  */
 
-import { AuditConfig, PathProfile } from '../types.js';
+import { AuditConfig, ChurnConfig, PathProfile } from '../types.js';
 
 /**
  * Get default configuration
@@ -36,6 +36,10 @@ export function getDefaultConfig(): AuditConfig {
     // `severityOverrides` and no `gateSeverities`: every rule is assigned on the
     // urgency axis (critical/severe/high) and every finding blocks. Per-rule
     // severity tuning disappeared with the old vocabulary.
+    // Spec 13 R1 — churn lookback window. The single default lives in
+    // DEFAULT_CHURN_CONFIG above; referencing it here (not re-declaring) is what
+    // keeps `loadConfig` and `print-config` honest about the effective value.
+    churn: DEFAULT_CHURN_CONFIG,
     // Spec 50 R5 — daemon lifecycle. Never auto-start (a background process the
     // user did not ask for); idle-exit after 5 minutes so it does not linger.
     daemon: {
@@ -128,6 +132,49 @@ export function getEnvironmentDefaults(env: string): Partial<AuditConfig> {
  * citation and does not transfer, because the ΔE00 JND is 1.0, not 2.3.
  */
 export const DEFAULT_COLOR_DELTA_E = 1.0;
+
+/**
+ * The validator-package vocabulary — the single source of truth for which npm
+ * packages mark an imported identifier as validator-provenanced. Consumed by
+ * three sites (Spec 21 R4 / R3 cross-domain validator-bypass):
+ *   - `buildProvenanceContext` (`src/analyzers/provenance.ts`) — the
+ *     `validatorProvenanced` map the schema/data-access analyzers and the
+ *     CLI `map` command read;
+ *   - the migrated `cross-domain/no-validator-reachable` rule
+ *     (`src/phase/rules/crossDomain.ts`);
+ *   - the legacy `CrossDomainAnalyzer` (kept for the Spec 68 parity guard).
+ *
+ * This replaced the hand-maintained `VALIDATOR_PACKAGES` `ReadonlySet` that
+ * lived in `provenance.ts` and did the job of the deleted `validatorPackageList`
+ * config key. The list must not be re-declared elsewhere: consumers read the
+ * config key and fall back to this symbol (the `DEFAULT_COLOR_DELTA_E` pattern).
+ */
+export const DEFAULT_VALIDATOR_PACKAGES: readonly string[] = [
+  'zod',
+  'joi',
+  'ajv',
+  'valibot',
+  'yup',
+  'superstruct',
+  'arktype',
+  '@sinclair/typebox',
+  'class-validator',
+];
+
+/**
+ * The git-churn lookback window — the single source of truth for the top-level
+ * `churn` config key (Spec 13 R1). The churn extractor
+ * (`src/churn/churnExtractor.ts`) reads `churnWindowMonths` from here instead of
+ * hardcoding `12`; the two extraction call sites (`deepSync` in
+ * `src/codeIndexDB.ts` and the CLI `hotspots` command in `src/cli.ts`) read the
+ * configured `churn` key and fall back to this symbol (the `DEFAULT_COLOR_DELTA_E`
+ * pattern). The literal must not be re-declared elsewhere.
+ *
+ * `12` months is the window `git log --since` scans for file/function churn.
+ */
+export const DEFAULT_CHURN_CONFIG: ChurnConfig = {
+  churnWindowMonths: 12,
+};
 
 /**
  * Default analyzer configurations
@@ -298,6 +345,9 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     },
     validatorBypass: {
       validators: [],
+      // The package vocabulary for provenanced-validator detection (Spec 21 R4).
+      // Overridable via `analyzerConfigs["cross-domain"].validatorBypass.validatorPackageList`.
+      validatorPackageList: DEFAULT_VALIDATOR_PACKAGES,
       modeShare: 0.8,
       minCorpus: 20,
       depth: 3,

@@ -2665,8 +2665,18 @@ program
       if (existing.cnt === 0 && options.path) {
         const { extractChurn } = await import('./churn/churnExtractor.js');
         const { computeHotspots } = await import('./hotspots/hotspotScorer.js');
+        const { findConfigFileUp, loadConfig } = await import('./config/configLoader.js');
+        const { DEFAULT_CHURN_CONFIG } = await import('./config/defaults.js');
         try {
-          extractChurn(rawDb, options.path, { churnWindowMonths: 12 });
+          // Read the `churn` config key (Spec 13 R1) — the literal
+          // `{ churnWindowMonths: 12 }` was the orphan; the window now resolves
+          // from `.codeauditor.json` with DEFAULT_CHURN_CONFIG as the default.
+          const configPath = await findConfigFileUp(options.path);
+          const { config } = await loadConfig({
+            configPath: configPath ?? undefined,
+            projectRoot: options.path,
+          });
+          extractChurn(rawDb, options.path, config.churn ?? DEFAULT_CHURN_CONFIG);
           computeHotspots(rawDb);
         } catch (err) {
           // Graceful: no git repo or extraction failure.
