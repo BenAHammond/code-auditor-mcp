@@ -37,6 +37,26 @@ The hook auto-installs the auditor on first use via npx.
   `npm install-scripts approve better-sqlite3 && npm rebuild better-sqlite3`
   (with pnpm: `pnpm approve-builds`, then select `better-sqlite3`).
 
+## Configuration
+
+Project-level settings live in `.codeauditor.json` (invariant rules, analyzer settings, and thresholds). Eleven environment variables additionally tune process-scoped behavior — worker pool size, daemon and job-queue timeouts, the index location, the SQLite backend, and the UI port.
+
+| Variable | Purpose | Accepted values | Default |
+|----------|---------|-----------------|---------|
+| `CODE_AUDITOR_WORKERS` | Phase-model worker pool size for per-file fan-out. `1` forces the serial path for byte-identical reports. | Positive integer | `max(1, cpus − 1)` |
+| `CODE_AUDITOR_RULE_TIMING` | Per-rule wall-time accounting (one accumulated timer per rule ID, surfaced in the report). | `1` enables; unset disables | Off |
+| `CODE_AUDITOR_DAEMON_IDLE_MS` | Idle timeout before the daemon shuts down. | Positive finite ms; invalid → default | `300000` (5 min) |
+| `CODE_AUDITOR_DAEMON_LEASE_TTL_MS` | Daemon heartbeat lease TTL. | Finite ms; blank/`0` → default | `60000` (60 s) |
+| `CODE_AUDITOR_DATA_DIR` | Overrides the code-index database directory. | Directory path (trimmed; blank → default) | user-level OS cache |
+| `CODE_AUDITOR_EXIT_ON_FATAL` | Exit the MCP server on an uncaught exception / unhandled rejection. | `1` or `true` | Off |
+| `CODE_AUDITOR_JOB_TIMEOUT_MS` | Per-job timeout for queued audits. | Finite ms, clamped to `60s`–`4h`; below the floor → default | `1800000` (30 min) |
+| `CODE_AUDITOR_JOB_LEASE_TTL_MS` | Heartbeat lease TTL for reclaiming stale `running` job rows. | Strictly positive finite ms; invalid → default | `30000` (30 s) |
+| `CODE_AUDITOR_MAX_RUNNING_JOBS` | Max concurrently running queued audit jobs. | Integer ≥ 1; invalid → default | `1` |
+| `CODE_AUDITOR_SQLITE_BACKEND` | Forces a SQLite backend. An invalid value is reported as invalid and rejected — never silently probed past. | `node-sqlite` \| `better-sqlite3` | Auto (probe) |
+| `MCP_UI_PORT` | HTTP UI server port (`--ui`). | Port number; invalid → default | `3001` |
+
+When `CODE_AUDITOR_DATA_DIR` is set, the index is scoped per project (`<dir>/projects/<sha256(root)[:16]>/index.db`) so projects can't leak data into each other. When unset, the index lives in a user-level OS cache (`<os_cache>/code-auditor/projects/<hash>/index.db`) so it never lands inside the audited repo.
+
 ## Prompt examples
 
 **"Index the codebase and run a full audit, then walk the violations file-by-file with `code-audit next-file`."**

@@ -41,8 +41,8 @@ export function getActiveBackend(): SqliteBackend | undefined {
  * The `CODE_AUDITOR_SQLITE_BACKEND` override, raw. Single read site: both
  * `describeSqliteBackend` (report surface) and `openSqlite` (enforcement
  * surface) consume this, so they can never disagree on *what* the override is —
- * only on what to do with it (report falls through to a probe on an invalid
- * value; enforcement throws).
+ * only on what to do with it (report names the invalid value as invalid;
+ * enforcement throws).
  */
 export function sqliteBackendOverride(): string | undefined {
   return process.env.CODE_AUDITOR_SQLITE_BACKEND;
@@ -59,11 +59,20 @@ export function isSqliteBackend(v: unknown): v is SqliteBackend {
  * capability probe (which builtin is actually loadable on this Node). "none"
  * when neither backend can load.
  *
- * @returns The active (or likely) backend name, or "none".
+ * An override that is not one of the two supported names is reported *as
+ * invalid*, not silently probed past: `openSqlite` throws on the same value, so
+ * a diagnostic that named a plausible backend would be a wrong answer on the
+ * surface people check first.
+ *
+ * @returns The active (or likely) backend name, "none", or a string naming the
+ *          invalid override and the two accepted values.
  */
 export function describeSqliteBackend(): string {
   const override = sqliteBackendOverride();
   if (isSqliteBackend(override)) return override;
+  if (override !== undefined) {
+    return `invalid (CODE_AUDITOR_SQLITE_BACKEND="${override}" is not a recognised backend; expected "node-sqlite" or "better-sqlite3")`;
+  }
   if (activeBackend !== undefined) return activeBackend;
   if (isNodeSqliteAvailable()) return 'node-sqlite';
   if (isBetterSqlite3Available()) return 'better-sqlite3';

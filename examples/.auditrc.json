@@ -40,7 +40,7 @@
       "// Maximum parameters per method": "",
       "maxParametersPerMethod": 4,
       "// Maximum cyclomatic complexity": "",
-      "maxComplexity": 10,
+      "maxMethodComplexity": 10,
       "// Which SOLID principles to check": "",
       "checkPatterns": {
         "singleResponsibility": true,
@@ -141,16 +141,7 @@
   "// Quality Thresholds": "",
   "// Set to undefined to disable threshold": "",
   "thresholds": {
-    "// Maximum allowed critical issues": "",
-    "maxCritical": 0,
-    "// Maximum allowed warnings": "",
-    "maxWarnings": 50,
-    "// Minimum required health score (0-100)": "",
-    "minHealthScore": 80,
-    "// Maximum allowed complexity per file": "",
-    "maxComplexity": 10,
-    "// Maximum allowed code duplication instances": "",
-    "maxDuplication": 5
+    "minHealthScore": 80
   },
   
   "// Custom Patterns": "",

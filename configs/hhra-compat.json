@@ -86,7 +86,7 @@
       "maxLinesPerMethod": 50,
       "maxParametersPerMethod": 4,
       "maxImportsPerFile": 20,
-      "maxComplexity": 10
+      "maxMethodComplexity": 10
     },
     
     "dry": {
@@ -136,11 +136,7 @@
   "showProgress": true,
   
   "thresholds": {
-    "maxCritical": 0,
-    "maxWarnings": 100,
-    "minHealthScore": 75,
-    "maxComplexity": 10,
-    "maxDuplication": 10
+    "minHealthScore": 75
   },
   
   "reportTheme": {

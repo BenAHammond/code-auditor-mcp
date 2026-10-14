@@ -61,8 +61,6 @@
   "failOnCritical": true,
   
   "thresholds": {
-    "maxCritical": 0,
-    "maxWarnings": 10,
     "minHealthScore": 90
   },
   

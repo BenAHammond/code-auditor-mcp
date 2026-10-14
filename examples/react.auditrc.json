@@ -46,8 +46,6 @@
   "showProgress": true,
   
   "thresholds": {
-    "maxCritical": 0,
-    "maxWarnings": 30,
     "minHealthScore": 75
   }
 }

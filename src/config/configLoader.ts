@@ -374,10 +374,19 @@ function validateDaemonConfig(daemon: AuditConfig['daemon']): string[] {
 
 /**
  * Validate the restored `thresholds.minHealthScore` (Spec 11 sweep follow-up).
- * Only `minHealthScore` survives the sweep; the severity-gate siblings
- * (`maxSevere`/`maxCritical`/`maxHigh`) are vestigial and gone. Rejecting them
- * here turns a silently-ignored old setting into a visible error, instead of
- * letting the restored key re-accept a field the tool no longer honors.
+ * Only `minHealthScore` survives the sweep; every other historical `thresholds`
+ * key is rejected with a message that *is* the migration — it names the key,
+ * says it was removed, and names the live key that replaced it where one exists.
+ * A user upgrading from a config that still carries the old keys reads the error
+ * and knows exactly what to change (no silent drop, no warning-and-continue).
+ *
+ * Removed-key fate:
+ *   - `maxSevere`/`maxCritical`/`maxHigh`/`maxWarnings` — the severity gate is
+ *     gone (Spec 54 R3: every finding blocks), so these have no replacement and
+ *     must be deleted.
+ *   - `maxComplexity` — moved, not removed: the per-method cyclomatic-complexity
+ *     ceiling now lives at `analyzerConfigs.solid.maxMethodComplexity`.
+ *   - `maxDuplication` — no live duplication-count threshold; delete it.
  */
 function validateThresholds(thresholds: AuditConfig['thresholds']): string[] {
   const errors: string[] = [];
@@ -386,12 +395,34 @@ function validateThresholds(thresholds: AuditConfig['thresholds']): string[] {
     errors.push('thresholds must be an object');
     return errors;
   }
+
+  // Removed `thresholds` key → its live replacement (as a `solid.*` leaf name),
+  // or null when the key was removed outright with no replacement.
+  const REMOVED: Record<string, string | null> = {
+    maxSevere: null,
+    maxCritical: null,
+    maxHigh: null,
+    maxWarnings: null,
+    maxComplexity: 'maxMethodComplexity',
+    maxDuplication: null,
+  };
+
   const VALID_KEYS = new Set(['minHealthScore']);
   for (const key of Object.keys(thresholds as Record<string, unknown>)) {
-    if (!VALID_KEYS.has(key)) {
-      errors.push(
-        `Unknown key in thresholds "${key}" — the severity-gate thresholds (maxSevere/maxCritical/maxHigh) were removed (Spec 54 R3); only minHealthScore remains`,
-      );
+    if (VALID_KEYS.has(key)) continue;
+    const replacement = REMOVED[key];
+    if (replacement !== undefined) {
+      if (replacement === null) {
+        errors.push(
+          `thresholds.${key} was removed and has no replacement — the severity-gate thresholds were removed (Spec 54 R3: every finding blocks); delete it from your config`,
+        );
+      } else {
+        errors.push(
+          `thresholds.${key} was removed and replaced by "analyzerConfigs.solid.${replacement}" — move it there`,
+        );
+      }
+    } else {
+      errors.push(`Unknown key in thresholds "${key}" — only "minHealthScore" remains`);
     }
   }
   const m = (thresholds as { minHealthScore?: unknown }).minHealthScore;

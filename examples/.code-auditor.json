@@ -66,8 +66,6 @@
   "outputDirectory": "./audit-reports",
   
   "thresholds": {
-    "maxCritical": 0,
-    "maxWarnings": 30,
     "minHealthScore": 80
   }
 }

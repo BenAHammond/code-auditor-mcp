@@ -25,7 +25,7 @@
       "maxMethodsPerClass": 10,
       "maxLinesPerMethod": 50,
       "maxParametersPerMethod": 4,
-      "maxComplexity": 10
+      "maxMethodComplexity": 10
     },
     "dry": {
       "minLineThreshold": 5,
@@ -46,8 +46,6 @@
   "showProgress": true,
   
   "thresholds": {
-    "maxCritical": 0,
-    "maxWarnings": 50,
     "minHealthScore": 80
   }
 }

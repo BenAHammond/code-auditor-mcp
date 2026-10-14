@@ -50,8 +50,6 @@
   "outputDirectory": "./audit-reports",
   
   "thresholds": {
-    "maxCritical": 0,
-    "maxWarnings": 20,
     "minHealthScore": 85
   }
 }
