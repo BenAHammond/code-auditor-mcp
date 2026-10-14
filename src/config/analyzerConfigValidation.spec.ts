@@ -1,7 +1,6 @@
 /**
- * Directive B (item 1 + item 3) — analyzer config is validated in full, not just
- * by namespace name, and the public analyzer list is derived from the same live
- * shape instead of a hand-written literal.
+ * Directive B (item 1) — analyzer config is validated in full, not just by
+ * namespace name.
  *
  * The valid shape at every depth comes from the config *types* via their runtime
  * embodiment `RUNTIME_DEFAULT_CONFIGS`; a key that does not exist at a path in
@@ -11,8 +10,6 @@
 
 import { describe, it, expect } from 'vitest';
 import { validateConfig } from './configLoader.js';
-import { RUNTIME_DEFAULT_CONFIGS } from './effectiveConfig.js';
-import { getAvailableAnalyzers } from '../index.js';
 
 describe('validateConfig — analyzerConfigs shape (full depth)', () => {
   it('rejects an unknown sub-key at any depth, named by full dotted location', () => {
@@ -69,22 +66,5 @@ describe('validateConfig — analyzerConfigs shape (full depth)', () => {
   it('rejects a phantom namespace, naming the live namespace', () => {
     const errors = validateConfig({ analyzerConfigs: { component: { maxComponentComplexity: 5 } } } as any);
     expect(errors.some((e) => e.includes('analyzerConfigs.component is not recognised — the live namespace is "react"'))).toBe(true);
-  });
-});
-
-describe('getAvailableAnalyzers — derived from the live shape', () => {
-  it('returns exactly the live namespaces, by construction', () => {
-    // The set is `Object.keys(RUNTIME_DEFAULT_CONFIGS)`, not a literal array:
-    // asserting equality to the live config keys (rather than to a spelled-out
-    // array) means a future hand-edit that adds/omits one fails here.
-    const live = Object.keys(RUNTIME_DEFAULT_CONFIGS);
-    expect(getAvailableAnalyzers()).toEqual(live);
-    // Pin the cardinality so a phantom name (`security`/`component`) or a missing
-    // live one is caught by a count change too. There are ten: `invariants` is
-    // intentionally absent from `RUNTIME_DEFAULT_CONFIGS` because it reads
-    // `.codeauditor.json` `rules`, not `analyzerConfigs` (effectiveConfig.ts).
-    expect(getAvailableAnalyzers()).toHaveLength(10);
-    expect(getAvailableAnalyzers()).not.toContain('security');
-    expect(getAvailableAnalyzers()).not.toContain('component');
   });
 });

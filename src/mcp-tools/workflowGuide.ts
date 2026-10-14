@@ -26,7 +26,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit',
-        parameters: { action: 'start', path: '.', analyzers: ['solid', 'dry', 'documentation'], indexFunctions: true, generateCodeMap: true },
+        parameters: { action: 'start', path: '.', indexFunctions: true, generateCodeMap: true },
         description: 'Start comprehensive background audit and capture jobId'
       },
       {
@@ -66,7 +66,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit',
-        parameters: { action: 'start', path: './src/components', analyzers: ['react', 'documentation'], indexFunctions: true },
+        parameters: { action: 'start', path: './src/components', indexFunctions: true },
         description: 'Start background audit for components directory'
       },
       {
@@ -114,7 +114,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 2,
         tool: 'audit',
-        parameters: { action: 'start', path: './src', analyzers: ['solid', 'dry', 'documentation'], minSeverity: 'high' },
+        parameters: { action: 'start', path: './src', minSeverity: 'high' },
         description: 'Start detailed background audit if health check shows issues',
         condition: 'If health score is below threshold'
       },
@@ -185,7 +185,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit',
-        parameters: { action: 'start', path: '.', analyzers: ['solid', 'dry', 'documentation', 'security'] },
+        parameters: { action: 'start', path: '.' },
         description: 'Start full background audit to identify issues'
       },
       {
@@ -259,7 +259,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit',
-        parameters: { action: 'start', path: '.', analyzers: ['solid'], minSeverity: 'high' },
+        parameters: { action: 'start', path: '.', minSeverity: 'high' },
         description: 'Start a background audit and get a jobId immediately'
       },
       {
@@ -390,7 +390,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 6,
         tool: 'audit',
-        parameters: { action: 'start', path: '.', analyzers: ['solid', 'dry'] },
+        parameters: { action: 'start', path: '.' },
         description: 'Re-run audit with new configurations'
       }
     ],
@@ -411,7 +411,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 1,
         tool: 'audit',
-        parameters: { action: 'start', path: '.', analyzers: ['solid'] },
+        parameters: { action: 'start', path: '.' },
         description: 'Start initial background audit to see default violations'
       },
       {
@@ -457,7 +457,7 @@ export const WORKFLOW_SCENARIOS: Record<string, WorkflowScenario> = {
       {
         order: 5,
         tool: 'audit',
-        parameters: { action: 'start', path: '.', analyzers: ['solid'] },
+        parameters: { action: 'start', path: '.' },
         description: 'Re-run audit to validate reduced violations'
       }
     ],

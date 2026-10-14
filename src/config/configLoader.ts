@@ -526,6 +526,27 @@ function renderConfigKeyPath(segments: readonly string[]): string {
  * carried (`databasePatterns`, `ifElseChainThreshold`, …) have no live
  * equivalent and are rejected outright.
  */
+/**
+ * Validate a single analyzer-config *namespace* name against the live shape
+ * (`RUNTIME_DEFAULT_CONFIGS`). This is the one namespace-recognition check, read
+ * by both the `analyzerConfigs` shape validator and the MCP `config` tools:
+ * `config.get`/`config.set`/`config.reset` reject a phantom `analyzerName`
+ * (`security`, `component`, …) with exactly this wording rather than persisting
+ * a row nothing will ever read.
+ *
+ * @param ns the analyzer-config namespace name.
+ * @returns an empty array when live, otherwise the rejection message.
+ */
+export function validateAnalyzerNamespace(ns: string): string[] {
+  if (RUNTIME_DEFAULT_CONFIGS[ns] !== undefined) return [];
+  const live = RENAMED_NAMESPACES[ns];
+  return [
+    live
+      ? `analyzerConfigs.${ns} is not recognised — the live namespace is "${live}"`
+      : `analyzerConfigs.${ns} is not recognised and has no live namespace — remove it`,
+  ];
+}
+
 function validateAnalyzerConfigs(
   analyzerConfigs: AuditConfig['analyzerConfigs'],
 ): string[] {
@@ -539,12 +560,7 @@ function validateAnalyzerConfigs(
   for (const ns of Object.keys(analyzerConfigs as Record<string, unknown>)) {
     const defaults = RUNTIME_DEFAULT_CONFIGS[ns];
     if (defaults === undefined) {
-      const live = RENAMED_NAMESPACES[ns];
-      errors.push(
-        live
-          ? `analyzerConfigs.${ns} is not recognised — the live namespace is "${live}"`
-          : `analyzerConfigs.${ns} is not recognised and has no live namespace — remove it`,
-      );
+      errors.push(...validateAnalyzerNamespace(ns));
       continue;
     }
     errors.push(...validateAnalyzerSubKeys((analyzerConfigs as Record<string, unknown>)[ns], defaults, [ns]));

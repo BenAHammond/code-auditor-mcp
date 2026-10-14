@@ -85,7 +85,7 @@ import { resolveConfigGenerateDir } from './config/configGeneratePath.js';
 import { telemetryStatus, telemetryEnable, telemetryDisable } from './telemetry.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
 import { DEFAULT_HEALTH_SCORE_THRESHOLD, resolveHealthThreshold } from './config/defaults.js';
-import { loadMinHealthScore } from './config/configLoader.js';
+import { loadMinHealthScore, validateAnalyzerNamespace } from './config/configLoader.js';
 import { resolveMcpDevLogPath, dataDirEnv } from './dataPaths.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
 import { CodeIndexDB } from './codeIndexDB.js';
@@ -897,6 +897,8 @@ const configActions: ActionDefinition[] = [
       const db = CodeIndexDB.getInstance();
       await db.initialize();
       if (analyzerName) {
+        const namespaceErrors = validateAnalyzerNamespace(analyzerName);
+        if (namespaceErrors.length) throw new Error(namespaceErrors[0]);
         const config = await db.analyzerConfig.getAnalyzerConfig(analyzerName, projectPath);
         return {
           success: true,
@@ -944,6 +946,8 @@ const configActions: ActionDefinition[] = [
       const projectPath = args.projectPath as string | undefined;
       const db = CodeIndexDB.getInstance();
       await db.initialize();
+      const namespaceErrors = validateAnalyzerNamespace(analyzerName);
+      if (namespaceErrors.length) throw new Error(namespaceErrors[0]);
       await db.analyzerConfig.storeAnalyzerConfig(analyzerName, config, {
         projectPath,
         isGlobal: !projectPath,
@@ -980,6 +984,8 @@ const configActions: ActionDefinition[] = [
       const db = CodeIndexDB.getInstance();
       await db.initialize();
       if (analyzerName) {
+        const namespaceErrors = validateAnalyzerNamespace(analyzerName);
+        if (namespaceErrors.length) throw new Error(namespaceErrors[0]);
         const deleted = await db.analyzerConfig.deleteAnalyzerConfig(analyzerName, {
           projectPath,
           isGlobal: !projectPath,

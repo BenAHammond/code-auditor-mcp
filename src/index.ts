@@ -25,8 +25,6 @@ export {
   DEFAULT_ANALYZER_CONFIGS
 } from './config/defaults.js';
 
-import { RUNTIME_DEFAULT_CONFIGS } from './config/effectiveConfig.js';
-
 // Types
 export {
   // Core types
@@ -146,17 +144,6 @@ export async function createProjectAuditRunner(
 }
 
 /**
- * List available analyzers
- */
-export function getAvailableAnalyzers(): string[] {
-  // Derived from the config types (via their runtime embodiment in
-  // `RUNTIME_DEFAULT_CONFIGS`), so this cannot drift from the live set the way a
-  // hand-written literal did (`security`/`component` were phantom namespaces;
-  // six live ones were omitted).
-  return Object.keys(RUNTIME_DEFAULT_CONFIGS);
-}
-
-/**
  * List available report formats
  */
 export function getAvailableFormats(): string[] {
@@ -168,7 +155,6 @@ export default {
   runAudit: _runAudit,
   createAuditRunner: _createAuditRunner,
   createProjectAuditRunner,
-  getAvailableAnalyzers,
   getAvailableFormats,
   version
 };

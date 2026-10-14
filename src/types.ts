@@ -1108,7 +1108,7 @@ export interface AuditProgress {
 export interface AnalyzerConfigDocument {
   $loki?: number;
   meta?: any;
-  analyzerName: string;              // e.g., 'solid', 'dry', 'security'
+  analyzerName: string;              // e.g., 'solid', 'dry'
   projectPath?: string | null;       // Optional project-specific config
   config: Record<string, any>;       // The actual configuration
   isGlobal: boolean;                 // true for global, false for project-specific
