@@ -64,7 +64,7 @@ const REPRESENTATIVE_FILE = 'src/analyzers/universal/UniversalSOLIDAnalyzer.ts';
 //   681-line file with *no* DB calls (the cost is the resolution machinery
 //   itself, not DB findings: `producer:data-access-calls` dominates the warm
 //   breakdown at ~190 ms CPU). Re-measured with:
-//     CODE_AUDIT_RULE_TIMING=1 node dist/cli.js changed \
+//     CODE_AUDITOR_RULE_TIMING=1 node dist/cli.js changed \
 //       src/analyzers/universal/UniversalSOLIDAnalyzer.ts --json 2>&1 >/dev/null
 //   (10 warm runs: 642–712 ms CPU, median ~705 ms, mean ~688 ms).
 //
@@ -102,7 +102,7 @@ function runGate() {
     [CLI, 'changed', REPRESENTATIVE_FILE, '--json'],
     {
       encoding: 'utf-8',
-      env: { ...process.env, CODE_AUDIT_RULE_TIMING: '1' },
+      env: { ...process.env, CODE_AUDITOR_RULE_TIMING: '1' },
     },
   );
   if (result.error) {

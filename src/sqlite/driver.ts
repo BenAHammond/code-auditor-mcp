@@ -38,6 +38,22 @@ export function getActiveBackend(): SqliteBackend | undefined {
 }
 
 /**
+ * The `CODE_AUDITOR_SQLITE_BACKEND` override, raw. Single read site: both
+ * `describeSqliteBackend` (report surface) and `openSqlite` (enforcement
+ * surface) consume this, so they can never disagree on *what* the override is —
+ * only on what to do with it (report falls through to a probe on an invalid
+ * value; enforcement throws).
+ */
+export function sqliteBackendOverride(): string | undefined {
+  return process.env.CODE_AUDITOR_SQLITE_BACKEND;
+}
+
+/** True when `v` is one of the two supported backend names. */
+export function isSqliteBackend(v: unknown): v is SqliteBackend {
+  return v === 'node-sqlite' || v === 'better-sqlite3';
+}
+
+/**
  * Human-readable backend for `--version`. Reports the forced override when set,
  * otherwise the last backend an {@link openSqlite} selected, otherwise a
  * capability probe (which builtin is actually loadable on this Node). "none"
@@ -46,8 +62,8 @@ export function getActiveBackend(): SqliteBackend | undefined {
  * @returns The active (or likely) backend name, or "none".
  */
 export function describeSqliteBackend(): string {
-  const override = process.env.CODE_AUDITOR_SQLITE_BACKEND;
-  if (override === 'node-sqlite' || override === 'better-sqlite3') return override;
+  const override = sqliteBackendOverride();
+  if (isSqliteBackend(override)) return override;
   if (activeBackend !== undefined) return activeBackend;
   if (isNodeSqliteAvailable()) return 'node-sqlite';
   if (isBetterSqlite3Available()) return 'better-sqlite3';
@@ -84,8 +100,8 @@ function loudFailure(tried: SqliteBackend[], errors: string[]): Error {
  * @returns An open database, or throws when no backend is usable.
  */
 export function openSqlite(dbPath: string, opts: OpenSqliteOptions): SqliteDatabase {
-  const override = process.env.CODE_AUDITOR_SQLITE_BACKEND;
-  if (override !== undefined && override !== 'node-sqlite' && override !== 'better-sqlite3') {
+  const override = sqliteBackendOverride();
+  if (override !== undefined && !isSqliteBackend(override)) {
     throw new Error(
       `Invalid CODE_AUDITOR_SQLITE_BACKEND: "${override}" (expected "node-sqlite" or "better-sqlite3")`
     );

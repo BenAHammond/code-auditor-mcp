@@ -149,15 +149,13 @@ export function sanitizeProjectFileConfig(
 /**
  * Load configuration from multiple sources
  *
- * @param options Loader options: the config path, project root, CLI overrides,
- *   and environment-variable prefix to read from.
+ * @param options Loader options: the config path, project root, and CLI overrides.
  * @returns The merged config plus every file-sourced entry that was rejected.
  */
 export async function loadConfig(options: {
   configPath?: string;
   projectRoot: string;
   cliArgs?: Partial<AuditConfig>;
-  environmentPrefix?: string;
 }): Promise<LoadConfigResult> {
   // Start with defaults
   let config = getDefaultConfig();
@@ -173,11 +171,6 @@ export async function loadConfig(options: {
     const loaded = await loadFromFile(config, options.configPath, options.projectRoot);
     config = loaded.config;
     rejected = loaded.rejected;
-  }
-
-  // Load from environment variables
-  if (options.environmentPrefix) {
-    config = loadFromEnvironment(config, options.environmentPrefix);
   }
 
   // Apply CLI arguments (highest priority)
@@ -269,42 +262,6 @@ async function loadFromFile(
     console.warn(`Failed to load config from ${configPath}:`, error);
     return { config: baseConfig, rejected: [] };
   }
-}
-
-/**
- * Load configuration from environment variables
- */
-function loadFromEnvironment(baseConfig: AuditConfig, prefix: string): AuditConfig {
-  const env = process.env;
-  const envConfig: Partial<ProjectFileConfig> = {};
-
-  // Map environment variables to config properties
-  if (env[`${prefix}_MIN_SEVERITY`]) {
-    envConfig.minSeverity = env[`${prefix}_MIN_SEVERITY`] as any;
-  }
-
-  if (env[`${prefix}_OUTPUT_DIR`]) {
-    envConfig.outputDirectory = env[`${prefix}_OUTPUT_DIR`];
-  }
-
-  // Code index environment variables
-  const codeIndexConfig: any = {};
-  if (env[`${prefix}_CODE_INDEX_DB_PATH`]) {
-    codeIndexConfig.databasePath = env[`${prefix}_CODE_INDEX_DB_PATH`];
-  }
-  const batchSizeVar = env[`${prefix}_CODE_INDEX_BATCH_SIZE`];
-  if (batchSizeVar) {
-    codeIndexConfig.maxBatchSize = parseInt(batchSizeVar, 10);
-  }
-  const searchLimitVar = env[`${prefix}_CODE_INDEX_SEARCH_LIMIT`];
-  if (searchLimitVar) {
-    codeIndexConfig.searchResultLimit = parseInt(searchLimitVar, 10);
-  }
-  if (Object.keys(codeIndexConfig).length > 0) {
-    (envConfig as any).codeIndex = codeIndexConfig;
-  }
-
-  return mergeConfig(baseConfig, envConfig);
 }
 
 /**

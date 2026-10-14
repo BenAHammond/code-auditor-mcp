@@ -4,6 +4,17 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 
 /**
+ * The `CODE_AUDITOR_DATA_DIR` override, trimmed and normalized to `undefined`
+ * when unset/blank. Single read site — the path resolver and the two display
+ * surfaces (MCP startup + auto-index log) all consume this, so they can never
+ * disagree on whether a data dir was configured.
+ */
+export function dataDirEnv(): string | undefined {
+  const raw = process.env.CODE_AUDITOR_DATA_DIR?.trim();
+  return raw ? raw : undefined;
+}
+
+/**
  * Default on-disk path for the code index database.
  *
  * When CODE_AUDITOR_DATA_DIR is set and projectRoot is provided, the DB is
@@ -28,7 +39,7 @@ import { createHash } from 'node:crypto';
  * @returns The on-disk path to the index database.
  */
 export function resolvePersistedIndexPath(projectRoot?: string): string {
-  const raw = process.env.CODE_AUDITOR_DATA_DIR?.trim();
+  const raw = dataDirEnv();
   if (raw) {
     if (projectRoot) {
       return path.join(path.resolve(raw), 'projects', projectHash(projectRoot), 'index.db');

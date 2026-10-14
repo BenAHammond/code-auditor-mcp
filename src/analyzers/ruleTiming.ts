@@ -7,7 +7,7 @@
  * blocking gate too slow can be identified and optimized. A slow rule is
  * never removed from the gate (Spec 38 R3, Spec 45 A1).
  *
- * Timing is opt-in via `CODE_AUDIT_RULE_TIMING=1`. When the variable is unset
+ * Timing is opt-in via `CODE_AUDITOR_RULE_TIMING=1`. When the variable is unset
  * (the default, and every baseline/CI run), `withRuleTiming` calls the wrapped
  * function directly with zero overhead and zero behaviour change — the
  * recall/knex/primer/blitz baselines are therefore unaffected.
@@ -30,7 +30,7 @@ const timings = new Map<string, RuleTimingEntry>();
 
 /** True when per-rule timing is enabled for this process. */
 export function isRuleTimingEnabled(): boolean {
-  return process.env.CODE_AUDIT_RULE_TIMING === '1';
+  return process.env.CODE_AUDITOR_RULE_TIMING === '1';
 }
 
 /** Clear the accumulator. Called once at the start of a pipeline run. */

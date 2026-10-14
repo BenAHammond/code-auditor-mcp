@@ -7,6 +7,7 @@ import { createAuditRunner } from './auditRunner.js';
 import { syncFileIndex } from './codeIndexService.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { logMcpInfo } from './mcpDiagnostics.js';
+import { dataDirEnv } from './dataPaths.js';
 
 /**
  * Discover, extract, and sync functions for a project into the code index.
@@ -18,7 +19,7 @@ export async function runAutoIndex(projectPath: string): Promise<void> {
   logMcpInfo('auto-index', 'start', {
     projectPath: root,
     cwd: process.cwd(),
-    dataDir: process.env.CODE_AUDITOR_DATA_DIR ?? '(default: user-level OS cache)'
+    dataDir: dataDirEnv() ?? '(default: user-level OS cache)'
   });
 
   const db = CodeIndexDB.getInstance();

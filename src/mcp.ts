@@ -86,7 +86,7 @@ import { telemetryStatus, telemetryEnable, telemetryDisable } from './telemetry.
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
 import { DEFAULT_HEALTH_SCORE_THRESHOLD, resolveHealthThreshold } from './config/defaults.js';
 import { loadMinHealthScore } from './config/configLoader.js';
-import { resolveMcpDevLogPath } from './dataPaths.js';
+import { resolveMcpDevLogPath, dataDirEnv } from './dataPaths.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { errorMessage } from './utils/errorMessage.js';
@@ -217,14 +217,22 @@ function getHealthRecommendation(score: number, result: AuditResult): string {
   return 'Code health needs attention - run detailed audit';
 }
 
+/**
+ * Whether `CODE_AUDITOR_EXIT_ON_FATAL` is set to a truthy value. The single read
+ * site for this variable: the value is read once and both `'1'` and `'true'`
+ * (the two spellings a human might reach for) enable exit-on-fatal.
+ */
+function exitOnFatalEnabled(): boolean {
+  const v = process.env.CODE_AUDITOR_EXIT_ON_FATAL;
+  return v === '1' || v === 'true';
+}
+
 function registerProcessReliabilityHandlers(): void {
   const g = globalThis as {
     __codeAuditorUncaughtExceptionHandlerInstalled?: boolean;
     __codeAuditorUnhandledRejectionHandlerInstalled?: boolean;
   };
-  const exitOnFatal =
-    process.env.CODE_AUDITOR_EXIT_ON_FATAL === '1' ||
-    process.env.CODE_AUDITOR_EXIT_ON_FATAL === 'true';
+  const exitOnFatal = exitOnFatalEnabled();
 
   if (!g.__codeAuditorUncaughtExceptionHandlerInstalled) {
     process.on('uncaughtException', (error) => {
@@ -1593,7 +1601,7 @@ async function startMcpServer() {
   logMcpInfo('startup', `code-auditor-mcp ${PACKAGE_VERSION} (stdio)`, {
     pid: process.pid,
     cwd: process.cwd(),
-    dataDir: process.env.CODE_AUDITOR_DATA_DIR ?? '(default)',
+    dataDir: dataDirEnv() ?? '(default)',
     debug: process.env.CODE_AUDITOR_DEBUG ?? '0',
     logFile: process.env.CODE_AUDITOR_LOG_FILE ?? '(none)',
   });

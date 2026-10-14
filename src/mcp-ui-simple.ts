@@ -18,10 +18,19 @@ import chalk from 'chalk';
 
 const app: express.Application = express();
 
+/** Default MCP-UI bind port — the single source of the `3001`. */
+export const DEFAULT_MCP_UI_PORT = 3001;
+
+/** The `MCP_UI_PORT` override, parsed once here. Both the module-load default
+ *  and `startMcpUIServer`'s per-call default read this, so they agree. */
+export function mcpUiPort(): number {
+  return Number(process.env.MCP_UI_PORT) || DEFAULT_MCP_UI_PORT;
+}
+
 // Resolved in startMcpUIServer(); defaults keep the module usable before the
 // server starts (used by the iframe URLs in the POST handlers and the token
 // guard below).
-let serverPort = Number(process.env.MCP_UI_PORT) || 3001;
+let serverPort = mcpUiPort();
 let serverHost = '127.0.0.1';
 let serverToken: string | null = null;
 
@@ -496,7 +505,7 @@ app.get('/api/audit/:sessionKey', tokenGuard, (req, res) => {
  */
 export function startMcpUIServer(opts?: { host?: string; port?: number }): Server {
   const host = opts?.host ?? '127.0.0.1';
-  const port = opts?.port ?? (Number(process.env.MCP_UI_PORT) || 3001);
+  const port = opts?.port ?? mcpUiPort();
 
   serverHost = host;
   serverPort = port;

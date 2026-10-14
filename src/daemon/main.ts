@@ -33,6 +33,17 @@ import { parseArgs, USAGE } from './args.js';
 
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * The `CODE_AUDITOR_DAEMON_IDLE_MS` override, or `undefined` when unset/invalid.
+ * Single read site — the idle-timeout resolution consumes this; a value that is
+ * not a positive finite number is treated as "not set" and falls through to the
+ * config/default chain.
+ */
+function daemonIdleMsFromEnv(): number | undefined {
+  const envMs = Number(process.env.CODE_AUDITOR_DAEMON_IDLE_MS);
+  return Number.isFinite(envMs) && envMs > 0 ? envMs : undefined;
+}
+
 export interface DaemonRunOptions {
   projectRoot: string;
   configName?: string;
@@ -71,8 +82,7 @@ export async function runDaemonForeground(options: DaemonRunOptions): Promise<vo
   // Idle timeout resolution: CLI arg → env → config → default.
   let idleTimeoutMs = options.idleTimeoutMs;
   if (idleTimeoutMs === undefined || !Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) {
-    const envMs = Number(process.env.CODE_AUDITOR_DAEMON_IDLE_MS);
-    if (Number.isFinite(envMs) && envMs > 0) idleTimeoutMs = envMs;
+    idleTimeoutMs = daemonIdleMsFromEnv();
   }
   if (idleTimeoutMs === undefined || !Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) {
     try {

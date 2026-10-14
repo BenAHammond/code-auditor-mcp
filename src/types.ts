@@ -639,7 +639,7 @@ export interface PipelineResult {
      *  metadata). Derived coverage (Spec 68 §8) supersedes it. */
     inputPresence?: InputPresence;
     /** Spec 38 R2: per-rule wall-clock timing, slowest first, gating path only.
-     *  Present only when CODE_AUDIT_RULE_TIMING=1. */
+     *  Present only when CODE_AUDITOR_RULE_TIMING=1. */
     ruleTiming?: Array<{ ruleId: string; totalMs: number; calls: number }>;
     /** Spec 39: per-rule derived applicability evaluated over the pipeline's
      *  computed inputs (legacy pipeline metadata). Derived coverage (Spec 68 §8)

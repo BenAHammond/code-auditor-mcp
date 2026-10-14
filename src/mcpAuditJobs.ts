@@ -52,7 +52,14 @@ function defaultJobTimeoutMs(): number {
 const DEFAULT_JOB_LEASE_TTL_MS = 30 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 1;
 
-function jobLeaseTtlMs(): number {
+/**
+ * Heartbeat lease TTL for reclaiming stale `running` rows. Single source for the
+ * write path here and the read-path reclaim in cli.ts (`status`/`jobs`): the two
+ * must agree or a read path would reclaim a job the writer still considers live.
+ * Strictly positive and finite — a negative/Infinity/NaN/zero value is rejected
+ * as "not set", so an unset variable yields the default rather than an absurd TTL.
+ */
+export function jobLeaseTtlMs(): number {
   const raw = process.env.CODE_AUDITOR_JOB_LEASE_TTL_MS;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_JOB_LEASE_TTL_MS;

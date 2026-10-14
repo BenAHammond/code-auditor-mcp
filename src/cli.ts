@@ -31,6 +31,7 @@ import { BLOCKING_SEVERITIES, SEVERITIES, type Severity, type AuditScope, type S
 import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 import { describeSqliteBackend } from './sqlite/driver.js';
+import { isRuleTimingEnabled } from './analyzers/ruleTiming.js';
 
 const program = new Command();
 
@@ -844,7 +845,7 @@ program
       // Emitted to stderr so it never corrupts --json stdout. Slowest rule first.
       // The gate metric is CPU time (auditCpuMs), not wall clock: the budget is
       // about a slow *rule*, and CPU time isolates that from a slow machine.
-      if (process.env.CODE_AUDIT_RULE_TIMING === '1') {
+      if (isRuleTimingEnabled()) {
         const ruleTiming = (result.metadata as any)?.ruleTiming as
           | Array<{ ruleId: string; totalMs: number; calls: number }>
           | undefined;
@@ -2982,9 +2983,6 @@ ledgerCmd
 // the persisted ledger. One job model (the ledger run), one write path — these
 // are thin wrappers over ledger.ts + mcpAuditJobs.ts, not a second store.
 
-/** Lease TTL used by read-path reclaim, mirroring mcpAuditJobs.jobLeaseTtlMs. */
-const CLI_JOB_LEASE_TTL_MS = Number(process.env.CODE_AUDITOR_JOB_LEASE_TTL_MS) || 30_000;
-
 function spec41StatusBadge(status: string): string {
   switch (status) {
     case 'completed':
@@ -3101,11 +3099,12 @@ program
   .action(async (jobId: string, options: { path: string; json?: boolean }) => {
     try {
       const { getLedgerRun, reclaimStaleRunning, computeStaleness } = await import('./ledger.js');
+      const { jobLeaseTtlMs } = await import('./mcpAuditJobs.js');
       const projectRoot = resolve(options.path);
       const db = CodeIndexDB.getInstance(undefined, projectRoot);
       await db.initialize();
 
-      reclaimStaleRunning(db.rawDb, projectRoot, CLI_JOB_LEASE_TTL_MS);
+      reclaimStaleRunning(db.rawDb, projectRoot, jobLeaseTtlMs());
 
       const run = getLedgerRun(db.rawDb, jobId);
       if (!run) {
@@ -3284,11 +3283,12 @@ program
     async (options: { path: string; prune?: boolean; keep: string; limit: string; json?: boolean }) => {
       try {
         const { listLedgerRuns, reclaimStaleRunning, pruneLedgerRuns, computeStaleness } = await import('./ledger.js');
+        const { jobLeaseTtlMs } = await import('./mcpAuditJobs.js');
         const projectRoot = resolve(options.path);
         const db = CodeIndexDB.getInstance(undefined, projectRoot);
         await db.initialize();
 
-        reclaimStaleRunning(db.rawDb, projectRoot, CLI_JOB_LEASE_TTL_MS);
+        reclaimStaleRunning(db.rawDb, projectRoot, jobLeaseTtlMs());
 
         if (options.prune) {
           const keep = parseInt(options.keep, 10) || 10;
