@@ -20,21 +20,6 @@
   ],
 
   "analyzerConfigs": {
-    "data-access": {
-      "databasePatterns": {
-        "postgres": ["pg", "postgres"],
-        "mysql": ["mysql", "mysql2"],
-        "mongodb": ["mongodb", "mongoose"]
-      },
-      "securityPatterns": {
-        "parameterized": ["?", "$1", ":id"],
-        "sanitized": ["sanitize", "escape", "validator"]
-      },
-      "performanceThresholds": {
-        "maxJoins": 4,
-        "warnOnSelectStar": true
-      }
-    },
     "solid": {
       "maxMethodsPerClass": 12,
       "maxLinesPerMethod": 60,

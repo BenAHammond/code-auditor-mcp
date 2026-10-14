@@ -25,29 +25,10 @@
       "maxComponentComplexity": 15
     },
 
-    "data-access": {
-      "databasePatterns": {
-        "postgres": ["app-db", "org-tracker-db", "@neondatabase", "neon"],
-        "drizzle": ["drizzle-orm", "db.query", "db.select", "db.insert", "db.update", "db.delete"]
-      },
-      "ormPatterns": {
-        "drizzle": ["drizzle-orm", "drizzle", "schema"]
-      },
-      "securityPatterns": {
-        "parameterized": ["?", "$1", ":param", "prepared"],
-        "sanitized": ["sanitize", "escape", "clean", "safe"]
-      },
-      "performanceThresholds": {
-        "maxJoins": 5,
-        "warnOnSelectStar": true
-      }
-    },
-
     "solid": {
       "maxMethodsPerClass": 10,
       "maxLinesPerMethod": 50,
       "maxParametersPerMethod": 4,
-      "maxImportsPerFile": 20,
       "maxMethodComplexity": 10
     },
 

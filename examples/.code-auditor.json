@@ -13,34 +13,14 @@
 
   "analyzerConfigs": {
     "solid": {
-      "componentResponsibilityThresholds": {
-        "default": 2,
-        "layout": 2,
-        "dashboard": 3,
-        "table": 2
-      },
-
-      "classResponsibilityThresholds": {
-        "default": 2,
-        "repository": 2,
-        "service": 3
-      },
-
-      "ifElseChainThreshold": 4,
-      "switchCaseThreshold": 6,
-
-      "classMethodThreshold": 10,
-      "interfaceMemberThreshold": 15
+      "classMethodsThreshold": 10,
+      "maxInterfaceMembers": 15
     },
 
     "dry": {
       "minLineThreshold": 10,
       "similarityThreshold": 0.90,
-      "checkImports": true,
-      "unusedImportsConfig": {
-        "checkLevel": "function",
-        "ignorePatterns": ["React", "^_"]
-      }
+      "checkImports": true
     }
   },
 

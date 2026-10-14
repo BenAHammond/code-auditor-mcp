@@ -36,13 +36,6 @@
 
     "react": {
       "maxComponentComplexity": 15
-    },
-
-    "data-access": {
-      "performanceThresholds": {
-        "maxJoins": 5,
-        "warnOnSelectStar": true
-      }
     }
   },
 

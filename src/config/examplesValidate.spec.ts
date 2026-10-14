@@ -36,6 +36,10 @@ function shippedConfigFiles(): Array<{ file: string; projectRoot: string }> {
       files.push({ file: path.join(examplesDir, name), projectRoot: examplesDir });
     }
   }
+  // `.code-auditor.json` ships in `examples/` but is not `.auditrc`-stemmed —
+  // it demonstrates the `.codeauditor.json` project-config shape (same
+  // `AuditConfig`, renamed with a dash so it is not picked up as a live config).
+  files.push({ file: path.join(examplesDir, '.code-auditor.json'), projectRoot: examplesDir });
   // hhra-compat ships in `configs/` (same `files` glob as `examples/`); its
   // includePaths are relative to the config file's own directory.
   files.push({ file: path.join(configsDir, 'hhra-compat.json'), projectRoot: configsDir });

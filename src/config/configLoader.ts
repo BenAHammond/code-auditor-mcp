@@ -367,9 +367,10 @@ export function validateConfig(config: AuditConfig): string[] {
   // Validate the health-score floor (Spec 11 sweep follow-up)
   errors.push(...validateThresholds(config.thresholds));
 
-  // Validate analyzer-config namespaces — a phantom namespace (e.g. `component`,
-  // `security`) configures nothing and must not be silently dropped either.
-  errors.push(...validateAnalyzerConfigNamespaces(config.analyzerConfigs));
+  // Validate the analyzer config in full — a phantom namespace (e.g. `component`)
+  // or a phantom sub-key (e.g. `data-access.databasePatterns`) configures nothing
+  // and must not be silently dropped.
+  errors.push(...validateAnalyzerConfigs(config.analyzerConfigs));
 
   return errors;
 }
@@ -462,18 +463,70 @@ function validateThresholds(thresholds: AuditConfig['thresholds']): string[] {
 }
 
 /**
- * Validate the `analyzerConfigs` namespace keys against the live set
- * (`RUNTIME_DEFAULT_CONFIGS`). A namespace that is not in that set configures
- * nothing — every analyzer reads its namespace by name and silently ignores the
- * rest — so an unknown namespace is the same class of "key does nothing" defect
- * as an unknown top-level key, and gets the same disposition: a throw.
- *
- * `component` and `security` are the two historical phantom namespaces the
- * shipped examples carried; `component` moved to `react`, `security` had no
- * live replacement (its `authPatterns`/`rateLimitPatterns` never mapped to any
- * analyzer config).
+ * Namespaces that were renamed; the live namespace each one moved to. Used by
+ * `validateAnalyzerConfigs` to turn an unknown namespace into a migration
+ * message (`component` → `react`) instead of a bare "not recognised".
  */
-function validateAnalyzerConfigNamespaces(
+const RENAMED_NAMESPACES: Record<string, string> = {
+  component: 'react',
+};
+
+/**
+ * Analyzer sub-keys that were renamed; the live key each one moved to, keyed by
+ * its full dotted path (namespace-qualified, e.g. `solid.classMethodThreshold`).
+ * A key absent from this map has no live equivalent and is rejected outright.
+ *
+ * This is the only hand-maintained fragment — and it is a *migration* map, not a
+ * shape definition. The set of *valid* keys is derived from the config types
+ * themselves (`RUNTIME_DEFAULT_CONFIGS`), so a new live key needs no entry here;
+ * only a key that *moved* does.
+ */
+const RENAMED_ANALYZER_KEYS: Record<string, string> = {
+  'solid.classMethodThreshold': 'solid.classMethodsThreshold',
+  'solid.interfaceMemberThreshold': 'solid.maxInterfaceMembers',
+  'data-access.performanceThresholds.maxJoins': 'data-access.performanceThresholds.joinedTableCount',
+};
+
+/**
+ * Render a key path for an error message, bracket-quoting segments that are not
+ * plain identifiers: `analyzerConfigs`, `data-access`, `ormPatterns` →
+ * `analyzerConfigs["data-access"].ormPatterns`.
+ */
+function renderConfigKeyPath(segments: readonly string[]): string {
+  // Dot-join identifier segments, but a bracket segment (`["data-access"]`) is
+  // appended directly — `analyzerConfigs["data-access"].ormPatterns`, not
+  // `analyzerConfigs.["data-access"].ormPatterns`.
+  let out = '';
+  for (const s of segments) {
+    if (/^[A-Za-z0-9_]+$/.test(s)) {
+      out += (out === '' ? '' : '.') + s;
+    } else {
+      out += `["${s}"]`;
+    }
+  }
+  return out;
+}
+
+/**
+ * Validate the `analyzerConfigs` object in full, not just its namespace names.
+ *
+ * The valid shape at every depth is derived from the analyzer config *types*,
+ * via their runtime embodiment: each analyzer's `DEFAULT_*_CONFIG`, collected in
+ * `RUNTIME_DEFAULT_CONFIGS` (effectiveConfig.ts). There is no hand-maintained key
+ * whitelist and no parallel JSON Schema — the default object is the type's own
+ * value, so a key is "live" iff it exists at that path in the default. A key
+ * anywhere in the tree that is not live throws through the same disposition as
+ * an unknown top-level key: named by full dotted location, with its live
+ * equivalent where one exists.
+ *
+ * `component` and `security` are the two historical phantom namespaces;
+ * `component` moved to `react`, `security` had no live replacement. Below the
+ * namespace, a handful of keys were renamed rather than removed (see
+ * `RENAMED_ANALYZER_KEYS`); the rest of the phantom sub-keys the examples once
+ * carried (`databasePatterns`, `ifElseChainThreshold`, …) have no live
+ * equivalent and are rejected outright.
+ */
+function validateAnalyzerConfigs(
   analyzerConfigs: AuditConfig['analyzerConfigs'],
 ): string[] {
   const errors: string[] = [];
@@ -483,17 +536,55 @@ function validateAnalyzerConfigNamespaces(
     return errors;
   }
 
-  const LIVE_NAMESPACES = new Set(Object.keys(RUNTIME_DEFAULT_CONFIGS));
-  const RENAMED_NAMESPACES: Record<string, string> = {
-    component: 'react',
-  };
   for (const ns of Object.keys(analyzerConfigs as Record<string, unknown>)) {
-    if (LIVE_NAMESPACES.has(ns)) continue;
-    const live = RENAMED_NAMESPACES[ns];
-    if (live) {
-      errors.push(`analyzerConfigs.${ns} is not recognised — the live namespace is "${live}"`);
-    } else {
-      errors.push(`analyzerConfigs.${ns} is not recognised and has no live namespace — remove it`);
+    const defaults = RUNTIME_DEFAULT_CONFIGS[ns];
+    if (defaults === undefined) {
+      const live = RENAMED_NAMESPACES[ns];
+      errors.push(
+        live
+          ? `analyzerConfigs.${ns} is not recognised — the live namespace is "${live}"`
+          : `analyzerConfigs.${ns} is not recognised and has no live namespace — remove it`,
+      );
+      continue;
+    }
+    errors.push(...validateAnalyzerSubKeys((analyzerConfigs as Record<string, unknown>)[ns], defaults, [ns]));
+  }
+  return errors;
+}
+
+/**
+ * Recursively check that every key in `user` exists at the same path in
+ * `defaults`. A nested object in `defaults` is descended into; arrays, scalars
+ * and null are leaf values (their contents are not key-validated). `segments` is
+ * the dotted path accumulated so far, namespace first.
+ */
+function validateAnalyzerSubKeys(
+  user: unknown,
+  defaults: Record<string, unknown>,
+  segments: string[],
+): string[] {
+  const errors: string[] = [];
+  if (user === null || typeof user !== 'object' || Array.isArray(user)) return errors;
+
+  for (const key of Object.keys(user as Record<string, unknown>)) {
+    if (!Object.prototype.hasOwnProperty.call(defaults, key)) {
+      const fullSegments = [...segments, key];
+      const fullPath = renderConfigKeyPath(['analyzerConfigs', ...fullSegments]);
+      const target = RENAMED_ANALYZER_KEYS[fullSegments.join('.')];
+      errors.push(
+        target !== undefined
+          ? `${fullPath} is not recognised — the live key is "${renderConfigKeyPath(['analyzerConfigs', ...target.split('.')])}"`
+          : `${fullPath} is not recognised and has no live equivalent — remove it`,
+      );
+      continue;
+    }
+    const defaultValue = defaults[key];
+    if (defaultValue !== null && typeof defaultValue === 'object' && !Array.isArray(defaultValue)) {
+      errors.push(...validateAnalyzerSubKeys(
+        (user as Record<string, unknown>)[key],
+        defaultValue as Record<string, unknown>,
+        [...segments, key],
+      ));
     }
   }
   return errors;

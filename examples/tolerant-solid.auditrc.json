@@ -13,38 +13,15 @@
 
   "analyzerConfigs": {
     "solid": {
-      "componentResponsibilityThresholds": {
-        "default": 2,
-        "layout": 2,
-        "dashboard": 4,
-        "table": 3,
-        "form": 3
-      },
-
-      "classResponsibilityThresholds": {
-        "default": 2,
-        "repository": 2,
-        "service": 3,
-        "controller": 3,
-        "model": 3
-      },
-
-      "ifElseChainThreshold": 5,
-      "switchCaseThreshold": 7,
-      "classMethodThreshold": 12,
-      "interfaceMemberThreshold": 20,
-      "dependencyInjectionLimit": 6
+      "classMethodsThreshold": 40,
+      "maxInterfaceMembers": 50,
+      "maxMethodComplexity": 100
     },
 
     "dry": {
       "minLineThreshold": 15,
       "similarityThreshold": 0.85,
-      "checkImports": true,
-      "unusedImportsConfig": {
-        "checkLevel": "function",
-        "includeTypeOnlyImports": false,
-        "ignorePatterns": ["React", "^_", "test.*"]
-      }
+      "checkImports": true
     }
   },
 
