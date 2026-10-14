@@ -209,12 +209,6 @@ export const DEFAULT_ANALYZER_CONFIGS = {
       mysql: ['mysql', 'mysql2'],
       mongodb: ['mongodb', 'mongoose']
     },
-    securityPatterns: {
-      // `?` is deliberately absent — see UniversalDataAccessAnalyzer.ts: a bare
-      // substring `?` matches the ternary operator and `'?'` string literals,
-      // clearing value-bearing interpolations before isSafeDynamicPart runs.
-      parameterizedQueries: ['$1', ':param'],
-    },
     performanceThresholds: {
       maxJoins: 5,
       warnOnSelectStar: true

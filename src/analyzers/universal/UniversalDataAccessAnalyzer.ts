@@ -139,7 +139,6 @@ export interface DataAccessAnalyzerConfig {
   // Security patterns
   securityPatterns?: {
     sqlInjectionRisks?: string[];
-    parameterizedQueries?: string[];
   };
 
   /** DB wrapper function names that represent parameterized calls (e.g. d1Query, d1Exec).
@@ -204,13 +203,6 @@ export const DEFAULT_DATA_ACCESS_CONFIG: DataAccessAnalyzerConfig = {
   },
   securityPatterns: {
     sqlInjectionRisks: ['${', 'concat', 'string interpolation'],
-    // NOTE: `?` is deliberately absent. A bare-substring `text.includes('?')`
-    // matches a ternary operator's `?` (`${cond ? 'a' : value}`) and `'?'` string
-    // literals (`.map(() => '?')`), silently clearing a value-bearing interpolation
-    // before isSafeDynamicPart ever runs. A real `?` placeholder does not make a
-    // `${…}` interpolation safe either — that is decided structurally by
-    // isSafeDynamicPart, so the `?` shortcut could only ever cause false negatives.
-    parameterizedQueries: [':param', '$1', 'prepared', 'parameterized']
   },
   // DB wrapper functions that accept (sql, params) — same as .prepare().bind()
   // but expressed as a simple function call.  Must match the provenance system's
@@ -2382,9 +2374,14 @@ function checkQuerySecurity(
   if (isParameterizedTaggedTemplate(node, adapter, sourceCode, config.sqlTagNames ?? SQL_TAG_NAMES)) {
     return { parameterized: true, injectionRisk: false, escaped: false };
   }
-  if ((config.securityPatterns?.parameterizedQueries || []).some(p => text.includes(p))) {
-    return { parameterized: true, injectionRisk: false, escaped: false };
-  }
+  // There is deliberately NO whole-text substring test for "parameterized"
+  // markers (`prepared`, `$1`, `:param`, …) ahead of the per-interpolation
+  // classifier below. A presence test on the query *text* can never establish
+  // that a particular `${…}` interpolation is safe — only isSafeDynamicPart can.
+  // Any such short-circuit is a false-negative generator: a column named
+  // `prepared_at`, a `$100` literal, or a `':param'` string would clear a
+  // value-bearing `${id}` before isSafeDynamicPart ever ran. The
+  // `parameterizedQueries` config key was removed with it (no other consumer).
 
   // No dynamic-string capability → can't prove unsafe; err quiet.
   if (!adapter.isDynamicStringConstruction || !adapter.getDynamicParts) {

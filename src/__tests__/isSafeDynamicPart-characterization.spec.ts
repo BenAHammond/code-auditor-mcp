@@ -132,4 +132,68 @@ export function search() {
 `;
     expect(await inj(code)).toBe(0);
   });
+
+  it('a `.join` over a locally-built array of `col = $N` placeholder counters', async () => {
+    // The clause-template idiom: column names and bind-parameter indices are
+    // hardcoded/derived from a local `paramIndex++` counter, while the *values*
+    // flow out-of-band through the bind array. `${paramIndex++}` is numeric
+    // (ToNumeric), so the interpolated text is only `col = $2, col = $3, …` —
+    // structural, never value-bearing. Red before the `update_expression` arm.
+    const code = `${HANDLE}export function save(progress: { startedAt?: string }) {
+  const setClause: string[] = [];
+  const values: unknown[] = ['jobId'];
+  let paramIndex = 2;
+  if (progress.startedAt !== undefined) {
+    setClause.push(\`started_at = \${paramIndex++}\`);
+    values.push(progress.startedAt);
+  }
+  if (setClause.length > 0) {
+    setClause.push('updated_at = NOW()');
+    return connection.execute(\`UPDATE t SET \${setClause.join(', ')} WHERE id = $1\`, values);
+  }
+}
+`;
+    expect(await inj(code)).toBe(0);
+  });
+});
+
+describe('isSafeDynamicPart — the deleted substring short-circuit must not clear value-bearing interpolations', () => {
+  // Each query's *text* contains one of the removed `parameterizedQueries`
+  // magic strings, but the `${…}` interpolation is value-bearing. The deleted
+  // `checkQuerySecurity` shortcut (`text.includes(p)`) used to return
+  // `parameterized: true` before isSafeDynamicPart ran — a false negative. These
+  // are red until the short-circuit is gone: each must now flag.
+
+  it('a query whose text contains the word "prepared"', async () => {
+    // `prepared_at` is a column name, not a parameterization mechanism.
+    const code = `${HANDLE}export function search(id: string) {
+  return connection.execute(\`SELECT * FROM orders WHERE prepared_at >= \${id}\`);
+}
+`;
+    expect(await inj(code)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a query whose text contains the word "parameterized"', async () => {
+    const code = `${HANDLE}export function search(id: string) {
+  return connection.execute(\`SELECT * FROM orders WHERE parameterized_at >= \${id}\`);
+}
+`;
+    expect(await inj(code)).toBeGreaterThanOrEqual(1);
+  });
+
+  it("a query whose text contains '$1' inside a literal like '$100'", async () => {
+    const code = `${HANDLE}export function search(id: string) {
+  return connection.execute(\`SELECT * FROM orders WHERE price > $100 AND id = \${id}\`);
+}
+`;
+    expect(await inj(code)).toBeGreaterThanOrEqual(1);
+  });
+
+  it("a query whose text contains ':param' as a literal", async () => {
+    const code = `${HANDLE}export function search(id: string) {
+  return connection.execute(\`SELECT * FROM orders WHERE note = ':param' AND id = \${id}\`);
+}
+`;
+    expect(await inj(code)).toBeGreaterThanOrEqual(1);
+  });
 });

@@ -1974,6 +1974,14 @@ class TsSafetyAnalysis extends TsConstantResolution {
       case 'undefined':
       case 'regex':
         return true;
+      case 'update_expression':
+        // `x++` / `++x` / `x--` / `--x` always evaluate to a Number (or BigInt):
+        // the increment/decrement operators run ToNumeric over the operand, so the
+        // expression's value is numeric even when the operand is a string or object.
+        // A numeric interpolation stringifies to `5`/`NaN`/`Infinity`, never
+        // attacker-controlled text — so a `col = $${paramIndex++}` placeholder
+        // counter is structural (a bind-parameter index), not value-bearing.
+        return true;
       case 'identifier':
         return this.isSafeIdentifier(node, ctx);
       case 'template_string':
