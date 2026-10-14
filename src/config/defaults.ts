@@ -32,6 +32,10 @@ export function getDefaultConfig(): AuditConfig {
     // that `print-config` then shows and the loader then refuses. See
     // configLoader.ts `output-directory-refused`.
     minSeverity: 'high',
+    // Spec 11 sweep follow-up — the health-score floor, single-sourced to
+    // DEFAULT_HEALTH_SCORE_THRESHOLD (referenced, not re-declared). The removed
+    // `maxSevere`/`maxCritical`/`maxHigh` siblings are gone for good.
+    thresholds: { minHealthScore: DEFAULT_HEALTH_SCORE_THRESHOLD },
     // Spec 54 R3 — severity is urgency, not permission. There is no
     // `severityOverrides` and no `gateSeverities`: every rule is assigned on the
     // urgency axis (critical/severe/high) and every finding blocks. Per-rule
@@ -175,6 +179,34 @@ export const DEFAULT_VALIDATOR_PACKAGES: readonly string[] = [
 export const DEFAULT_CHURN_CONFIG: ChurnConfig = {
   churnWindowMonths: 12,
 };
+
+/**
+ * The health-score pass/fail floor — the single source of truth for the
+ * `audit.health` (`mcp.ts`) and `audit_health` (`mcp-tools-shared.ts`) MCP
+ * tools' `threshold` parameter default. `calculateHealthScore` returns a 0-100
+ * score; below this floor a codebase reports `needs-attention`. Read by both
+ * tool-definition `default` fields and both handler fallbacks; the literal must
+ * not be re-declared elsewhere (the `DEFAULT_COLOR_DELTA_E` pattern).
+ *
+ * `70` is the cut below which `audit.health` reports `needs-attention`.
+ */
+export const DEFAULT_HEALTH_SCORE_THRESHOLD = 70;
+
+/**
+ * Resolve the health-score floor for one call. Precedence: the MCP `threshold`
+ * argument, then the configured `thresholds.minHealthScore` (read from
+ * `.codeauditor.json` by `loadMinHealthScore`), then the single default above.
+ * This is the one place the fallback is computed, so both MCP surfaces move
+ * together when the default changes. The `||` (not `??`) mirrors the historical
+ * fallback: a `0` threshold (always-pass) was — and remains — indistinguishable
+ * from "unset".
+ */
+export function resolveHealthThreshold(
+  args?: { threshold?: number },
+  configMin?: number,
+): number {
+  return (args?.threshold as number) || configMin || DEFAULT_HEALTH_SCORE_THRESHOLD;
+}
 
 /**
  * Default analyzer configurations

@@ -18,6 +18,8 @@ import { CodeMapGenerator } from './services/CodeMapGenerator.js';
 import { analyzeDocumentation } from './analyzers/documentationAnalyzer.js';
 import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { DEFAULT_SERVER_URL } from './constants.js';
+import { DEFAULT_HEALTH_SCORE_THRESHOLD, resolveHealthThreshold } from './config/defaults.js';
+import { loadMinHealthScore } from './config/configLoader.js';
 import { CodeIndexDB } from './codeIndexDB.js';
 import { errorMessage } from './utils/errorMessage.js';
 import { buildDiscoveryQueries, normalizeDialect } from './mcp-tools/discoveryQueries.js';
@@ -101,7 +103,7 @@ export const tools: Tool[] = [
         type: 'number',
         required: false,
         description: 'Health score threshold (0-100) for pass/fail',
-        default: 70,
+        default: DEFAULT_HEALTH_SCORE_THRESHOLD,
       },
       {
         name: 'indexFunctions',
@@ -627,7 +629,8 @@ export class ToolHandlers {
   static async handleAuditHealth(args: any): Promise<any> {
     const auditPath = path.resolve((args.path as string) || process.cwd());
     await assertAuditPathExists(auditPath);
-    const threshold = (args.threshold as number) || 70;
+    const configMin = await loadMinHealthScore(auditPath);
+    const threshold = resolveHealthThreshold(args, configMin);
     const indexFunctions = (args.indexFunctions as boolean) !== false; // Default true
     const generateCodeMap = (args.generateCodeMap as boolean) !== false; // Default true
 

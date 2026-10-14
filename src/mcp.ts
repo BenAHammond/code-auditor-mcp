@@ -84,6 +84,8 @@ import { ConfigGeneratorFactory } from './generators/ConfigGeneratorFactory.js';
 import { resolveConfigGenerateDir } from './config/configGeneratePath.js';
 import { telemetryStatus, telemetryEnable, telemetryDisable } from './telemetry.js';
 import { DEFAULT_SERVER_URL, IS_DEV_MODE, PACKAGE_VERSION } from './constants.js';
+import { DEFAULT_HEALTH_SCORE_THRESHOLD, resolveHealthThreshold } from './config/defaults.js';
+import { loadMinHealthScore } from './config/configLoader.js';
 import { resolveMcpDevLogPath } from './dataPaths.js';
 import { getAuditJobStatus, getAuditResultsPage, getAuditResultsAsSarif, startAuditJob } from './mcpAuditJobs.js';
 import { CodeIndexDB } from './codeIndexDB.js';
@@ -488,7 +490,7 @@ const auditActions: ActionDefinition[] = [
         type: 'number',
         required: false,
         description: 'Health score threshold (0-100) for pass/fail.',
-        default: 70,
+        default: DEFAULT_HEALTH_SCORE_THRESHOLD,
       },
       {
         name: 'indexFunctions',
@@ -514,7 +516,8 @@ const auditActions: ActionDefinition[] = [
     handler: async (args) => {
       const auditPath = path.resolve((args.path as string) || process.cwd());
       await assertAuditPathExists(auditPath);
-      const threshold = (args.threshold as number) || 70;
+      const configMin = await loadMinHealthScore(auditPath);
+      const threshold = resolveHealthThreshold(args, configMin);
       const indexFunctions = (args.indexFunctions as boolean) !== false;
       const generateCodeMap = (args.generateCodeMap as boolean) !== false;
 

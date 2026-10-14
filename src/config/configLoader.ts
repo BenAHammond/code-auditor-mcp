@@ -235,6 +235,24 @@ export async function findConfigFileUp(startDir: string): Promise<string | null>
 }
 
 /**
+ * Read the effective health-score floor for a project. When a `.codeauditor.json`
+ * exists, this is `loadConfig`'s `thresholds.minHealthScore` — the file's value
+ * when it sets one, otherwise `DEFAULT_HEALTH_SCORE_THRESHOLD` (the loader merges
+ * the config default). When there is no config file it returns `undefined`, so
+ * the caller falls back through `resolveHealthThreshold` — the one place the
+ * final fallback is computed. Loading the full config here (not just the raw
+ * `thresholds` fragment) means an invalid config surfaces as a load error before
+ * any threshold is used, identical to the audit runner. The per-call `threshold`
+ * argument still wins over this value.
+ */
+export async function loadMinHealthScore(projectRoot: string): Promise<number | undefined> {
+  const configPath = await findConfigFileUp(projectRoot);
+  if (!configPath) return undefined;
+  const { config } = await loadConfig({ configPath, projectRoot });
+  return config.thresholds?.minHealthScore;
+}
+
+/**
  * Load configuration from a JSON file
  */
 async function loadFromFile(
@@ -364,6 +382,9 @@ export function validateConfig(config: AuditConfig): string[] {
   // Validate daemon config (Spec 50 R5)
   errors.push(...validateDaemonConfig(config.daemon));
 
+  // Validate the health-score floor (Spec 11 sweep follow-up)
+  errors.push(...validateThresholds(config.thresholds));
+
   return errors;
 }
 
@@ -390,6 +411,35 @@ function validateDaemonConfig(daemon: AuditConfig['daemon']): string[] {
     (typeof daemon.idleTimeoutMs !== 'number' || !Number.isFinite(daemon.idleTimeoutMs) || daemon.idleTimeoutMs <= 0)
   ) {
     errors.push('daemon.idleTimeoutMs must be a positive number of milliseconds');
+  }
+  return errors;
+}
+
+/**
+ * Validate the restored `thresholds.minHealthScore` (Spec 11 sweep follow-up).
+ * Only `minHealthScore` survives the sweep; the severity-gate siblings
+ * (`maxSevere`/`maxCritical`/`maxHigh`) are vestigial and gone. Rejecting them
+ * here turns a silently-ignored old setting into a visible error, instead of
+ * letting the restored key re-accept a field the tool no longer honors.
+ */
+function validateThresholds(thresholds: AuditConfig['thresholds']): string[] {
+  const errors: string[] = [];
+  if (thresholds === undefined || thresholds === null) return errors;
+  if (typeof thresholds !== 'object' || Array.isArray(thresholds)) {
+    errors.push('thresholds must be an object');
+    return errors;
+  }
+  const VALID_KEYS = new Set(['minHealthScore']);
+  for (const key of Object.keys(thresholds as Record<string, unknown>)) {
+    if (!VALID_KEYS.has(key)) {
+      errors.push(
+        `Unknown key in thresholds "${key}" — the severity-gate thresholds (maxSevere/maxCritical/maxHigh) were removed (Spec 54 R3); only minHealthScore remains`,
+      );
+    }
+  }
+  const m = (thresholds as { minHealthScore?: unknown }).minHealthScore;
+  if (m !== undefined && (typeof m !== 'number' || !Number.isFinite(m) || m < 0 || m > 100)) {
+    errors.push(`thresholds.minHealthScore must be a number 0-100 — got "${String(m)}"`);
   }
   return errors;
 }

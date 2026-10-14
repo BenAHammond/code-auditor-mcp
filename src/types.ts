@@ -907,6 +907,17 @@ export interface AuditConfig {
   outputDir?: string;
   outputDirectory?: string;
   minSeverity?: Severity;
+  /**
+   * The health-score pass/fail floor — the config half of the `audit.health` /
+   * `audit_health` MCP tools' `threshold` parameter. Precedence: per-call
+   * `threshold` arg → this → `DEFAULT_HEALTH_SCORE_THRESHOLD` (70). The removed
+   * sibling keys `maxSevere` / `maxCritical` / `maxHigh` are gone for good
+   * (vestigial — the severity gate was replaced by "every finding blocks",
+   * Spec 54 R3); only `minHealthScore` is restored because it names a live floor.
+   */
+  thresholds?: {
+    minHealthScore?: number;
+  };
   /** Per-directory config overrides. Ordered array — later matching profiles win on merge. */
   pathProfiles?: PathProfile[];
   /** Set to false to disable all built-in profiles. */
@@ -953,6 +964,7 @@ export interface ProjectFileConfig {
   outputDir?: string;
   outputDirectory?: string;
   minSeverity?: Severity;
+  thresholds?: AuditConfig['thresholds'];
   pathProfiles?: PathProfile[];
   builtin?: boolean;
   churn?: ChurnConfig;
@@ -992,7 +1004,7 @@ export interface ProjectFileConfig {
 export const PROJECT_FILE_CONFIG_KEYS = [
   'includePaths', 'excludePaths',
   'outputDir', 'outputDirectory', 'minSeverity',
-  'pathProfiles', 'builtin', 'churn',
+  'pathProfiles', 'builtin', 'churn', 'thresholds',
   'divergence', 'crossDomain', 'analyzerOptions', 'analyzerConfigs',
   'rationales', 'importVirtualModules', 'daemon', 'databaseType', 'rules', '$schema',
 ] as const satisfies readonly (keyof ProjectFileConfig)[];
