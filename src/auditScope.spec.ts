@@ -382,10 +382,12 @@ describe('Spec 04 — Diff-Scoped Auditing', () => {
       expect(modified).toHaveLength(0);
     });
 
-    it('handles non-existent project root gracefully', async () => {
-      // No files indexed yet → detectModifiedFiles returns empty
+    it('returns undefined when there is no baseline to diff against', async () => {
+      // An empty `functions` table means no baseline was ever indexed. That is
+      // "the diff cannot be computed", not "nothing changed" — `undefined`, never
+      // `[]`, so a caller can report the uncomputable diff instead of a clean run.
       const modified = await db.detectModifiedFiles(dir);
-      expect(modified).toEqual([]);
+      expect(modified).toBeUndefined();
     });
   });
 

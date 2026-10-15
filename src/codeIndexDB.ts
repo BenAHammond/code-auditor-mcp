@@ -19,6 +19,7 @@ import { computeContentHash } from './utils/contentHash.js';
 import { errorMessage } from './utils/errorMessage.js';
 import { getPersistedStorageRoot, resolvePersistedIndexPath } from './dataPaths.js';
 import { ContextualError, getErrnoCode } from './mcpToolErrors.js';
+import { logMcp } from './mcpDiagnostics.js';
 import { extractChurn } from './churn/churnExtractor.js';
 import { computeHotspots } from './hotspots/hotspotScorer.js';
 import { DEFAULT_CHURN_CONFIG } from './config/defaults.js';
@@ -282,6 +283,7 @@ export class CodeIndexDB {
       if (!retried && this.dbPath !== ':memory:' && /(not a database|malformed|corrupt)/i.test(msg)) {
         retried = true;
         try { await fs.unlink(this.dbPath); } catch { /* ignore */ }
+        logMcp('warn', 'index', 'code index database was corrupt; discarded and rebuilt from scratch', { dbPath: this.dbPath });
         this.db = openSqlite(this.dbPath, { timeoutMs: DB_BUSY_TIMEOUT_MS });
         this.db.pragma(PRAGMA_JOURNAL_WAL);
         this.db.pragma(PRAGMA_FOREIGN_KEYS_ON);
@@ -962,15 +964,27 @@ export class CodeIndexDB {
    * Given a project root, detect all indexed files whose mtime is newer than
    * the stored last_modified timestamp. Returns file paths for further processing.
    *
+   * A `changed` scope is a diff against a *baseline*. An empty `functions` table
+   * means no baseline exists — the index has never been populated (or was
+   * discarded) — which is a different answer from "no files changed". The two
+   * are distinguished here at the source: `undefined` means *the diff cannot be
+   * computed* (no baseline); `[]` means *the diff computed clean* (baseline
+   * present, nothing modified). Reporting `undefined` as `[]` would turn
+   * "cannot determine what changed" into "nothing changed", a false clean.
+   *
    * @param projectRoot - The project root to scan.
-   * @returns The file paths whose mtime is newer than the stored timestamp.
+   * @returns The modified file paths, or `undefined` when there is no baseline
+   *   to diff against (an empty `functions` table).
    */
-  async detectModifiedFiles(projectRoot: string): Promise<string[]> {
+  async detectModifiedFiles(projectRoot: string): Promise<string[] | undefined> {
     this.ensureInitialized();
 
     const files = this.db.prepare(
       'SELECT DISTINCT file_path, last_modified FROM functions'
     ).all() as Array<{ file_path: string; last_modified: string | null }>;
+
+    // No indexed rows → no baseline → the diff is uncomputable, not clean.
+    if (files.length === 0) return undefined;
 
     const modifiedFiles: string[] = [];
     const uniqueFiles = new Map<string, string | null>();

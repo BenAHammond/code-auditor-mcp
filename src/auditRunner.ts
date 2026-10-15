@@ -271,7 +271,7 @@ async function discoverAuditFiles(
     message: `Discovering files... (scope: ${scopeResultType})`
   });
 
-  const { files, skippedExtensions } = await resolveDiscoveryScope(mergedOptions, scope, fileAccounting);
+  const { files, skippedExtensions, changedScopeNoBaseline } = await resolveDiscoveryScope(mergedOptions, scope, fileAccounting);
 
   throwIfAborted(mergedOptions.abortSignal);
 
@@ -305,6 +305,7 @@ async function discoverAuditFiles(
     scope,
     isScoped,
     scopeResultType,
+    changedScopeNoBaseline,
   };
 }
 
@@ -318,8 +319,17 @@ async function resolveDiscoveryScope(
   mergedOptions: AuditRunnerOptions,
   scope: AuditScope,
   fileAccounting: FileAccounting,
-): Promise<{ files: string[]; skippedExtensions: Array<{ ext: string; count: number }> | undefined }> {
+): Promise<{
+  files: string[];
+  skippedExtensions: Array<{ ext: string; count: number }> | undefined;
+  changedScopeNoBaseline: boolean;
+}> {
   let files: string[];
+  // True when a bare `changed` scope found no baseline in the index to diff
+  // against (an empty `functions` table). That is "the diff cannot be computed",
+  // not "nothing changed" — surfaced as a diagnostic so the run never reports a
+  // false clean. Explicit-files and all/other scopes leave this false.
+  let changedScopeNoBaseline = false;
   // Extensions present on disk that discovery skipped (Spec 43 R5 follow-up).
   // Populated only for the `all` scope — scoped runs are explicitly scoped by
   // the user, so "what wasn't analyzed" there is the scope itself, not the
@@ -350,14 +360,28 @@ async function resolveDiscoveryScope(
         error: err instanceof Error ? err.message : String(err)
       });
     }
-    const modifiedFiles = mergedOptions.explicitFiles !== undefined
-      ? mergedOptions.explicitFiles
-      : (db ? await db.detectModifiedFiles(
-          path.resolve(mergedOptions.projectRoot || process.cwd())
-        ) : []);
+    let modifiedFiles: string[];
+    if (mergedOptions.explicitFiles !== undefined) {
+      modifiedFiles = mergedOptions.explicitFiles;
+    } else if (db) {
+      // `undefined` here means *no baseline* (an empty `functions` table) — a
+      // different answer from `[]` ("baseline present, nothing modified"). The
+      // former is reported as an uncomputable diff, never as a clean run. The
+      // `db`-unavailable case (init threw, e.g. a future schema version) keeps
+      // its existing fail-open zero-file path and the later engine-error
+      // diagnostic.
+      const detected = await db.detectModifiedFiles(
+        path.resolve(mergedOptions.projectRoot || process.cwd())
+      );
+      if (detected === undefined) changedScopeNoBaseline = true;
+      modifiedFiles = detected ?? [];
+    } else {
+      modifiedFiles = [];
+    }
     files = [...new Set(modifiedFiles.map((f) => path.resolve(f)))].sort();
     logMcpInfo('discovery', 'changed scope resolved', {
-      fileCount: files.length
+      fileCount: files.length,
+      noBaseline: changedScopeNoBaseline
     });
   } else if (Array.isArray(scope)) {
     // files scope: explicit file paths/globs
@@ -372,7 +396,7 @@ async function resolveDiscoveryScope(
     skippedExtensions = discovered.skippedExtensions;
   }
 
-  return { files, skippedExtensions };
+  return { files, skippedExtensions, changedScopeNoBaseline };
 }
 
 /**
@@ -1622,6 +1646,7 @@ interface FinalizeInputs {
   startCpu: NodeJS.CpuUsage;
   provenanceTiming: { totalMs: number };
   blastRadius: import('./types.js').BlastRadiusImpact | undefined;
+  changedScopeNoBaseline: boolean;
   zeroFilesDiagnostics: DiagnosticWarning[];
   pipelineDiagnostics: AuditDiagnostic[] | undefined;
   rejected: RejectedConfigEntry[];
@@ -1655,7 +1680,7 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
   const {
     ordered, files, analyzers, mergedOptions, isScoped, scopeResultType,
     indexFactsWritten, writeIndexFactsMs, startTime, startCpu, provenanceTiming,
-    blastRadius, zeroFilesDiagnostics, pipelineDiagnostics, rejected,
+    blastRadius, changedScopeNoBaseline, zeroFilesDiagnostics, pipelineDiagnostics, rejected,
     lintConfigDiagnostics, configPath, baselineMetadata, pipelineCoverage,
     pipelineTableCatalog, pipelineStageTiming, thresholdChanges,
     thresholdSources, pipelineSkippedFiles, pipelineUnparsedFiles, skippedExtensions,
@@ -1673,6 +1698,21 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
     if (d.kind !== 'cannot-fire' || d.analyzerName !== 'schema') continue;
     unprovenSitesByAnalyzer.set(d.analyzerName, (unprovenSitesByAnalyzer.get(d.analyzerName) ?? 0) + 1);
   }
+
+  // A bare `changed` scope that found no baseline to diff against (an empty
+  // `functions` table) is reported as an uncomputable diff, never as a clean
+  // run. The diagnostic names both possible causes: the index was never
+  // populated, or it was discarded (e.g. after corruption).
+  const noBaselineDiagnostics: AuditDiagnostic[] = changedScopeNoBaseline
+    ? [{
+        analyzerName: 'code-index',
+        kind: 'no-baseline',
+        message:
+          'Cannot determine what changed: the code index holds no baseline to diff against ' +
+          '(no previously indexed files). No index has been built yet, or a prior index was ' +
+          'discarded. Run a full audit to build the baseline, then re-run `changed`.',
+      }]
+    : [];
 
   const summary = generateSummary(ordered, files.length, unprovenSitesByAnalyzer);
 
@@ -1692,8 +1732,9 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
       scope: scopeResultType,
       provenanceResolutionMs: provenanceTiming.totalMs,
       ...(blastRadius && { blastRadius }),
-      ...((zeroFilesDiagnostics.length > 0 || (pipelineDiagnostics?.length ?? 0) > 0 || rejected.length > 0 || lintConfigDiagnostics.length > 0) && {
+      ...((noBaselineDiagnostics.length > 0 || zeroFilesDiagnostics.length > 0 || (pipelineDiagnostics?.length ?? 0) > 0 || rejected.length > 0 || lintConfigDiagnostics.length > 0) && {
         diagnostics: [
+          ...noBaselineDiagnostics,
           ...zeroFilesDiagnostics,
           ...(pipelineDiagnostics ?? []),
           ...lintConfigDiagnostics,
@@ -1827,6 +1868,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       scope,
       isScoped,
       scopeResultType,
+      changedScopeNoBaseline,
     } = await discoverAuditFiles(mergedOptions, root, fileAccounting);
 
     const { collectedFunctions, fileToFunctionsMap } = await collectIndexedFunctions(mergedOptions, files);
@@ -1908,6 +1950,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       startCpu,
       provenanceTiming,
       blastRadius,
+      changedScopeNoBaseline,
       zeroFilesDiagnostics,
       pipelineDiagnostics,
       rejected,

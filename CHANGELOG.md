@@ -2,6 +2,41 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [Unreleased]
+
+### The code-index database now keys on project identity, not the working directory
+
+The index database path was derived from `process.cwd()`, so a single project
+audited from two different directories (a repo root and a nested folder, or a
+symlinked path and its real path) produced two separate databases, and each new
+invocation directory created yet another. The path now derives from the project's
+own identity — its git root, `package.json`, or `go.mod` directory — so every
+invocation inside one project lands on the same database.
+
+**Earlier 5.0.x versions keyed on the working directory, and those databases are
+still on disk under your OS cache directory.** Upgrading stops the growth but does
+not remove what accumulated. They are a cache, never source data, so any stale
+per-directory databases can be deleted safely. The directory is:
+
+- macOS: `~/Library/Caches/code-auditor/projects/<hash>/index.db`
+- Linux: `$XDG_CACHE_HOME/code-auditor/projects/<hash>/index.db` (or `~/.cache/code-auditor/...`)
+- Windows: `%LOCALAPPDATA%\code-auditor\Cache\projects\<hash>\index.db`
+
+(`<hash>` is the first 16 hex characters of `sha256` of the real project root;
+the stale 5.0.x entries use the same directory but hashed the working directory.)
+
+### `changed` reports an uncomputable diff instead of a false clean
+
+`code-audit changed` against an index with no baseline — an empty `functions`
+table, whether the index was never built or was discarded after corruption —
+used to diff against nothing and report "nothing changed" (zero findings). The
+empty diff and the no-baseline case are now distinguished at the source:
+`detectModifiedFiles` returns `undefined` for "no baseline" and `[]` only for
+"baseline present, nothing modified". A `changed` run in that state now reports
+that it cannot determine what changed and names why (no index yet, or the index
+was discarded), rather than a clean result. The corrupt-recovery path also now
+logs one line stating the database was corrupt and rebuilt.
+
 ## [5.1.2]
 
 ### `hardcoded-secret` reports on evidence, not suppression

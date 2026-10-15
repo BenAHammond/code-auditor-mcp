@@ -134,6 +134,11 @@ const COVERAGE_DIAGNOSTIC_KINDS = new Set([
   'cannot-fire',
   'manifest-stale',
   'pipeline-error',
+  // Not a CoverageDiagnostic — an AuditDiagnostic emitted at the whole-run level
+  // when a bare `changed` scope finds no baseline to diff against (empty index).
+  // It carries no severity and never reaches the ladder; it only prevents a false
+  // clean. Listed here because the scanner sees its `analyzerName:`+`kind:` pair.
+  'no-baseline',
 ]);
 
 /** Ledger rule IDs that resolved to a diagnostic (off the ladder, no severity).

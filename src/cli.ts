@@ -1016,7 +1016,19 @@ async function emitChangedOutput(
         );
       }
     } else {
-      console.log(chalk.green('\n✓ No readings.'));
+      // A bare `changed` scope that found no baseline to diff against must not
+      // report a false clean. The diagnostic names both causes (never indexed,
+      // or the index was discarded) so the agent sees "cannot determine what
+      // changed", never "nothing changed".
+      const noBaseline = (result.metadata?.diagnostics ?? []).find(
+        (d: any) => d.kind === 'no-baseline'
+      );
+      if (noBaseline) {
+        console.log(chalk.yellow('\n⚠ Cannot determine what changed.'));
+        console.log(chalk.yellow(noBaseline.message));
+      } else {
+        console.log(chalk.green('\n✓ No readings.'));
+      }
     }
   }
 }
