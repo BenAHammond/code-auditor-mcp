@@ -1734,7 +1734,12 @@ describe('JSON output purity', () => {
     // File large enough to exceed docsMinLines default (5) and trigger
     // function-documentation
     await writeFile(join(testDir, 'src', 'lib.ts'), UNDOCUMENTED);
-    await writeConfig(testDir, { scope: 'all' });
+    // `scope` is a per-invocation audit option, not a project-file key — the
+    // loader rejects it (Spec 61 R1.2), and it was never doing anything here.
+    // The `changed` subcommand sets its own scope (files array / 'changed'),
+    // and the `audit` command defaults to 'all', so the four CLI tests below
+    // run under the scope their command selects, not under a config key.
+    await writeConfig(testDir);
   });
 
   afterEach(() => {
