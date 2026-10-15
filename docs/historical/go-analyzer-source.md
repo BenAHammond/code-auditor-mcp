@@ -8,9 +8,12 @@ the package, and they should not be restored.
 ## What they were
 
 `main.go` was the JSON-RPC entry point: it read a request over stdio and
-dispatched to the `code-auditor-go/analyzer` library. `go.mod` declared the
-module. The eight files under `analyzer-src/` implemented the analysis:
+dispatched to the `code-auditor-go/analyzer` library. The root `go.mod`
+declared module `code-auditor-go` and a `replace` directive pointing at
+`./analyzer-src`. The eight files under `analyzer-src/` (module
+`code-auditor-go/analyzer`) implemented the analysis:
 
+- `go.mod` — the `code-auditor-go/analyzer` module.
 - `analyzer.go` — the `Analyzer` type and analysis options.
 - `parser.go` — Go AST parsing.
 - `types.go` — shared types.
