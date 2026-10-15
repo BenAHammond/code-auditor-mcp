@@ -1,7 +1,7 @@
 {
-  "version": "5.1.2",
+  "version": "6.0.0",
   "files": {
-    ".claude-plugin/plugin.json": "7d5783d0db046e533933f0dda19e311870eaa6383492e0d7f0c0046d606c78ee",
+    ".claude-plugin/plugin.json": "e0fbebc5b73d2072ee4e78796fdef166bf85edb315817cdfa269a95c32ea0bf4",
     "README.md": "6e51516ead6c7d0b4e77629e071e139b899d30a47838e8721c0d534eb733ad45",
     "hooks/hooks.json": "f9817f337d147bbd0e175741e57c6bd0718c64352ddbff15b5ba9357272b6725",
     "scripts/hook-audit.sh": "3fa178a87c8ac4d4d49d0cac16df308a37ccc89d778a5eda614799fc69e3e6c8",
@@ -12,6 +12,6 @@
     "scripts/hook-warm.sh": "22d750e8e36164920515c8370f02dd48f9f09f26bfe4a21e67de91f45b5ffef9",
     "skills/code-auditor/SKILL-RULE-KINDS.md": "be1bbe1b56b19dc112c2657c1f5984f6f704b2ac9c1c0f78a561a58b110d508a",
     "skills/code-auditor/SKILL-SEARCH.md": "95d2df4474995bc5b18e14cc55ac55fb828024541463f109239567e2aa5ab7b0",
-    "skills/code-auditor/SKILL.md": "08c655564056d6a3c716ade756a91fe2c2f6e813a17c3ac9c548b6a4abe573fc"
+    "skills/code-auditor/SKILL.md": "e9ddc1fbd671a6029c7e5e6d686fa30cb29ca6d6bafca1e00c7ce6719ef0f503"
   }
 }

@@ -2,7 +2,63 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [Unreleased]
+## [6.0.0] — 2026-10-15
+
+### Breaking changes
+
+These four changes break consumers of 5.0.x; each is a major on its own.
+
+**`getAvailableAnalyzers()` is removed from the public API.** The function, its
+default-export entry, and its test pin are deleted (`src/index.ts`). Analyzer
+selection no longer asks which analyzers exist; the analyzer list is derived
+from the runtime config namespaces, and the MCP `config.get` / `config.set` /
+`config.reset` tools validate `analyzerName` against that set (a phantom
+namespace is rejected, not persisted). *What a consumer must do:* drop the
+import and any call — there is no replacement export.
+
+**Config files that loaded before now throw on unrecognized keys at any depth.**
+`sanitizeProjectFileConfig` throws on an unknown top-level key, naming the key
+and its live replacement where one exists (`analyzerConfig` → `analyzerConfigs`);
+`validateAnalyzerConfigs` descends every `analyzerConfigs` key against the
+runtime defaults and rejects a key absent at its path by full dotted location,
+naming its live equivalent (`solid.classMethodThreshold` →
+`solid.classMethodsThreshold`, `solid.interfaceMemberThreshold` →
+`solid.maxInterfaceMembers`, `data-access.performanceThresholds.maxJoins` →
+`data-access.performanceThresholds.joinedTableCount`), and a phantom namespace
+(`component`, `security`) is rejected outright. *What a consumer must do:* a
+`.codeauditor.json` that silently loaded under 5.0.x may now fail the audit —
+rename or remove each key the error names, using the replacement it suggests.
+
+**Around twenty-five config keys are removed — every key declared in a type and
+given a default but never read at runtime.** A user who set one previously got
+silence; it is gone. Removed with no replacement: the top-level `outputFormats`,
+`failOnCritical`, `showProgress`, `parallel`; the severity-gate thresholds
+`maxSevere`, `maxCritical`, `maxHigh`, `maxWarnings`, `maxDuplication` (with
+`maxComplexity` moving to `analyzerConfigs.solid.maxMethodComplexity`, and
+`minHealthScore` surviving); SOLID `maxImportsPerFile`, `maxComplexity`,
+`maxClassComplexity`; DRY `divergence.minPairSimilarity`; data-access
+`databasePatterns`, `performanceThresholds.{maxJoins, warnOnSelectStar,
+complexQueryCount, unfilteredQueryCount}`, `checkOrgFilters`,
+`tablePatterns.queryBuilder`, `securityPatterns.sqlInjectionRisks`; schema
+`detectUnusedTables`, `allowAdditionalProperties` (with `validatorPackageList`
+moving to `analyzerConfigs.crossDomain.validatorBypass.validatorPackageList`);
+react `detectFunctionalComponents`, `detectClassComponents`,
+`detectMemoComponents`, `preventDirectDOMAccess`. The env tunable
+`CODE_AUDIT_RULE_TIMING` is renamed `CODE_AUDITOR_RULE_TIMING` (no alias), and
+the `loadFromEnvironment` / `environmentPrefix` mapping mechanism is deleted.
+*What a consumer must do:* remove any of these keys from `.codeauditor.json` and
+rename the env var — combined with the strict-throw change, a leftover key now
+names itself at load instead of being silently ignored.
+
+**The colour metric moved to CIEDE2000 (ΔE00), changing which findings a user
+sees.** `styles/value-drift` now clusters with `ciede2000` (ΔE00) instead of
+ΔE76, and the `styles.colorDeltaE` threshold re-derives from 2.5 to 1.0 (the
+CIEDE2000 just-noticeable difference, Sharma–Wu–Dalal 2005); the ΔE76 value does
+not transfer. Value-drift findings move 3 → 1 (recall-protocol only). *What a
+consumer must do:* if you tuned `styles.colorDeltaE` or relied on value-drift
+findings, re-derive against ΔE00 — a threshold chosen for ΔE76 means something
+different now, and near-identical pairs that fired at ΔE76 may clear (or the
+reverse).
 
 ### The code-index database now keys on project identity, not the working directory
 
@@ -37,8 +93,6 @@ that it cannot determine what changed and names why (no index yet, or the index
 was discarded), rather than a clean result. The corrupt-recovery path also now
 logs one line stating the database was corrupt and rebuilt.
 
-## [5.1.2]
-
 ### `hardcoded-secret` reports on evidence, not suppression
 
 The hardcoded-secret rule carried a set of suppression filters — a minimum value
@@ -60,8 +114,6 @@ comparisons (a stored expected count, a stored pair list, a stored gap count, a
 stored case list) are retired in favour of tests that assert the detectors
 reject the pinned corpus sites directly. A check that was not run is reported as
 not run.
-
-## [5.1.1]
 
 ### The hook log gets a reader
 
@@ -99,8 +151,6 @@ percentage selectors. `isKeyframeVariant` survives only on the migration
 backfill, which replays legacy `style_declarations` rows. The retired regex no
 longer appears anywhere in `src/`. On recall-protocol this drops catalog
 pollution from 2 (`5`/`8`) to 0 with `styles/undefined-class` unchanged.
-
-## [5.1.0]
 
 ### Anonymous telemetry opt-in is offered exactly once
 
@@ -431,8 +481,6 @@ but the fix is input normalization, not a regex fallback:
 `normalizeSqliteTextLength` rewrites `text(N)` → `varchar(N)` before the parse —
 lossless for fact extraction, and it never re-introduces the hand-rolled parser
 this release removed.
-
-## [Unreleased]
 
 ### Any repo with a Go file silently dropped eleven analyzers
 
