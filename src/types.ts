@@ -796,6 +796,17 @@ export interface AuditResult {
     deadClusters?: DeadCluster[];
     /** Spec 60 R2: per-size-measure distributions (median/p95/max). */
     sizeDistributions?: SizeDistribution[];
+    /** Directive H item 2 — candidate sites the migrated rules emitted through
+     *  the phase candidate channel, carried out to the CLI for the
+     *  `--emit-candidates` artifact writer. Each records the rule id, file,
+     *  span, and the disposition the rule assigned (including `clean`). This is
+     *  the audit's only dependency on `app/`; nothing here reaches a model. */
+    candidates?: readonly {
+      ruleId: string;
+      file: string;
+      span: { line: number; column?: number };
+      disposition: string;
+    }[];
   };
 }
 

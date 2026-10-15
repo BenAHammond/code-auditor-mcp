@@ -43,6 +43,10 @@ export const unreferencedModuleRule: RuleDefinition<UnreferencedModuleNeeds> = {
   docs: META.docs,
   thresholds: META.thresholds,
   samples: META.samples,
+  dispositions: [
+    { key: 'clean', description: 'The module is referenced (or is a test/entry point), so it is not unreferenced within this tree.' },
+    { key: 'unreferenced', description: 'The module is exported but has no importer resolved from this tree and is not a framework entry point.' },
+  ],
   analyze(ctx): Finding[] {
     const imports: readonly FileImportsFact[] = ctx.facts['file-imports'];
     const reachability: ReachabilityFact = ctx.facts['reachability'];
@@ -61,9 +65,19 @@ export const unreferencedModuleRule: RuleDefinition<UnreferencedModuleNeeds> = {
     const out: Finding[] = [];
     for (const info of imports) {
       if (!info.hasExports) continue;
-      if (isTestFile(info.file)) continue;
-      if (isEntryPointFile(info.file) || entrySet.has(info.file)) continue;
-      if ((importersOf[info.file]?.length ?? 0) > 0) continue;
+      const unreferenced =
+        !isTestFile(info.file) &&
+        !(isEntryPointFile(info.file) || entrySet.has(info.file)) &&
+        (importersOf[info.file]?.length ?? 0) === 0;
+      // Directive H — emit the candidate with the disposition the classifier
+      // assigns, including `clean` for an exported module that is referenced.
+      ctx.emitCandidate?.({
+        ruleId: 'unreferenced-module',
+        file: info.file,
+        span: { line: 1 },
+        disposition: unreferenced ? 'unreferenced' : 'clean',
+      });
+      if (!unreferenced) continue;
       out.push({
         ruleId: 'unreferenced-module',
         severity: 'high',

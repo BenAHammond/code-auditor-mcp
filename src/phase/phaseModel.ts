@@ -33,6 +33,7 @@ import { formatFor, parseOne, type InputFile } from './runner.js';
 import { loadTailwindConfig, tokensToStyleTokens } from '../styles/tailwindConfigLoader.js';
 import { findFiles, UNREAD_STYLE_EXTENSIONS, getSourceExtensions } from '../utils/fileDiscovery.js';
 import type {
+  CandidateSite,
   CorpusContext,
   DataAccessCallCandidate,
   ExternalTableDecl,
@@ -126,6 +127,12 @@ export interface PhaseModelResult {
    *  Empty when `unreferenced-module` was not active or the graph has no computed
    *  specifier. */
   unprovenModules: readonly UnprovenModule[];
+  /** Directive H — candidate sites emitted by rules through `ctx.emitCandidate`,
+   *  keyed by rule id with the file, span, and the disposition the rule assigned
+   *  (including `clean`). This is the app/'s only dependency on the sampled audit:
+   *  the caller serializes these to the diagnostic artifact; nothing here reaches
+   *  a model. */
+  candidates: readonly CandidateSite[];
 }
 
 /**
@@ -240,10 +247,10 @@ export async function runPhaseModel(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  if (MIGRATED_RULES.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
+  if (MIGRATED_RULES.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [], candidates: [] };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [] };
+  if (active.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [], candidates: [] };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -317,7 +324,7 @@ export async function runPhaseModelOverFiles(
   unread: readonly UnreadStyleSourceFact[] = [],
 ): Promise<PhaseModelResult> {
   const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql, unprovenModules } = await buildFacts(files, infra, unread);
-  const { findings, diagnostics } = await analyzeAll(facts, thresholdsByRule, infra);
+  const { findings, diagnostics, candidates } = await analyzeAll(facts, thresholdsByRule, infra);
   return {
     findings,
     diagnostics,
@@ -329,6 +336,7 @@ export async function runPhaseModelOverFiles(
     unresolvedQuerySites,
     unparseableSql,
     unprovenModules,
+    candidates,
   };
 }
 
@@ -745,10 +753,11 @@ async function analyzeAll(
   facts: Map<FactKind, unknown>,
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra: PhaseInfra,
-): Promise<{ findings: Finding[]; diagnostics: CoverageDiagnostic[] }> {
+): Promise<{ findings: Finding[]; diagnostics: CoverageDiagnostic[]; candidates: CandidateSite[] }> {
   await infra?.beforeAnalyze?.();
   const findings: Finding[] = [];
   const diagnostics: CoverageDiagnostic[] = [];
+  const candidates: CandidateSite[] = [];
   for (const rule of activeRules(infra?.enabledRules)) {
     const ruleFacts = Object.fromEntries(
       rule.needs.facts.map((f: FactKind) => [f, facts.get(f)]),
@@ -764,6 +773,13 @@ async function analyzeAll(
       emitDiagnostic: (diagnostic: CoverageDiagnostic) => {
         diagnostics.push(diagnostic);
       },
+      // Directive H — candidate emission is the audit's only dependency on app/.
+      // A rule that declares `dispositions` selects sites *before* its classifier
+      // runs and emits each through this channel with the disposition it assigned
+      // (including `clean`). Collected here and carried out for the artifact writer.
+      emitCandidate: (candidate: CandidateSite) => {
+        candidates.push(candidate);
+      },
     };
     // Spec 38 R2 — per-rule timing on the phase path (the legacy `withRuleTiming`
     // wrappers no longer run for migrated rules). Records the full async analyze
@@ -771,5 +787,5 @@ async function analyzeAll(
     // rule again, not `(no rules recorded)`.
     findings.push(...(await withRuleTimingAsync(rule.id, () => rule.analyze(ctx as never)) as readonly Finding[]));
   }
-  return { findings, diagnostics };
+  return { findings, diagnostics, candidates };
 }

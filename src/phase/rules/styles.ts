@@ -1121,6 +1121,10 @@ export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
   docs: META['styles/undefined-class'].docs,
   thresholds: META['styles/undefined-class'].thresholds,
   samples: META['styles/undefined-class'].samples,
+  dispositions: [
+    { key: 'clean', description: 'The class is defined in a read stylesheet or resolved utility set — not undefined.' },
+    { key: 'undefined', description: 'The class is not defined in any read stylesheet or resolved utility set.' },
+  ],
   async analyze(ctx): Promise<Finding[]> {
     const classUsage = flattenClassUsage(ctx.facts['style-declarations']);
     const definedClasses = ctx.facts['defined-classes'];
@@ -1131,6 +1135,17 @@ export const undefinedClassRule: RuleDefinition<UndefinedClassNeeds> = {
     const { usageEntries } = collectUndefinedClassCandidates(classUsage, new Set());
     const definedSet = new Set(definedClasses.map((d) => d.className));
     const unresolved = usageEntries.filter((u) => !definedSet.has(u.className));
+
+    // Directive H — emit each candidate class usage with the disposition the
+    // classifier assigns: defined → `clean`, otherwise `undefined`.
+    for (const u of usageEntries) {
+      ctx.emitCandidate?.({
+        ruleId: 'styles/undefined-class',
+        file: u.filePath,
+        span: { line: u.line },
+        disposition: definedSet.has(u.className) ? 'clean' : 'undefined',
+      });
+    }
 
     const expander = getTailwindExpander();
     const cfg = resolveUndefinedClassConfig(ctx.thresholds);

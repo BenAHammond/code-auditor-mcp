@@ -37,7 +37,7 @@
  * `securityRules` in that module so the registry and runner stay unchanged.
  */
 
-import type { RuleDefinition, Finding, SecretCandidate } from '../types.js';
+import type { RuleDefinition, Finding, SecretCandidate, CandidateSite } from '../types.js';
 import { RULE_REGISTRY } from '../../analyzers/ruleRegistry.js';
 import { resolveTestProgram } from '../testProgram.js';
 
@@ -169,27 +169,47 @@ function makeFinding(
  *  must not block the edit loop. The test-program role is *derived from the
  *  tree* (the runner declared in `package.json` scripts → the runner's own
  *  discovery convention), not a hardcoded path pattern — see `testProgram.ts`. */
-function detectHardcodedSecret(candidates: readonly SecretCandidate[], projectRoot: string | undefined): Finding[] {
+function detectHardcodedSecret(
+  candidates: readonly SecretCandidate[],
+  projectRoot: string | undefined,
+  emitCandidate?: (candidate: CandidateSite) => void,
+): Finding[] {
   const testProgram = resolveTestProgram(projectRoot);
   const findings: Finding[] = [];
+  // Directive H — emit every classified candidate with its disposition,
+  // including `clean` for a candidate the classifier decides is not a secret.
+  const emit = (c: SecretCandidate, disposition: string): void => {
+    emitCandidate?.({
+      ruleId: 'hardcoded-secret',
+      file: c.file,
+      span: { line: c.line, column: c.column },
+      disposition,
+    });
+  };
   for (const c of candidates) {
     if (testProgram.isTestFile(c.file)) continue;
     if (c.position === 'call') {
       // `fn('<selector>', '<secret>')` — the page.type reference case.
-      if (c.args.length < 2) continue;
+      if (c.args.length < 2) { emit(c, 'clean'); continue; }
       const hasSelector = c.args.some(isCredentialSelector);
-      if (!hasSelector) continue;
+      if (!hasSelector) { emit(c, 'clean'); continue; }
+      let secret = false;
       for (const value of c.args) {
         if (isCredentialSelector(value)) continue;
         if (looksLikeRealSecret(value)) {
           findings.push(makeFinding(c.file, c.line, c.column, undefined, value));
+          secret = true;
         }
       }
+      emit(c, secret ? 'secret' : 'clean');
       continue;
     }
 
     if (isSecretName(c.name) && looksLikeRealSecret(c.value)) {
+      emit(c, 'secret');
       findings.push(makeFinding(c.file, c.line, c.column, c.name, c.value));
+    } else {
+      emit(c, 'clean');
     }
   }
   return findings;
@@ -204,8 +224,12 @@ const hardcodedSecret: RuleDefinition<SecretNeeds> = {
   docs: META.docs,
   thresholds: META.thresholds,
   samples: META.samples,
+  dispositions: [
+    { key: 'clean', description: 'The candidate is not a hardcoded credential — no secret name or no positive value evidence.' },
+    { key: 'secret', description: 'The candidate is a hardcoded credential: a secret-named binding with a value carrying real-credential evidence (digit, hard symbol, or known token prefix).' },
+  ],
   analyze(ctx): Finding[] {
-    return detectHardcodedSecret(ctx.facts['secret-candidates'], ctx.projectRoot);
+    return detectHardcodedSecret(ctx.facts['secret-candidates'], ctx.projectRoot, ctx.emitCandidate);
   },
 };
 

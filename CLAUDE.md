@@ -119,10 +119,12 @@ and WASM grammars survive packaging.
 
 ## Root scope — hard constraint
 In this session the repositories you may modify are
-`/Users/ben/playground/code-auditor/app` (code-auditor) and
-`/Users/ben/playground/code-auditor/docs` (the docs site). Any other repository
-is read from only. If a task requires changing one, STOP and report it to Ben —
-it belongs in a session rooted in that repository, not here.
+`/Users/ben/playground/code-auditor/app` (code-auditor),
+`/Users/ben/playground/code-auditor/docs` (the docs site), and
+`/Users/ben/playground/code-auditor/services` (the dismissals Worker / audit
+service). Any other repository is read from only. If a task requires changing
+one, STOP and report it to Ben — it belongs in a session rooted in that
+repository, not here.
 
 ## Reference corpora — hard constraint
 `recall-protocol` and any tree used as a validation corpus are READ-ONLY in

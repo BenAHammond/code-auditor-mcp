@@ -29,6 +29,7 @@ import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 import { describeSqliteBackend } from './sqlite/driver.js';
 import { isRuleTimingEnabled } from './analyzers/ruleTiming.js';
+import { buildCandidatesArtifact } from './phase/candidates.js';
 
 const program = new Command();
 
@@ -623,6 +624,7 @@ program
   .option('--preset <id>', 'Apply a shareable preset (repeatable)', (v: string, prev: string[]) => prev.concat([v]), [])
   .option('--detach', 'Run the audit in a detached background process and print the job ID')
   .option('--explain-skipped', 'Print a per-reason breakdown of files dropped from analysis')
+  .option('--emit-candidates <path>', 'Write the sampled-audit candidates artifact (rule dispositions + candidate sites) to this file')
   .action(async (options) => {
     console.log(chalk.blue('🔍 Code Quality Audit Tool'));
     console.log(chalk.gray('══════════════════════════════════════════════════'));
@@ -703,6 +705,18 @@ program
       }
 
       await writeReport(result, options);
+
+      // Directive H item 2 — emit the sampled-audit candidates artifact when
+      // `--emit-candidates` names a destination. The artifact is the audit's
+      // only dependency on app/: rule disposition vocabularies (read from the
+      // rules) + candidate sites with their source line text. Nothing here
+      // reaches a model; it only serializes what the deterministic matchers
+      // emitted.
+      if (options.emitCandidates) {
+        const artifact = await buildCandidatesArtifact(result);
+        await fs.writeFile(resolve(options.emitCandidates), JSON.stringify(artifact, null, 2), 'utf8');
+        console.log(chalk.gray(`Candidates artifact written to ${options.emitCandidates} (${artifact.rules.reduce((n, r) => n + r.sites.length, 0)} sites across ${artifact.rules.length} rules)`));
+      }
 
       applyFailOnGates(result, violations, baseline, options, failOnSeverity);
 

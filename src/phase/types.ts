@@ -1992,6 +1992,36 @@ export type RuleSamples = {
   invalid: RuleSample[];
 };
 
+/**
+ * One member of a rule's disposition vocabulary — the set of labels the rule can
+ * assign to a candidate site. `key` is the stable label (it becomes the
+ * `criteria` option key on the audit side); `description` is the rule's own
+ * definition of that disposition, carried verbatim into the criteria
+ * description rather than re-written by the audit. The `clean` key — "this site
+ * was inspected and no finding fired" — is always present alongside the rule's
+ * positive dispositions.
+ */
+export type Disposition = {
+  key: string;
+  description: string;
+};
+
+/**
+ * A candidate site the rule's matcher selected and its classifier assigned a
+ * disposition to (Directive H item 2). Emitted on the phase diagnostic channel
+ * (`ctx.emitCandidate`) so the caller can write it to a diagnostic artifact
+ * file; that artifact is the audit's only dependency on `app/`. No model is
+ * reached from here — this is the deterministic, pre-classification record.
+ */
+export type CandidateSite = {
+  ruleId: RuleId;
+  file: string;
+  /** Source location: 1-based `line` (always) and `column` (point rules). */
+  span: { line: number; column?: number };
+  /** The disposition the rule assigned — a member of the rule's vocabulary. */
+  disposition: string;
+};
+
 /** The context a rule's `analyze` receives — derived, never chosen. */
 export type AnalysisContext<N extends Needs> = {
   readonly facts: { readonly [K in N['facts'][number]]: FactShapes[K] };
@@ -2010,6 +2040,12 @@ export type AnalysisContext<N extends Needs> = {
    *  tests construct a partial ctx by hand and never reach a can't-run branch;
    *  {@link analyzeAll} always wires it, so no real audit is ever silent. */
   readonly emitDiagnostic?: (diagnostic: import('../types.js').CoverageDiagnostic) => void;
+  /** Directive H item 2 — the candidate channel. A rule's matcher selects
+   *  candidate sites and its classifier assigns each a disposition; it emits
+   *  each site here (including `clean`) so the caller can write the diagnostic
+   *  artifact. Optional, parallel to {@link emitDiagnostic}: a rule that never
+   *  declares {@link RuleDefinition.dispositions} never calls it. */
+  readonly emitCandidate?: (candidate: CandidateSite) => void;
 };
 
 /** One finding, in the unified shape §7 converges on (one `ruleId` field). */
@@ -2046,6 +2082,11 @@ export interface RuleDefinition<N extends Needs> {
   readonly thresholds: readonly ThresholdKey[];
   readonly thresholdRationale?: string;
   readonly samples: RuleSamples;
+  /** Directive H item 5 — the rule's disposition vocabulary, the labels it can
+   *  assign a candidate site. The audit reads this from the rule (via the
+   *  emitted artifact), never from a literal list in audit code. Absent for a
+   *  rule that does not participate in the sampled audit. */
+  readonly dispositions?: readonly Disposition[];
   /** A rule's evaluation over its declared facts. May be async: corpus-shaped
    *  rules (dependency-graph, schema-validator, …) build derived structures the
    *  legacy reducers computed over the index; the phase model awaits each. The

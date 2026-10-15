@@ -155,11 +155,25 @@ const sqlInjectionRisk: RuleDefinition<DataAccessNeeds> = {
   docs: META['sql-injection-risk'].docs,
   thresholds: META['sql-injection-risk'].thresholds,
   samples: META['sql-injection-risk'].samples,
+  dispositions: [
+    { key: 'clean', description: 'The query is parameterized or otherwise not string-interpolated — no injection risk.' },
+    { key: 'escaped', description: 'The query string-interpolates a manually quote-escaped value — risk downgraded to high.' },
+    { key: 'injected', description: 'The query string-interpolates an unescaped value — a genuine SQL injection risk.' },
+  ],
   analyze(ctx): Finding[] {
     const out: Finding[] = [];
     const ordinals = new Map<string, number>();
 
     for (const call of ctx.facts['data-access-calls']) {
+      // Directive H — emit the candidate with the disposition the classifier
+      // assigns, including `clean` for a site that inspected clean.
+      ctx.emitCandidate?.({
+        ruleId: 'sql-injection-risk',
+        file: call.file,
+        span: { line: call.line, column: call.column },
+        disposition: !call.hasSqlInjectionRisk ? 'clean' : (call.sqlEscaped ? 'escaped' : 'injected'),
+      });
+
       if (!call.hasSqlInjectionRisk) continue;
       const symbol = nextSymbol(call.enclosingFunction ?? 'top-level', call.method ?? '', ordinals);
 
