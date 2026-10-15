@@ -58,6 +58,8 @@ const DEFAULT_MAX_RUNNING_JOBS = 1;
  * must agree or a read path would reclaim a job the writer still considers live.
  * Strictly positive and finite — a negative/Infinity/NaN/zero value is rejected
  * as "not set", so an unset variable yields the default rather than an absurd TTL.
+ *
+ * @returns the lease TTL in milliseconds (strictly positive and finite)
  */
 export function jobLeaseTtlMs(): number {
   const raw = process.env.CODE_AUDITOR_JOB_LEASE_TTL_MS;

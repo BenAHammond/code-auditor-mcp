@@ -219,6 +219,7 @@ export function extractDBProvenancedImports(
  *
  * @param ast the parsed source file
  * @param adapter the language adapter providing import extraction
+ * @param packages optional explicit validator-package list to match against
  * @returns a map of local identifier → validator-provenance evidence
  */
 export function extractValidatorProvenancedImports(

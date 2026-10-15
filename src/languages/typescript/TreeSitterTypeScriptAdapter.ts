@@ -1349,12 +1349,15 @@ class TsDynamicStringConstruction extends TsScopeStatic {
     }
 
     if (type === 'binary_expression') {
-      // Check for string concatenation: operands include a string literal
+      // String concatenation is a `+` binary expression with a string operand.
+      // Other binary operators (`??`, `||`, `&&`, comparisons, arithmetic) are
+      // NOT string construction — a nullish-coalescing default
+      // (`projectPath ?? '__global__'`) is a value expression, not an
+      // SQL-fragment concatenation, and treating it as one makes a fully
+      // parameterized `.get(query, ...binds)` read as raw interpolation.
       const children = node.children ?? [];
-      const hasStringLiteral = children.some(
-        c => (getRawNode(c)).type === 'string'
-      );
-      return hasStringLiteral;
+      if (!children.some((c) => (getRawNode(c)).type === '+')) return false;
+      return children.some((c) => (getRawNode(c)).type === 'string');
     }
 
     if (type === 'call_expression') {

@@ -708,16 +708,22 @@ function flagUnvalidatedWritersFact(
   return violations;
 }
 
+/** Inputs to the fact-based validation-bypass detector — one options object keeps
+ *  the parameter count at one instead of the seven positional scalars the legacy
+ *  `detectValidationBypass` call used. */
+interface ValidationBypassArgs {
+  usages: SchemaUsageFact[];
+  graph: CallGraphFact;
+  userValidators: string[];
+  validatorPackages: readonly string[];
+  modeShare: number;
+  minCorpus: number;
+  depth: number;
+}
+
 /** The fact-based validation-bypass detector (re-homes `detectValidationBypass`). */
-function detectValidationBypass(
-  usages: SchemaUsageFact[],
-  graph: CallGraphFact,
-  userValidators: string[],
-  validatorPackages: readonly string[],
-  modeShare: number,
-  minCorpus: number,
-  depth: number,
-): Finding[] {
+function detectValidationBypass(args: ValidationBypassArgs): Finding[] {
+  const { usages, graph, userValidators, validatorPackages, modeShare, minCorpus, depth } = args;
   const validatorIds = buildValidatorIdsFact(graph, userValidators, validatorPackages);
   if (validatorIds.size === 0) return [];
 
@@ -1073,15 +1079,15 @@ const noValidatorReachable: RuleDefinition<ValidatorReachNeeds> = {
     const modeShare = vb.modeShare ?? 0.8;
     const minCorpus = vb.minCorpus ?? 20;
     const depth = vb.depth ?? 3;
-    return detectValidationBypass(
-      ctx.facts['schema-usage'],
-      ctx.facts['call-graph'],
+    return detectValidationBypass({
+      usages: ctx.facts['schema-usage'],
+      graph: ctx.facts['call-graph'],
       userValidators,
       validatorPackages,
       modeShare,
       minCorpus,
       depth,
-    );
+    });
   },
 };
 

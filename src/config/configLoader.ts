@@ -257,6 +257,9 @@ export async function findConfigFileUp(startDir: string): Promise<string | null>
  * `thresholds` fragment) means an invalid config surfaces as a load error before
  * any threshold is used, identical to the audit runner. The per-call `threshold`
  * argument still wins over this value.
+ *
+ * @param projectRoot the project root to search upward from for the config file
+ * @returns the configured floor, or `undefined` when no config file exists
  */
 export async function loadMinHealthScore(projectRoot: string): Promise<number | undefined> {
   const configPath = await findConfigFileUp(projectRoot);

@@ -200,6 +200,10 @@ export const DEFAULT_HEALTH_SCORE_THRESHOLD = 70;
  * together when the default changes. The `||` (not `??`) mirrors the historical
  * fallback: a `0` threshold (always-pass) was — and remains — indistinguishable
  * from "unset".
+ *
+ * @param args the MCP tool arguments carrying an optional `threshold` override
+ * @param configMin the configured `thresholds.minHealthScore` floor (if any)
+ * @returns the resolved floor, never below the single default above
  */
 export function resolveHealthThreshold(
   args?: { threshold?: number },
