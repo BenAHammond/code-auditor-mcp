@@ -2,19 +2,12 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [6.0.0] — 2026-10-15
+## [5.2.0] — 2026-10-15
 
-### Breaking changes
+### Action may be required
 
-These four changes break consumers of 5.0.x; each is a major on its own.
-
-**`getAvailableAnalyzers()` is removed from the public API.** The function, its
-default-export entry, and its test pin are deleted (`src/index.ts`). Analyzer
-selection no longer asks which analyzers exist; the analyzer list is derived
-from the runtime config namespaces, and the MCP `config.get` / `config.set` /
-`config.reset` tools validate `analyzerName` against that set (a phantom
-namespace is rejected, not persisted). *What a consumer must do:* drop the
-import and any call — there is no replacement export.
+Four changes may require action from consumers of 5.0.x. The most prominent is
+the stricter config loading below; the remaining three are narrow.
 
 **Config files that loaded before now throw on unrecognized keys at any depth.**
 `sanitizeProjectFileConfig` throws on an unknown top-level key, naming the key
@@ -28,6 +21,14 @@ naming its live equivalent (`solid.classMethodThreshold` →
 (`component`, `security`) is rejected outright. *What a consumer must do:* a
 `.codeauditor.json` that silently loaded under 5.0.x may now fail the audit —
 rename or remove each key the error names, using the replacement it suggests.
+
+**`getAvailableAnalyzers()` is removed from the public API.** The function, its
+default-export entry, and its test pin are deleted (`src/index.ts`). Analyzer
+selection no longer asks which analyzers exist; the analyzer list is derived
+from the runtime config namespaces, and the MCP `config.get` / `config.set` /
+`config.reset` tools validate `analyzerName` against that set (a phantom
+namespace is rejected, not persisted). *What a consumer must do:* drop the
+import and any call — there is no replacement export.
 
 **Around twenty-five config keys are removed — every key declared in a type and
 given a default but never read at runtime.** A user who set one previously got
