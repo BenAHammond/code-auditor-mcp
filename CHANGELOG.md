@@ -2,6 +2,25 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.2.1] — 2026-10-15
+
+### Fixed
+
+**A clean install of 5.2.0 did not run 5.2.0 — the shipped manifests pinned a
+stale CLI version.** `server.json` (the MCP-server manifest) declared
+`code-auditor-mcp@5.0.2` while `package.json` and the rest of the release were
+5.2.0, so a clean install resolved the 5.0.2 package and the plugin hook's
+`resolve_pinned_bin` installed exactly that stale version. The three shipped JSON
+manifests that carry the CLI version as published data — `plugin/.claude-plugin/plugin.json`
+(the plugin manifest `hook-common.sh`'s `plugin_version()` reads),
+`server.json` (the MCP-server manifest), and `.claude-plugin/marketplace.json`
+(the marketplace listing) — now derive their `version` from `package.json` at
+build time via `scripts/write-manifest-version.mjs` (run as
+`build:manifest-version`), the same generated-file pattern as
+`src/version.generated.ts`. `verify:version-fresh` now asserts every one of them
+equals `package.json`, so a release that forgets to re-stamp the manifests fails
+the gate instead of shipping a stale pin.
+
 ## [5.2.0] — 2026-10-15
 
 ### Action may be required

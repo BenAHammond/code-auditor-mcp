@@ -1,6 +1,6 @@
 {
   "name": "code-auditor-mcp",
-  "version": "5.2.0",
+  "version": "5.2.1",
   "description": "Enforces architectural invariants and code quality rules inside your AI agent's edit loop.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,11 +12,12 @@
     "code-auditor-daemon": "dist/daemon/main.js"
   },
   "scripts": {
-    "build": "pnpm run build:version && pnpm run build:hooklog && tsc && pnpm run build:grammars && pnpm run build:skills && pnpm run build:manifest",
+    "build": "pnpm run build:version && pnpm run build:hooklog && tsc && pnpm run build:grammars && pnpm run build:skills && pnpm run build:manifest-version && pnpm run build:manifest",
     "build:version": "node scripts/write-version.mjs",
     "build:hooklog": "node scripts/write-hook-log-path.mjs",
     "build:grammars": "mkdir -p dist/grammars && cp node_modules/tree-sitter-typescript/tree-sitter-typescript.wasm node_modules/tree-sitter-typescript/tree-sitter-tsx.wasm node_modules/tree-sitter-go/tree-sitter-go.wasm node_modules/tree-sitter-css/tree-sitter-css.wasm grammars/tree-sitter-scss.wasm dist/grammars/",
     "build:skills": "node scripts/build-skills.mjs",
+    "build:manifest-version": "node scripts/write-manifest-version.mjs",
     "build:manifest": "node scripts/build-manifest.mjs",
     "watch": "tsc --watch",
     "dev": "tsx src/cli.ts",

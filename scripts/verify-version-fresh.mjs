@@ -60,3 +60,53 @@ try {
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
+
+// The shipped JSON manifests also carry the version (as published data the
+// plugin's resolution path and the MCP install read). They are stamped by
+// scripts/write-manifest-version.mjs at build time; a hand-bump of package.json
+// without a rebuild leaves them stale — the exact Directive I defect. Assert
+// each one still equals package.json, naming the file on mismatch.
+const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
+const pkgVersion = String(pkg.version || '0.0.0');
+
+const MANIFEST_CHECKS = [
+  {
+    file: 'plugin/.claude-plugin/plugin.json',
+    label: 'plugin/.claude-plugin/plugin.json (plugin version)',
+    get: (o) => o.version,
+  },
+  {
+    file: 'server.json',
+    label: 'server.json version',
+    get: (o) => o.version,
+  },
+  {
+    file: 'server.json',
+    label: 'server.json packages[0].version',
+    get: (o) => o.packages?.[0]?.version,
+  },
+  {
+    file: '.claude-plugin/marketplace.json',
+    label: '.claude-plugin/marketplace.json plugins[0].version',
+    get: (o) => o.plugins?.[0]?.version,
+  },
+];
+
+for (const check of MANIFEST_CHECKS) {
+  let declared;
+  try {
+    declared = check.get(JSON.parse(readFileSync(join(ROOT, check.file), 'utf-8')));
+  } catch (err) {
+    fail(`cannot read ${check.file}: ${err.message}`);
+  }
+  if (declared !== pkgVersion) {
+    fail(
+      `version mismatch — ${check.label} declares ${declared ?? '(missing)'} but ` +
+        `package.json declares ${pkgVersion}. Run \`npm run build\` to re-stamp the shipped manifests.`,
+    );
+  }
+}
+
+console.log(
+  `verify:version-fresh: shipped manifests (plugin.json, server.json, marketplace.json) match package.json ${pkgVersion}.`,
+);
