@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # verify-clean-install.sh — clean-room install gate.
 #
-# verify:dist proves the *tarball* installs and its bundled natives load, but it
-# runs stock `npm` against `dist/native/` binaries the repo pre-bundles — it
-# cannot catch a broken *source* install. Three defects have each shipped green
+# verify:dist proves the *tarball* installs and @ast-grep/napi's native binding
+# loads via its platform optional dependency, but it runs against a packed
+# artifact — it cannot catch a broken *source* install. Three defects have each
+# shipped green
 # under it, because the check ran against a node_modules that was already correct:
 #
 #   1. A stale pnpm-lock.yaml — `pnpm install --frozen-lockfile` fails, or

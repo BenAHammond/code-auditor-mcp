@@ -1,8 +1,5 @@
 #!/usr/bin/env node
 
-// MUST be first import: sets NAPI_RS_NATIVE_LIBRARY_PATH before @ast-grep/napi loads
-import './native-bootstrap.js';
-
 // ── Bootstrap: parse --data-dir before any module loads CodeIndexDB ──────────
 import path from 'node:path';
 

@@ -1,8 +1,8 @@
 /**
  * Spec 68 §9 — the `go-functions` producer.
  *
- * Re-homes the Go binary's function extraction (the `Function` payload in
- * `analyzer-src/parser.go`) as a plain-data fact. It walks the tree-sitter Go
+ * Re-homes the former Go subprocess's function extraction (the `Function`
+ * payload) as a plain-data fact. It walks the tree-sitter Go
  * AST for `function_declaration` / `method_declaration` nodes and projects the
  * metrics the two size/behaviour rules threshold on:
  *

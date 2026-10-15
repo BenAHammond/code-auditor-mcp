@@ -4,7 +4,8 @@
  * The Go handler was once built and validated against real cloned repos, then
  * dropped without an announcement across a series of individually-reasonable
  * CLI refactors: `functionScanner.ts`'s `getLanguageFromPath` no longer mapped
- * `.go`, the native `analyzer-src/` binary is orphaned (zero TS references),
+ * `.go`, the native `analyzer-src/` subprocess was orphaned (zero TS references,
+ * since removed in Spec 68 §11),
  * and `CrossLanguageSOLIDAnalyzer` was deleted in Spec 33 "because it appeared
  * in no run" — which now reads as removing something already orphaned, not
  * something dead. Not unbuilt: abandoned silently.

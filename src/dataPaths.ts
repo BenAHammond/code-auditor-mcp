@@ -101,20 +101,6 @@ export function resolveMcpDevLogPath(): string {
   return path.join(getFallbackCacheRoot(), 'logs', 'mcp-server.log');
 }
 
-/**
- * Cache directory for a rebuilt Go analyzer binary. A rebuild — needed when the
- * running platform has no shipped prebuilt binary — lands here, never in
- * `dist/languages/go`, so the shipped tree stays read-only (npm/pnpm store, CI
- * caches, container layers) and the shipped artifact is never overwritten. The
- * binary filename is platform-qualified (`analyzer-<goos>-<goarch>`), so a single
- * flat dir holds every platform without collision; the OS cache root is
- * gitignored by convention and wiped by clean installs, which is exactly the
- * lifecycle a derived binary should have.
- */
-export function resolveGoAnalyzerCacheDir(): string {
-  return path.join(getFallbackCacheRoot(), 'go-analyzer');
-}
-
 /** OS-specific cache root (gitignored by convention, wiped by clean installs). */
 function getFallbackCacheRoot(): string {
   const xdg = process.env.XDG_CACHE_HOME?.trim();

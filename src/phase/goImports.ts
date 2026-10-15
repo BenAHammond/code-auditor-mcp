@@ -1,8 +1,8 @@
 /**
  * Spec 68 §9 — the Go `imports` producer.
  *
- * Re-homes the Go binary's import extraction (`runImportAnalysis` in
- * `analyzer-src/analyzer.go`) as a plain-data fact. It walks the tree-sitter Go
+ * Re-homes the former Go subprocess's import extraction (`runImportAnalysis`) as
+ * a plain-data fact. It walks the tree-sitter Go
  * AST for `import_spec` nodes and projects each one's source path and local
  * name:
  *

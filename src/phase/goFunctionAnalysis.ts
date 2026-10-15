@@ -2,8 +2,8 @@
  * Spec 68 §9 — the `error-bindings`, `concurrency-primitives` and
  * `channel-operations` producers.
  *
- * Re-homes the Go binary's non-SOLID function walks (`runErrorAnalysis`,
- * `runGoroutineAnalysis`, `runChannelAnalysis` in `analyzer-src/analyzer.go`) as
+ * Re-homes the former Go subprocess's non-SOLID function walks
+ * (`runErrorAnalysis`, `runGoroutineAnalysis`, `runChannelAnalysis`) as
  * plain-data facts. Each walks the tree-sitter Go AST for `function_declaration`
  * / `method_declaration` nodes and projects the inputs the rule's verdict reads:
  *

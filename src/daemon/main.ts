@@ -17,8 +17,6 @@
  *   --lsp                         also serve the LSP face over stdio
  */
 
-import '../native-bootstrap.js';
-
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';

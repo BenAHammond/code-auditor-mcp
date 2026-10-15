@@ -1,8 +1,8 @@
 /**
  * Spec 68 §9 — the `type-declarations` producer.
  *
- * Re-homes the Go binary's struct/interface extraction (the `Struct`/`Interface`
- * `analyze` payloads in `analyzer-src/parser.go`) as a plain-data fact. It walks
+ * Re-homes the former Go subprocess's struct/interface extraction (the
+ * `Struct`/`Interface` `analyze` payloads) as a plain-data fact. It walks
  * the tree-sitter Go AST for `type_spec` nodes (the named declarations under a
  * `type (…)` block or a single `type X …`), and for each projects the two
  * metrics the size rules threshold on:

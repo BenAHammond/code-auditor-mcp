@@ -4,9 +4,6 @@
  * Code Auditor CLI - Enhanced with AI Tool Integration
  */
 
-// MUST be first import: sets NAPI_RS_NATIVE_LIBRARY_PATH before @ast-grep/napi loads
-import './native-bootstrap.js';
-
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { createAuditRunner } from './auditRunner.js';
@@ -168,20 +165,6 @@ function printAuditDiagnostics(result: AuditResult): void {
         `${heldOutByProfile} held out by profile`
       )
     );
-  }
-
-  // ── Skipped analyzers (Spec 61) ──────────────────────────────
-  const skippedAnalyzers = (result.metadata?.diagnostics ?? []).filter(
-    (d: any) => d.kind === 'go-toolchain-missing' ||
-      d.kind === 'go-analyzer-wrong-arch' ||
-      d.kind === 'go-analyzer-build-failed'
-  );
-  if (skippedAnalyzers.length > 0) {
-    console.log(chalk.yellow(`── Skipped analyzers ── ${skippedAnalyzers.length}`));
-    for (const d of skippedAnalyzers) {
-      const name = d.analyzerName || 'go';
-      console.log(chalk.yellow(`  ${name} [${d.kind}] — ${d.message}`));
-    }
   }
 
   // ── Ignored config keys (Spec 61 R1.4) ─────────────────────────

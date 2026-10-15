@@ -1,8 +1,8 @@
 /**
  * Spec 68 §9 — the five Go non-SOLID rules, migrated to `analyze(ctx)`.
  *
- * These were the `imports` / `errors` / `goroutines` / `channels` arms of the Go
- * subprocess (analyzer-src/analyzer.go). Each re-homes the subprocess's *verdict*
+ * These were the `imports` / `errors` / `goroutines` / `channels` arms of the
+ * former Go subprocess. Each re-homes the subprocess's *verdict*
  * — the pure predicate over its extracted inputs — onto a plain-data fact the
  * corresponding §9 producer built where the AST still lived:
  *

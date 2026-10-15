@@ -6,10 +6,10 @@
 # exits 0. This is what makes tarball-install regressions structurally unable to
 # recur — not a dev-env check, but a stranger's install.
 #
-# npm cli#4828 prevents platform-specific optionalDependencies from installing.
-# Mitigation: we bundle .node files in dist/native/ and set NAPI_RS_NATIVE_LIBRARY_PATH
-# at runtime via native-bootstrap.ts. This script verifies both the bundling AND
-# the runtime NAPI_RS_NATIVE_LIBRARY_PATH mechanism.
+# @ast-grep/napi resolves its native binding via the platform-specific
+# optionalDependencies (@ast-grep/napi-<platform>) — no bundled binaries, no
+# NAPI_RS_NATIVE_LIBRARY_PATH. Guards 2–3 prove that resolution works from a
+# stranger's clean install.
 #
 # Prerequisites (run in CI/pre-publish before this script):
 #   cd app && npm pack    # produces code-auditor-mcp-*.tgz
@@ -55,63 +55,6 @@ else
   fail "npm install exited $rc — tarball install is broken on stock npm"
 fi
 
-# --- Guard 0: dist/native/ directory with all 7 platform binaries --------------
-echo ""
-echo "Checking bundled native binaries..."
-NATIVE_DIR="node_modules/code-auditor-mcp/dist/native"
-EXPECTED_BINARIES=(
-  "ast-grep-napi.darwin-arm64.node"
-  "ast-grep-napi.darwin-x64.node"
-  "ast-grep-napi.linux-x64-gnu.node"
-  "ast-grep-napi.linux-arm64-gnu.node"
-  "ast-grep-napi.linux-x64-musl.node"
-  "ast-grep-napi.linux-arm64-musl.node"
-  "ast-grep-napi.win32-x64-msvc.node"
-)
-
-MISSING_BINS=0
-for bin in "${EXPECTED_BINARIES[@]}"; do
-  if [ -f "$NATIVE_DIR/$bin" ]; then
-    echo "  OK: $bin ($(du -h "$NATIVE_DIR/$bin" | cut -f1))"
-  else
-    echo "  MISSING: $bin"
-    MISSING_BINS=1
-  fi
-done
-if [ "$MISSING_BINS" -eq 0 ]; then
-  pass "All 7 platform native binaries bundled in dist/native/"
-else
-  fail "Some platform binaries are missing from dist/native/"
-fi
-
-# --- Determine current platform's binding name ---------------------------------
-CURRENT_BINDING=""
-case "$(uname -s)" in
-  Darwin)
-    case "$(uname -m)" in
-      arm64) CURRENT_BINDING="ast-grep-napi.darwin-arm64.node" ;;
-      x86_64) CURRENT_BINDING="ast-grep-napi.darwin-x64.node" ;;
-    esac ;;
-  Linux)
-    # Detect musl vs gnu
-    if ldd --version 2>&1 | grep -qi musl; then
-      LIBC="musl"
-    else
-      LIBC="gnu"
-    fi
-    case "$(uname -m)" in
-      x86_64) CURRENT_BINDING="ast-grep-napi.linux-x64-${LIBC}.node" ;;
-      aarch64) CURRENT_BINDING="ast-grep-napi.linux-arm64-${LIBC}.node" ;;
-    esac ;;
-esac
-
-if [ -n "$CURRENT_BINDING" ]; then
-  echo ""
-  echo "Current platform binding: $CURRENT_BINDING"
-else
-  warn "Could not determine current platform binding — native guards will be skipped"
-fi
-
 # --- Guard 1: better-sqlite3 binding presence & load --------------------------
 # better-sqlite3 is V8-ABI (not N-API) and loads its .node lazily at
 # `new Database()`. npm 11.2+/12 block install scripts by default (allowScripts),
@@ -142,67 +85,50 @@ else
   warn "better-sqlite3 binding absent — install script blocked (npm 12 default); the tool's clear-error path is asserted in Guard 9"
 fi
 
-# --- Guard 2: @ast-grep/napi loads via bundled binary -------------------------
+# --- Guard 2: @ast-grep/napi resolves its platform optional dep ---------------
 echo ""
-echo "Checking @ast-grep/napi (via NAPI_RS_NATIVE_LIBRARY_PATH)..."
-if [ -n "$CURRENT_BINDING" ]; then
-  if node -e "
-    // Simulate what native-bootstrap.ts does
-    const path = require('node:path');
-    const bundledPath = path.join(
-      '$NATIVE_DIR',
-      '$CURRENT_BINDING'
-    );
-    process.env.NAPI_RS_NATIVE_LIBRARY_PATH = path.resolve(bundledPath);
-
-    try {
-      const napi = require('@ast-grep/napi');
-      // ast-grep parse signature is parse(lang, source), not parse(source)
-      const testRoot = napi.parse('TypeScript', 'let x = 1;');
-      if (!testRoot || !testRoot.root) {
-        console.error('MISSING API: root or root.root()');
-        process.exit(1);
-      }
-      console.log('API ok — parse/kind present, parse(TypeScript, src) works');
-    } catch(e) {
-      console.error('LOAD ERROR:', e.message);
+echo "Checking @ast-grep/napi (platform optional dependency)..."
+if node -e "
+  // No NAPI_RS_NATIVE_LIBRARY_PATH and no bundled dist/native — @ast-grep/napi's
+  // requireNative() must fall back to require('@ast-grep/napi-<platform>').
+  delete process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
+  try {
+    const napi = require('@ast-grep/napi');
+    // ast-grep parse signature is parse(lang, source), not parse(source)
+    const testRoot = napi.parse('TypeScript', 'let x = 1;');
+    if (!testRoot || !testRoot.root) {
+      console.error('MISSING API: root or root.root()');
       process.exit(1);
     }
-  " 2>&1; then
-    pass "@ast-grep/napi loads via bundled native binary"
-  else
-    fail "@ast-grep/napi did not load — NAPI_RS_NATIVE_LIBRARY_PATH may be wrong or binary is missing"
-  fi
+    console.log('API ok — parse/kind present, parse(TypeScript, src) works');
+  } catch(e) {
+    console.error('LOAD ERROR:', e.message);
+    process.exit(1);
+  }
+" 2>&1; then
+  pass "@ast-grep/napi loads via its platform optional dependency"
 else
-  warn "Skipping native binding check (unsupported platform)"
+  fail "@ast-grep/napi did not load — the platform optional dependency is missing or mismatched"
 fi
 
 # --- Guard 3: @ast-grep/napi succeeds a real parse ----------------------------
 echo ""
 echo "Checking @ast-grep/napi can parse..."
-if [ -n "$CURRENT_BINDING" ]; then
-  if node -e "
-    const path = require('node:path');
-    process.env.NAPI_RS_NATIVE_LIBRARY_PATH = path.resolve(
-      path.join('$NATIVE_DIR', '$CURRENT_BINDING')
-    );
-
-    const napi = require('@ast-grep/napi');
-    const root = napi.parse('TypeScript', 'function add(a: number, b: number): number { return a + b; }');
-    const node = root.root();
-    const kind = node.kind();
-    if (!kind || !node.text()) {
-      console.error('Parse produced no output');
-      process.exit(1);
-    }
-    console.log('Parsed root node kind:', kind);
-  " 2>&1; then
-    pass "@ast-grep/napi parses TypeScript successfully"
-  else
-    fail "@ast-grep/napi parse failed"
-  fi
+if node -e "
+  delete process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
+  const napi = require('@ast-grep/napi');
+  const root = napi.parse('TypeScript', 'function add(a: number, b: number): number { return a + b; }');
+  const node = root.root();
+  const kind = node.kind();
+  if (!kind || !node.text()) {
+    console.error('Parse produced no output');
+    process.exit(1);
+  }
+  console.log('Parsed root node kind:', kind);
+" 2>&1; then
+  pass "@ast-grep/napi parses TypeScript successfully"
 else
-  warn "Skipping parse check (unsupported platform)"
+  fail "@ast-grep/napi parse failed"
 fi
 
 # --- Guard 4: CLI entry point exits 0 -----------------------------------------
@@ -214,9 +140,9 @@ else
   fail "code-audit --version did not exit 0"
 fi
 
-# --- Guard 5: CLI entry point loads napi (tests bootstrap chain) --------------
+# --- Guard 5: CLI entry point loads napi (tests full optional-dep chain) ------
 echo ""
-echo "Checking code-audit changed (tests full native bootstrap chain)..."
+echo "Checking code-audit changed (tests full optional-dep chain)..."
 mkdir -p fixtures
 echo 'function add(a: number, b: number): number { return a + b; }' > fixtures/test.ts
 CHANGED_OUT=""

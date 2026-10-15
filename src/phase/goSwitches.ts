@@ -1,8 +1,8 @@
 /**
  * Spec 68 §9 — the `go-switches` producer.
  *
- * Re-homes the Go binary's switch-size extraction (the `analyzeSwitchSize` walk
- * in `analyzer-src/solid.go`) as a plain-data fact. It walks the tree-sitter Go
+ * Re-homes the former Go subprocess's switch-size extraction (the
+ * `analyzeSwitchSize` walk) as a plain-data fact. It walks the tree-sitter Go
  * AST for `expression_switch_statement` / `type_switch_statement` nodes and
  * projects each one's case-clause count:
  *
