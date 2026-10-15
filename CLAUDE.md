@@ -117,16 +117,16 @@ deliverable; delete it after the check passes. Never skip `verify:dist`
 over tarball reluctance: it is the only check that proves native binaries
 and WASM grammars survive packaging.
 
-## Repository boundary — hard constraint
-The repositories you may modify are this one (code-auditor) and the docs
-site (`docs/` in this repo, authorized by Ben). All other directories
-on this machine — including recall-protocol and any project used for
-validation — are READ-ONLY REFERENCE. You may read files and run
-`code-audit` against them; you may NEVER edit, create, delete, git-touch,
-or install into them. recall-protocol is the validation corpus: modifying
-it corrupts the measurement this project depends on. If a task appears to
-require changing another repo, STOP and report the need to Ben — the same
-rule as publishing.
+## Root scope — hard constraint
+In this session the repositories you may modify are code-auditor and the docs
+site (`docs/`). Any other repository is read from only. If a task requires
+changing one, STOP and report it to Ben — it belongs in a session rooted in
+that repository, not here.
+
+## Reference corpora — hard constraint
+`recall-protocol` and any tree used as a validation corpus are READ-ONLY in
+every session, including a session rooted in them. Never edit, create, delete,
+git-touch, or install into them.
 
 ### Important Notes
 
