@@ -33,6 +33,60 @@ fi
 TARBALL_PATH="$(pwd)/$TARBALL"
 echo "Found tarball: $TARBALL_PATH"
 
+# --- Guard: pack-content guard -------------------------------------------------
+# The packed tarball must contain no native binding (.node), no compiled
+# executable (ELF or Mach-O, detected by magic bytes — not by path), no .go
+# source, and no compiled test output (dist/__tests__/). This is the structural
+# proof that the bundled-native and Go-subprocess removals held in the artifact,
+# independent of the dev environment. The file count and byte totals are reported
+# as information only — nothing here asserts a specific size or count.
+echo ""
+echo "Checking the packed file list (no .node / ELF / Mach-O / .go / dist/__tests__/)..."
+PACK_LIST_FILE="$(mktemp -t ca-pack-list-XXXXX)"
+npm pack --dry-run --json > "$PACK_LIST_FILE" 2>/dev/null
+node -e '
+  const fs = require("fs");
+  let parsed;
+  try { parsed = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); }
+  catch (e) { console.error("FAIL: npm pack --dry-run --json emitted no parseable JSON"); process.exit(1); }
+  const root = Array.isArray(parsed) ? parsed[0] : (parsed[Object.keys(parsed)[0]] || parsed);
+  const files = (root && Array.isArray(root.files)) ? root.files : [];
+  if (files.length === 0) { console.error("FAIL: empty pack list"); process.exit(1); }
+  const isElf = (b) => b.length >= 4 && b[0] === 0x7f && b[1] === 0x45 && b[2] === 0x4c && b[3] === 0x46;
+  const isMachO = (b) => b.length >= 4 && (
+    (b[0] === 0xfe && b[1] === 0xed && b[2] === 0xfa && (b[3] === 0xce || b[3] === 0xcf)) ||
+    (b[0] === 0xce && b[1] === 0xfa && b[2] === 0xed && b[3] === 0xfe) ||
+    (b[0] === 0xcf && b[1] === 0xfa && b[2] === 0xed && b[3] === 0xfe) ||
+    (b[0] === 0xca && b[1] === 0xfe && b[2] === 0xba && b[3] === 0xbe)
+  );
+  const problems = [];
+  for (const entry of files) {
+    const p = entry.path;
+    if (p.endsWith(".node")) problems.push("native binding (.node): " + p);
+    if (p.endsWith(".go")) problems.push("Go source (.go): " + p);
+    if (p.startsWith("dist/__tests__/")) problems.push("compiled test (dist/__tests__/): " + p);
+    let head;
+    try {
+      const fd = fs.openSync(p, "r");
+      head = Buffer.alloc(4);
+      fs.readSync(fd, head, 0, 4, 0);
+      fs.closeSync(fd);
+    } catch (e) {
+      problems.push("unreadable pack entry: " + p);
+      continue;
+    }
+    if (isElf(head)) problems.push("ELF executable (magic bytes): " + p);
+    if (isMachO(head)) problems.push("Mach-O executable (magic bytes): " + p);
+  }
+  if (problems.length) {
+    console.error("FAIL - packed file list contains forbidden content:");
+    for (const p of problems) console.error("  " + p);
+    process.exit(1);
+  }
+  console.log("  OK: " + files.length + " files, " + (root.size || 0) + " bytes tarball / " + (root.unpackedSize || 0) + " bytes unpacked - no .node, no ELF/Mach-O, no .go, no dist/__tests__/");
+' "$PACK_LIST_FILE"
+rm -f "$PACK_LIST_FILE"
+
 # --- Scratch directory ---------------------------------------------------------
 SCRATCH=$(mktemp -d -t ca-verify-dist-XXXXX)
 cleanup() { rm -rf "$SCRATCH"; }

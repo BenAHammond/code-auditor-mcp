@@ -171,6 +171,20 @@ firing and clean example) to the feedback service's bearer-guarded `/rule-reques
 endpoint, for defects no existing rule flags. The service dedupes by content hash,
 caps the body size, and rate-limits per IP and globally.
 
+### Bundled natives and the Go subprocess are gone from the package
+
+The package no longer ships a bundled native binding. `@ast-grep/napi` loads its
+binding from the seven per-platform `@ast-grep/napi-*@0.44.1` packages in
+`optionalDependencies` — the same packages its `requireNative()` already
+resolved — and they are now the only copy. There is no download step, no
+`native-bootstrap`, and no bundled `.node` binary in `dist/`.
+
+The dead Go subprocess path is also removed: the shipped Go binaries, `main.go`,
+`go.mod`, and the `analyzer-src/` source (deleted in Spec 68 §11) are gone from
+the package. Go analysis is unchanged — it runs through the TypeScript
+`GoAdapter` — and compiled tests are excluded from `dist` so no `src/__tests__`
+artifacts ship.
+
 ## [5.0.2]
 
 ### The plugin hooks self-locate — no `CLAUDE_PLUGIN_ROOT` env dependency
