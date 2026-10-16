@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "agent-hub": {
+      "type": "http",
+      "url": "https://agent-hub.ben-a-hammond.workers.dev/mcp/${HUB_SECRET}",
+      "headers": {
+        "x-hub-as": "{\"name\": \"code-auditor-mcp-implementor\", \"role\": \"implementor\"}"
+      }
+    }
+  }
+}
