@@ -34,13 +34,11 @@
 import { spawnSync } from 'node:child_process';
 
 /**
- * The ordered gate list. `verify:gate-budget` runs before `verify:types` (tsc),
- * test, test:integration, and bench — its warm run must measure the gate in the
- * idle state the agent's hook actually executes in, not the chain-heated state.
- * `tsc --noEmit` is itself a sustained single-core load that heats the machine
- * enough to inflate the summed CPU time, so it must run after gate-budget too.
- * See the BUDGET_MS note in verify-gate-budget.mjs for why the prior post-bench
- * placement was dropped.
+ * The ordered gate list. `verify:gate-budget` asserts a deterministic-work count
+ * (receiver resolutions — see src/gateBudget.ts), not CPU time, so it no longer
+ * needs the idle placement the old CPU-time budget required; it stays early out
+ * of habit and because it is cheap. The wall/CPU *time* measurement that used to
+ * be the budget now lives in bench/gate-timing.ts (a measurement, not a gate).
  */
 export const GATES = [
   'verify:disk-space',

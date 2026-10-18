@@ -19,8 +19,9 @@
  *     `verify-self.mjs` keep its I/O while the decisions become unit-testable.
  *   - `verify:disk-space` — the `freeBytes < MIN_FREE_BYTES` branch, triggered
  *     via its own env knob (`VERIFY_MIN_FREE_BYTES`), no build required.
- *   - `verify:gate-budget` — the `warm >= BUDGET_MS` branch, triggered via the
- *     `VERIFY_GATE_BUDGET_MS` knob added for this test.
+ *   - `verify:gate-budget` — the `work >= budget` branch (deterministic receiver
+ *     resolution count, Directive J), triggered via the
+ *     `CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS=0` knob.
  *   - `assert_compatible` — the plugin↔CLI version pin in `hook-common.sh`,
  *     exercised against a fake bin reporting a wrong / missing / matching
  *     version.
@@ -136,13 +137,17 @@ describe('verify:disk-space — liveness', () => {
 describe('verify:gate-budget — liveness', () => {
   // Requires the compiled CLI; skip in a bare test run without a build. In the
   // release path `verify:dist-fresh` has already asserted dist is fresh.
-  it.skipIf(!existsSync(DIST_CLI))('exits 1 when the warm gate exceeds the budget', () => {
+  // Directive J: the budget is now a deterministic-work count (receiver
+  // resolutions), so the liveness knob is CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS=0
+  // (any work ≥ 0 is at/over a zero budget). The knob is read by the CLI and
+  // surfaced in its `gate work: … (budget 0)` line; the verifier parses it.
+  it.skipIf(!existsSync(DIST_CLI))('exits 1 when the gate work is at/over the budget', () => {
     const res = spawnSync('node', [join(APP_ROOT, 'scripts', 'verify-gate-budget.mjs')], {
       encoding: 'utf-8',
-      env: { ...process.env, VERIFY_GATE_BUDGET_MS: '0' },
+      env: { ...process.env, CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS: '0' },
     });
     expect(res.status).toBe(1);
-    expect(res.stderr).toContain('exceeds budget');
+    expect(res.stderr).toContain('at or over budget');
   }, 30_000);
 });
 

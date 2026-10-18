@@ -6,13 +6,13 @@
     "url": "https://github.com/BenAHammond/code-auditor-mcp",
     "source": "github"
   },
-  "version": "5.2.1",
+  "version": "5.3.0",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "code-auditor-mcp",
-      "version": "5.2.1",
+      "version": "5.3.0",
       "transport": {
         "type": "stdio"
       }

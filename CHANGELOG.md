@@ -2,7 +2,23 @@
 
 All notable changes to the Code Auditor MCP project.
 
-## [5.2.1] — 2026-10-15
+## [5.3.0] — 2026-10-17
+
+### Changed
+
+- **`verify:gate-budget` now asserts deterministic work, not CPU time.** The
+  blocking gate's budget was a CPU-time figure that jittered with machine load
+  under `verify:close`'s own sustained load. It now asserts a receiver-resolution
+  count, single-sourced in `src/gateBudget.ts` and read by both the CLI and the
+  verifier, so they can never drift. The wall/CPU-time measurement moved to
+  `bench/gate-timing.mjs` as a measurement (always exits 0), not a gate.
+- **The CLI's displayed budget reads the single source.** The `cli.ts` display
+  literal now reads `gateBudgetResolutions()` instead of a hard-coded number.
+- **The gate budget's env knob is single-sourced and liveness-pinned.**
+  `CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS` (with `0` as a valid "always fail"
+  override) is in the env-tunable single-source test and drives the gate-liveness
+  test, so a re-expressed gate that stopped tripping is caught, not silently
+  skipped.
 
 ### Fixed
 

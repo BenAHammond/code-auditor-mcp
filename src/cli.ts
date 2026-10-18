@@ -29,6 +29,7 @@ import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 import { describeSqliteBackend } from './sqlite/driver.js';
 import { isRuleTimingEnabled } from './analyzers/ruleTiming.js';
+import { gateBudgetResolutions } from './gateBudget.js';
 import { buildCandidatesArtifact } from './phase/candidates.js';
 
 const program = new Command();
@@ -838,22 +839,31 @@ program
 
       await emitChangedOutput(result, violations, blocking, dismissedCount, options);
 
-      // Spec 38 R2/R3 — per-rule timing + gate cpu-time, opt-in by env var.
+      // Spec 38 R2/R3 — per-rule timing + gate work count, opt-in by env var.
       // Emitted to stderr so it never corrupts --json stdout. Slowest rule first.
-      // The gate metric is CPU time (auditCpuMs), not wall clock: the budget is
-      // about a slow *rule*, and CPU time isolates that from a slow machine.
+      // Directive J: the gate budget is now a deterministic-work count
+      // (receiverResolutions), not CPU time — the count moves only when the work
+      // does, where CPU time jitters with machine load. The wall/CPU times are
+      // still printed as a measurement for bench/gate-timing.ts, but they are no
+      // longer what the budget asserts on.
       if (isRuleTimingEnabled()) {
         const ruleTiming = (result.metadata as any)?.ruleTiming as
           | Array<{ ruleId: string; totalMs: number; calls: number }>
           | undefined;
         const gateMs = (result.metadata as any)?.auditCpuMs as number | undefined;
         const gateWallMs = (result.metadata as any)?.auditDuration as number | undefined;
+        const gateWork = (result.metadata as any)?.receiverResolutions as number | undefined;
+        const budget = gateBudgetResolutions();
         const lines: string[] = [];
         lines.push('');
-        // §16 criterion 16 — report both wall-clock (what the hook's user feels)
-        // and CPU (what the rule actually burned); the budget asserts on CPU.
+        // Directive J — the asserted metric: deterministic receiver-resolution
+        // count vs the single-source budget (gateBudgetResolutions()). The
+        // verifier parses this line, so the CLI is the one source of the budget.
+        lines.push(`⏱  gate work: ${gateWork ?? 0} receiver resolutions (budget ${budget})`);
+        // Measurement, not assertion — wall-clock (what the hook's user feels)
+        // and CPU (what the rule actually burned); consumed by bench/gate-timing.ts.
         lines.push(`⏱  gate wall-clock: ${(gateWallMs ?? 0).toFixed(1)} ms`);
-        lines.push(`⏱  gate cpu-time: ${(gateMs ?? 0).toFixed(1)} ms (budget 400 ms)`);
+        lines.push(`⏱  gate cpu-time: ${(gateMs ?? 0).toFixed(1)} ms`);
         lines.push('── per-rule timing (slowest first) ──');
         if (ruleTiming && ruleTiming.length > 0) {
           for (const t of ruleTiming) {

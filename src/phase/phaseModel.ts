@@ -133,6 +133,10 @@ export interface PhaseModelResult {
    *  the caller serializes these to the diagnostic artifact; nothing here reaches
    *  a model. */
   candidates: readonly CandidateSite[];
+  /** Directive J — the number of distinct receiver resolutions this pass folded
+   *  (the `handleVerdictCache` size). The deterministic-work metric the
+   *  gate-budget check asserts on; load-independent where CPU time is not. */
+  receiverResolutions: number;
 }
 
 /**
@@ -247,10 +251,10 @@ export async function runPhaseModel(
   thresholdsByRule: ReadonlyMap<string, ThresholdValues>,
   infra: PhaseInfra,
 ): Promise<PhaseModelResult> {
-  if (MIGRATED_RULES.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [], candidates: [] };
+  if (MIGRATED_RULES.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [], candidates: [], receiverResolutions: 0 };
 
   const active = activeRules(infra?.enabledRules);
-  if (active.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [], candidates: [] };
+  if (active.length === 0) return { findings: [], diagnostics: [], facts: new Map(), incompleteFacts: new Map(), oracleShortfalls: [], unprovenQueryReceivers: [], unresolvedImports: [], unresolvedQuerySites: [], unparseableSql: [], unprovenModules: [], candidates: [], receiverResolutions: 0 };
 
   const neededFormats = new Set<string>();
   for (const rule of active) {
@@ -323,7 +327,7 @@ export async function runPhaseModelOverFiles(
   infra: PhaseInfra,
   unread: readonly UnreadStyleSourceFact[] = [],
 ): Promise<PhaseModelResult> {
-  const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql, unprovenModules } = await buildFacts(files, infra, unread);
+  const { facts, incompleteFacts, oracleShortfalls, unprovenQueryReceivers, unresolvedImports, unresolvedQuerySites, unparseableSql, unprovenModules, receiverResolutions } = await buildFacts(files, infra, unread);
   const { findings, diagnostics, candidates } = await analyzeAll(facts, thresholdsByRule, infra);
   return {
     findings,
@@ -337,6 +341,7 @@ export async function runPhaseModelOverFiles(
     unparseableSql,
     unprovenModules,
     candidates,
+    receiverResolutions,
   };
 }
 
@@ -382,7 +387,7 @@ async function buildFacts(
   files: readonly InputFile[],
   infra?: PhaseInfra,
   unread: readonly UnreadStyleSourceFact[] = [],
-): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[]; unprovenQueryReceivers: UnprovenQueryReceiver[]; unresolvedImports: UnresolvedImportFact[]; unresolvedQuerySites: UnresolvedQuerySite[]; unparseableSql: Array<UnparseableSql & { file: string }>; unprovenModules: UnprovenModule[] }> {
+): Promise<{ facts: Map<FactKind, unknown>; incompleteFacts: Map<FactKind, Set<string>>; oracleShortfalls: OracleShortfall[]; unprovenQueryReceivers: UnprovenQueryReceiver[]; unresolvedImports: UnresolvedImportFact[]; unresolvedQuerySites: UnresolvedQuerySite[]; unparseableSql: Array<UnparseableSql & { file: string }>; unprovenModules: UnprovenModule[]; receiverResolutions: number }> {
   const projectRoot = infra?.projectRoot;
   const active = activeRules(infra?.enabledRules);
   const needed = neededFactKinds(active);
@@ -550,6 +555,7 @@ async function buildFacts(
     unresolvedQuerySites: coverage.unresolvedQuerySites,
     unparseableSql: coverage.unparseableSql,
     unprovenModules,
+    receiverResolutions: handleVerdictCache.size,
   };
 }
 

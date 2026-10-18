@@ -175,6 +175,22 @@ describe('Hooks manifest (hooks.json)', () => {
     expect(inner.command).toContain('HOOK NOT RUNNING');
     expect(inner.command).toContain('"${CLAUDE_PLUGIN_ROOT}"/scripts/hook-audit.sh');
   });
+
+  it('guards an unset CLAUDE_PLUGIN_ROOT for the self-audit hook by failing loudly', () => {
+    // The fourth guard (Directive J fold-in): the self-audit PostToolUse hook
+    // (`PostToolUse[0].hooks[1]`, running hook-self-audit.sh) carries the same
+    // fail-loud guard as its three siblings. The other three were already pinned;
+    // this one was the gap. Same six assertions, same rationale — a recovered
+    // hook must clear the condition via the positive HOOK RAN record, and the
+    // unset-variable failure must never degrade to a quiet success.
+    const inner = hooks.hooks.PostToolUse[0].hooks[1];
+    expect(inner.command).toContain('[ -z "${CLAUDE_PLUGIN_ROOT}" ]');
+    expect(inner.command).toContain('exit 1');
+    expect(inner.command).toContain('>&2');
+    expect(inner.command).toContain('hook.log');
+    expect(inner.command).toContain('HOOK NOT RUNNING');
+    expect(inner.command).toContain('"${CLAUDE_PLUGIN_ROOT}"/scripts/hook-self-audit.sh');
+  });
 });
 
 describe('SessionStart warm hook (hook-warm.sh)', () => {

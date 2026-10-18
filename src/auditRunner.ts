@@ -628,6 +628,9 @@ interface PipelineRunResult {
   /** Directive H — candidate sites emitted by the migrated rules, for the
    *  `--emit-candidates` artifact writer. */
   phaseCandidates: CandidateSite[];
+  /** Directive J — number of distinct receiver resolutions the phase pipeline
+   *  performed (the `handleVerdictCache` size after the pass). */
+  receiverResolutions: number;
   pipelineCoverage: RuleCoverage[] | undefined;
   pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
   pipelineStageTiming: Record<string, number> | undefined;
@@ -933,6 +936,9 @@ async function runPhaseModelStage(inputs: {
   /** Directive H — the candidate sites the migrated rules emitted, carried out
    *  to the runner for artifact serialization. */
   phaseCandidates: CandidateSite[];
+  /** Directive J — distinct receiver resolutions folded this pass (the
+   *  deterministic-work metric the gate-budget check asserts on). */
+  receiverResolutions: number;
 }> {
   const { mergedOptions, root, files, isScoped, pipelineAnalyzerConfig, analyzerResults, pipelineIndexHandle } = inputs;
   let phaseFindings: Finding[] = [];
@@ -940,6 +946,7 @@ async function runPhaseModelStage(inputs: {
   let phaseReachability: Map<string, number> | undefined;
   let receiverDiagnostics: CoverageDiagnostic[] = [];
   let phaseCandidates: CandidateSite[] = [];
+  let receiverResolutions = 0;
 
   if (MIGRATED_RULES.length > 0) {
     // The `dry/diverging-clone` rule reads its knobs from `dry.divergence`.
@@ -1008,6 +1015,7 @@ async function runPhaseModelStage(inputs: {
     phaseFindings = phaseResult.findings;
     phaseIncompleteFacts = phaseResult.incompleteFacts;
     phaseCandidates = [...phaseResult.candidates];
+    receiverResolutions = phaseResult.receiverResolutions;
     const reachabilityFact = phaseResult.facts.get('reachability') as ReachabilityFact | undefined;
     const fileImports = phaseResult.facts.get('file-imports') as FileImportsFact[] | undefined;
     phaseReachability = reachabilityFact && fileImports
@@ -1104,7 +1112,7 @@ async function runPhaseModelStage(inputs: {
     }
   }
 
-  return { phaseFindings, phaseIncompleteFacts, phaseReachability, receiverDiagnostics, phaseCandidates };
+  return { phaseFindings, phaseIncompleteFacts, phaseReachability, receiverDiagnostics, phaseCandidates, receiverResolutions };
 }
 
 /**
@@ -1287,6 +1295,7 @@ async function runPipelineStage(inputs: {
   let phaseIncompleteFacts: ReadonlyMap<FactKind, ReadonlySet<string>> = new Map();
   let phaseReachability: Map<string, number> | undefined;
   let phaseCandidates: CandidateSite[] = [];
+  let receiverResolutions = 0;
   let pipelineCoverage: RuleCoverage[] | undefined;
   let pipelineTableCatalog: Array<{ table: string; sources: any[] }> | undefined;
   let pipelineStageTiming: Record<string, number> | undefined;
@@ -1338,6 +1347,7 @@ async function runPipelineStage(inputs: {
       phaseReachability = split.phaseReachability;
       receiverDiagnostics = split.receiverDiagnostics;
       phaseCandidates = split.phaseCandidates;
+      receiverResolutions = split.receiverResolutions;
 
       // Spec 68 §8 — derived coverage, computed AFTER the split so phaseFindings
       // holds the migrated rules' re-emitted findings.
@@ -1416,6 +1426,7 @@ async function runPipelineStage(inputs: {
     phaseIncompleteFacts,
     phaseReachability,
     phaseCandidates,
+    receiverResolutions,
     pipelineCoverage,
     pipelineTableCatalog,
     pipelineStageTiming,
@@ -1681,6 +1692,7 @@ interface FinalizeInputs {
   collectedFunctions: FunctionMetadata[];
   fileToFunctionsMap: Map<string, FunctionMetadata[]>;
   phaseCandidates: CandidateSite[];
+  receiverResolutions: number;
 }
 
 /**
@@ -1698,7 +1710,7 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
     thresholdSources, pipelineSkippedFiles, pipelineUnparsedFiles, skippedExtensions,
     pipelineInputPresence, pipelineRuleTiming, pipelineFileAccounting,
     pipelineTestCoverage, pipelineDeadClusters, pipelineSizeDistributions,
-    collectedFunctions, fileToFunctionsMap, phaseCandidates,
+    collectedFunctions, fileToFunctionsMap, phaseCandidates, receiverResolutions,
   } = inputs;
 
   // Spec 69 §10 R4 — count query-shaped call sites whose DB receiver is
@@ -1736,6 +1748,7 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
     metadata: {
       auditDuration: Date.now() - startTime,
       auditCpuMs: cpuDurationMs(startCpu),
+      receiverResolutions,
       filesAnalyzed: files.length,
       ...(indexFactsWritten > 0 && { indexFactsWritten, writeIndexFactsMs }),
       analyzersRun: analyzers,
@@ -1907,7 +1920,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       styleConsumedFiles, styleContributingFiles, analyzers, provenanceTiming,
     });
     const {
-      analyzerResults, phaseFindings, phaseIncompleteFacts, phaseReachability, phaseCandidates, pipelineCoverage,
+      analyzerResults, phaseFindings, phaseIncompleteFacts, phaseReachability, phaseCandidates, receiverResolutions, pipelineCoverage,
       pipelineTableCatalog, pipelineStageTiming, pipelineSkippedFiles,
       pipelineUnparsedFiles, pipelineInputPresence, pipelineRuleTiming,
       pipelineFileAccounting, pipelineDiagnostics, pipelineTestCoverage,
@@ -1987,6 +2000,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       collectedFunctions,
       fileToFunctionsMap,
       phaseCandidates,
+      receiverResolutions,
     });
 
     // Report completion

@@ -27,6 +27,7 @@ import { sqliteBackendOverride, isSqliteBackend } from '../sqlite/driver.js';
 import { mcpUiPort, DEFAULT_MCP_UI_PORT } from '../mcp-ui-simple.js';
 import { dataDirEnv } from '../dataPaths.js';
 import { jobLeaseTtlMs } from '../mcpAuditJobs.js';
+import { gateBudgetResolutions, DEFAULT_GATE_BUDGET_RESOLUTIONS } from '../gateBudget.js';
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (rel: string): string => readFileSync(join(SRC, rel), 'utf-8');
@@ -37,6 +38,7 @@ const ENV_KEYS = [
   'CODE_AUDITOR_SQLITE_BACKEND',
   'MCP_UI_PORT',
   'CODE_AUDITOR_DATA_DIR',
+  'CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS',
 ] as const;
 
 function clearEnv(): void {
@@ -111,6 +113,25 @@ describe('env-tunable single-source — parse/default behavior', () => {
     process.env.CODE_AUDITOR_DATA_DIR = '   ';
     expect(dataDirEnv()).toBeUndefined();
   });
+
+  it('gateBudgetResolutions: default, positive override honored, 0 is the liveness knob (not unset)', () => {
+    expect(gateBudgetResolutions()).toBe(DEFAULT_GATE_BUDGET_RESOLUTIONS);
+
+    process.env.CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS = '40';
+    expect(gateBudgetResolutions()).toBe(40);
+
+    // 0 is a *valid* override — it means "always fail", which the gate-liveness
+    // test relies on. Unlike jobLeaseTtlMs (where 0 = "not set"), 0 is honored.
+    process.env.CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS = '0';
+    expect(gateBudgetResolutions()).toBe(0);
+
+    // Negative / non-numeric / empty falls back to the default rather than
+    // tripping the gate on a nonsense budget.
+    for (const bad of ['-5', 'Infinity', 'NaN', 'not-a-number', '']) {
+      process.env.CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS = bad;
+      expect(gateBudgetResolutions()).toBe(DEFAULT_GATE_BUDGET_RESOLUTIONS);
+    }
+  });
 });
 
 describe('env-tunable single-source — consumers reference the accessor, not their own copy', () => {
@@ -128,6 +149,17 @@ describe('env-tunable single-source — consumers reference the accessor, not th
     expect(cli).not.toContain('CODE_AUDIT_RULE_TIMING');
     expect(cli).not.toContain('process.env.CODE_AUDITOR_SQLITE_BACKEND');
     expect(cli).not.toContain('process.env.MCP_UI_PORT');
+  });
+
+  it('cli.ts reads the gate budget through the single accessor, not its own env copy', () => {
+    // Directive J: the budget is single-sourced in gateBudget.ts; cli.ts imports
+    // gateBudgetResolutions() and never reads the env var (or a hardcoded literal)
+    // itself — the "budget 400 ms" hardcode this replaced is the exact shape this
+    // test exists to prevent.
+    expect(cli).toContain('gateBudgetResolutions');
+    expect(cli).toContain("from './gateBudget.js'");
+    expect(cli).not.toContain('process.env.CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS');
+    expect(cli).not.toContain('budget 400 ms');
   });
 
   it('cli.ts routes both reclaim sites and the timing gate through the shared accessors', () => {

@@ -746,6 +746,13 @@ export interface AuditResult {
      *  counterpart to `auditDuration` (wall clock). The gate-budget check asserts
      *  on this so a slow *rule* is caught while a slow *machine* is not. */
     auditCpuMs?: number;
+    /** Directive J — the number of distinct receiver resolutions the phase
+     *  pipeline performed (the `handleVerdictCache` size after the pass). This is
+     *  the deterministic-work proxy the gate-budget check asserts on: a fixed file
+     *  folds `identifyHandle` a fixed number of times regardless of machine load,
+     *  so a regression that re-derives provenance or widens the candidate set
+     *  moves this count deterministically, where CPU time only jitters. */
+    receiverResolutions?: number;
     filesAnalyzed: number;
     analyzersRun: string[];
     /** Absolute paths of every file this run analyzed. Populated for scoped
