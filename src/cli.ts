@@ -29,7 +29,7 @@ import { rankFilesByPriority, orderFindingsWithinFile } from './nextFile.js';
 import { runNextFile } from './nextFileIncremental.js';
 import { describeSqliteBackend } from './sqlite/driver.js';
 import { isRuleTimingEnabled } from './analyzers/ruleTiming.js';
-import { gateBudgetResolutions } from './gateBudget.js';
+import { gateBudgetResolutions } from './config/defaults.js';
 import { buildCandidatesArtifact } from './phase/candidates.js';
 
 const program = new Command();

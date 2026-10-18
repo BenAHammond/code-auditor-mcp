@@ -15,7 +15,7 @@
  * This script runs the real diff-scoped `changed` command against the
  * representative gating file and asserts the reported work count stays under
  * the budget. The budget is NOT re-declared here — it is read from the CLI's
- * `gate work: … (budget N)` line, so `src/gateBudget.ts` (via the CLI) is the
+ * `gate work: … (budget N)` line, so `src/config/defaults.ts` (via the CLI) is the
  * single source and this verifier can never drift from it.
  *
  * The time measurement (wall-clock + CPU) did not vanish — it moved to
@@ -93,7 +93,7 @@ if (!Number.isInteger(run.work) || !Number.isInteger(run.budget)) {
 if (run.work >= run.budget) {
   console.error(
     `FAIL: gate work ${run.work} receiver resolutions is at or over budget ${run.budget}. ` +
-      'Do not quietly widen the budget — see src/gateBudget.ts.',
+      'Do not quietly widen the budget — see src/config/defaults.ts.',
   );
   process.exit(1);
 }

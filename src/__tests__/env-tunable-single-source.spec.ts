@@ -27,7 +27,7 @@ import { sqliteBackendOverride, isSqliteBackend } from '../sqlite/driver.js';
 import { mcpUiPort, DEFAULT_MCP_UI_PORT } from '../mcp-ui-simple.js';
 import { dataDirEnv } from '../dataPaths.js';
 import { jobLeaseTtlMs } from '../mcpAuditJobs.js';
-import { gateBudgetResolutions, DEFAULT_GATE_BUDGET_RESOLUTIONS } from '../gateBudget.js';
+import { gateBudgetResolutions, DEFAULT_GATE_BUDGET_RESOLUTIONS } from '../config/defaults.js';
 
 const SRC = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (rel: string): string => readFileSync(join(SRC, rel), 'utf-8');
@@ -152,12 +152,12 @@ describe('env-tunable single-source — consumers reference the accessor, not th
   });
 
   it('cli.ts reads the gate budget through the single accessor, not its own env copy', () => {
-    // Directive J: the budget is single-sourced in gateBudget.ts; cli.ts imports
+    // Directive J: the budget is single-sourced in config/defaults.ts; cli.ts imports
     // gateBudgetResolutions() and never reads the env var (or a hardcoded literal)
     // itself — the "budget 400 ms" hardcode this replaced is the exact shape this
     // test exists to prevent.
     expect(cli).toContain('gateBudgetResolutions');
-    expect(cli).toContain("from './gateBudget.js'");
+    expect(cli).toContain("from './config/defaults.js'");
     expect(cli).not.toContain('process.env.CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS');
     expect(cli).not.toContain('budget 400 ms');
   });

@@ -213,6 +213,54 @@ export function resolveHealthThreshold(
 }
 
 /**
+ * The blocking gate's deterministic-work budget — the single source of truth for
+ * `gateBudgetResolutions()` (Directive J). The gate (`code-audit changed`) used to
+ * be budgeted in CPU time (`auditCpuMs` < 900 ms); CPU time is load-dependent, so
+ * the gate jittered under sustained load. Directive J re-expresses the budget over
+ * a deterministic quantity instead — the number of distinct receiver resolutions
+ * the phase pipeline performed (`receiverResolutions`, the `handleVerdictCache`
+ * size after the pass). A fixed file folds `identifyHandle` a fixed number of
+ * times regardless of machine load, so a regression moves this count
+ * deterministically, where CPU time only jittered.
+ *
+ * MEASURED against `src/analyzers/universal/UniversalSOLIDAnalyzer.ts`, never
+ * carried over: re-measured each re-baseline with the architectural reason
+ * recorded. The deterministic count is `handleVerdictCache.size` for that file:
+ * 77 on every warm run (5/5 runs, zero jitter). 100 = ~30% headroom over the
+ * measured 77, matching the headroom discipline of the two prior CPU re-baselines.
+ * The headroom is NOT for jitter (there is none) — it is room for legitimate
+ * single-site growth before the tripwire fires; a real regression moves the count
+ * by 2–5×, far past 100.
+ *
+ * Formerly `src/gateBudget.ts`; moved here (Directive J correction 3) to sit
+ * alongside the other defaults rather than in a one-constant module.
+ */
+export const DEFAULT_GATE_BUDGET_RESOLUTIONS = 100;
+
+/**
+ * The env override for the gate budget, or the default. The override accepts any
+ * integer ≥ 0 (0 is the liveness knob, not "unset"); a non-numeric or negative
+ * value falls back to the default rather than tripping the gate spuriously.
+ *
+ * This is the one place `CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS` is read (the
+ * `env-tunable single-source` pattern): both `cli.ts:856` (the `gate work: …
+ * (budget N)` display line) and the `verify:gate-budget` verifier read this one
+ * resolved value — the verifier parses it out of the CLI line, so the CLI is the
+ * single source and the verifier can never drift from it.
+ *
+ * @returns the resolved gate budget — the non-negative numeric override when
+ *   set, otherwise {@link DEFAULT_GATE_BUDGET_RESOLUTIONS}.
+ */
+export function gateBudgetResolutions(): number {
+  const raw = process.env.CODE_AUDITOR_GATE_BUDGET_RESOLUTIONS;
+  if (raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return DEFAULT_GATE_BUDGET_RESOLUTIONS;
+}
+
+/**
  * Default analyzer configurations
  */
 export const DEFAULT_ANALYZER_CONFIGS = {

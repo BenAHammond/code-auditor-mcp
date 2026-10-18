@@ -9,7 +9,7 @@ All notable changes to the Code Auditor MCP project.
 - **`verify:gate-budget` now asserts deterministic work, not CPU time.** The
   blocking gate's budget was a CPU-time figure that jittered with machine load
   under `verify:close`'s own sustained load. It now asserts a receiver-resolution
-  count, single-sourced in `src/gateBudget.ts` and read by both the CLI and the
+  count, single-sourced in `src/config/defaults.ts` and read by both the CLI and the
   verifier, so they can never drift. The wall/CPU-time measurement moved to
   `bench/gate-timing.mjs` as a measurement (always exits 0), not a gate.
 - **The CLI's displayed budget reads the single source.** The `cli.ts` display

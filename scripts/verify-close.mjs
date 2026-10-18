@@ -35,7 +35,7 @@ import { spawnSync } from 'node:child_process';
 
 /**
  * The ordered gate list. `verify:gate-budget` asserts a deterministic-work count
- * (receiver resolutions — see src/gateBudget.ts), not CPU time, so it no longer
+ * (receiver resolutions — see src/config/defaults.ts), not CPU time, so it no longer
  * needs the idle placement the old CPU-time budget required; it stays early out
  * of habit and because it is cheap. The wall/CPU *time* measurement that used to
  * be the budget now lives in bench/gate-timing.ts (a measurement, not a gate).
