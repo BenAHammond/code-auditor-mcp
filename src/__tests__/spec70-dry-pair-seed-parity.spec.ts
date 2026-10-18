@@ -11,12 +11,11 @@
  * arm (the migrated `dry/structural-similarity` rule uses a bigram Jaccard, a
  * deliberate divergence that the *write* must not inherit).
  *
- * One §10 divergence is now pinned here too: `seedDryPairs` seeds structural
- * pairs *unconditionally* (the `checkStructuralSimilarity` gate was removed as
- * a select-gate so `dry/diverging-clone` can observe a similarity decline),
- * whereas the legacy analyzer still gates its structural arm on that flag. The
- * "off" test below therefore asserts `legacy.length === 0` but `seeded.length
- * === 1` — the write is liveness-correct where the legacy reader is gated.
+ * §15 deleted the `checkStructuralSimilarity` select-gate entirely, so BOTH the
+ * legacy analyzer's structural arm and `seedDryPairs` now seed structural pairs
+ * unconditionally — the §10 divergence (legacy gated, seed unconditional) is
+ * closed. The structural seed tests below assert both paths produce one
+ * structural pair with no structural flag in the config.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -85,7 +84,6 @@ describe('Spec 70 dry-pair seed parity (seedDryPairs === legacy UniversalDRYAnal
     ].join('\n');
     const { legacy, seeded } = await parity(source, {
       minLineThreshold: 5,
-      checkStructuralSimilarity: false,
       checkExpressionSimilarity: false,
     });
     expect(legacy.length).toBe(1);
@@ -94,7 +92,7 @@ describe('Spec 70 dry-pair seed parity (seedDryPairs === legacy UniversalDRYAnal
     expect(seeded.map(key).sort()).toEqual(legacy.map(key).sort());
   });
 
-  it('seeds structural pairs with the legacy bare-token-set Jaccard, gated on checkStructuralSimilarity', async () => {
+  it('seeds structural pairs with the legacy bare-token-set Jaccard, unconditionally', async () => {
     const source = [
       'function process(rows) {',
       '  for (const row of rows) {',
@@ -113,7 +111,6 @@ describe('Spec 70 dry-pair seed parity (seedDryPairs === legacy UniversalDRYAnal
     ].join('\n');
     const { legacy, seeded } = await parity(source, {
       minLineThreshold: 5,
-      checkStructuralSimilarity: true,
       checkExpressionSimilarity: false,
     });
     expect(legacy.length).toBe(1);
@@ -123,37 +120,6 @@ describe('Spec 70 dry-pair seed parity (seedDryPairs === legacy UniversalDRYAnal
     // check is the next line: the seed reproduces the legacy similarity value exactly.
     expect(legacy[0].similarity).toBe(1.0);
     expect(seeded.map(key).sort()).toEqual(legacy.map(key).sort());
-  });
-
-  it('seeds a structural pair unconditionally when checkStructuralSimilarity is off (legacy gate removed)', async () => {
-    const source = [
-      'function process(rows) {',
-      '  for (const row of rows) {',
-      '    const id = row.id;',
-      '    const name = row.name;',
-      '    const value = row.value;',
-      '    pushA({ id, name, value });',
-      '  }',
-      '  for (const item of items) {',
-      '    const id = item.id;',
-      '    const name = item.name;',
-      '    const value = item.value;',
-      '    pushB({ id, name, value });',
-      '  }',
-      '}',
-    ].join('\n');
-    const { legacy, seeded } = await parity(source, {
-      minLineThreshold: 5,
-      checkStructuralSimilarity: false,
-      checkExpressionSimilarity: false,
-    });
-    // No exact duplicate (different identifiers). The legacy analyzer still gates
-    // its structural arm on the flag (0 rows), but the migrated seed is
-    // unconditional (1 structural pair) — §10 removed the gate so
-    // `dry/diverging-clone` can observe a decline.
-    expect(legacy.length).toBe(0);
-    expect(seeded.length).toBe(1);
-    expect(seeded[0].rule).toBe('dry/structural-similarity');
   });
 
   it('does not compare blocks across files (per-file seed, mirroring analyzeAST)', async () => {
@@ -171,7 +137,7 @@ describe('Spec 70 dry-pair seed parity (seedDryPairs === legacy UniversalDRYAnal
       { path: 'a.ts', content: block },
       { path: 'b.ts', content: block },
     ]);
-    const seeded = seedDryPairs(codeBlocks, resolveBlockConfig({ minLineThreshold: 5, checkStructuralSimilarity: false, checkExpressionSimilarity: false }));
+    const seeded = seedDryPairs(codeBlocks, resolveBlockConfig({ minLineThreshold: 5, checkExpressionSimilarity: false }));
     expect(seeded).toEqual([]);
   });
 });

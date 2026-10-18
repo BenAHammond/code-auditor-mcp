@@ -95,13 +95,13 @@ const runSolid: Runner = async (code) => {
   return ruleIds(vs);
 };
 
-/** DRY — sub-rules (strings/imports/structural) are opt-in; enable them so the
- *  near-miss actually exercises each guard rather than tripping a disabled gate. */
+/** DRY — strings/imports are opt-in; enable them so the near-miss actually
+ *  exercises each guard rather than tripping a disabled gate. Structural
+ *  similarity is unconditional (the select-gate was removed). */
 const DRY_FULL_CONFIG = {
   ...DEFAULT_DRY_CONFIG,
   checkStrings: true,
   checkImports: true,
-  checkStructuralSimilarity: true,
   checkExpressionSimilarity: true,
 };
 const runDry: Runner = async (code) => {

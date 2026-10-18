@@ -2,7 +2,8 @@
  * Spec-19 item 26 — dry/structural-similarity useless positive.
  * Two 20-line CRUD handler functions with similar structure.
  * Verdict: USELESS — CRUD handlers share structure intentionally.
- * dry/structural-similarity is default-off. Produces 0 violations.
+ * dry/structural-similarity is unconditional (the default-off select-gate was
+ * removed), so these CRUD handlers fire under default config.
  *
  * Two functions with the same node-type sequence (if → throw → const → await → if → return)
  * but different identifiers and literals. Structural hash matches.

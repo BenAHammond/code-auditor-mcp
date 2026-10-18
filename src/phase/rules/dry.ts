@@ -219,7 +219,6 @@ export interface DryBlockConfig {
   minLineThreshold?: number;
   similarityThreshold?: number;
   excludePatterns?: string[];
-  checkStructuralSimilarity?: boolean;
   checkExpressionSimilarity?: boolean;
   minShapeNames?: number;
 }
@@ -227,10 +226,10 @@ export interface DryBlockConfig {
 /**
  * The defaults re-declared from `DEFAULT_DRY_CONFIG` (UniversalDRYAnalyzer.ts) —
  * the same merge the legacy `analyzeAST` did before extraction. `excludePatterns`
- * is verbatim (the test/spec/tests-dir globs). The `checkStructuralSimilarity` /
- * `checkExpressionSimilarity` booleans are no longer read as gates (§10 — config
- * tunes, never selects); they remain in the merged shape only for config-surface
- * compatibility until the §15 deletions drop them.
+ * is verbatim (the test/spec/tests-dir globs). `checkStructuralSimilarity` was
+ * deleted (§15 — config tunes similarity, never selects which pairs are compared);
+ * `checkExpressionSimilarity` remains in the merged shape for config-surface
+ * compatibility until its own deletion drops it.
  */
 const DRY_BLOCK_DEFAULTS: DryBlockConfig = {
   minLineThreshold: 15,
@@ -242,7 +241,6 @@ const DRY_BLOCK_DEFAULTS: DryBlockConfig = {
     '**/*.test.jsx', '**/*.spec.jsx',
     '**/test/**', '**/tests/**',
   ],
-  checkStructuralSimilarity: false,
   checkExpressionSimilarity: true,
   minShapeNames: 4,
 };
@@ -676,10 +674,10 @@ function computePairFingerprint(original: CodeBlockBlock, block: CodeBlockBlock)
  *     legacy bare-token-set Jaccard (not the migrated rule's bigram) and the
  *     legacy `similarityThreshold`.
  *
- * The legacy `checkStructuralSimilarity` gate is NOT re-homed here. §10 made
- * config *tune* similarity, never *select* which pairs the divergence tracker
- * sees, and the migrated `dry/structural-similarity` rule already runs
- * unconditionally — so the write must too. A pair that is only ever
+ * There is no structural select-gate to re-home here. §10 made config *tune*
+ * similarity, never *select* which pairs the divergence tracker sees, and the
+ * migrated `dry/structural-similarity` rule already runs unconditionally — so
+ * the write must too. A pair that is only ever
  * structurally similar (never an exact duplicate) still has to produce a
  * similarity series, or `dry/diverging-clone` can never observe a decline:
  * exact-duplicate pairs are pinned at 1.0 and either stay 1.0 or drop out of
@@ -740,9 +738,8 @@ export function seedDryPairs(codeBlocks: readonly CodeBlockFact[], config: DryBl
     }
 
     // Structural similarity — bare-token-set Jaccard, seeded unconditionally
-    // (§10 removed `checkStructuralSimilarity` as a select-gate; the migrated
-    // rule runs unconditionally, and the divergence tracker needs this arm's
-    // sub-1.0 rows to ever observe a decline).
+    // (there is no select-gate; the migrated rule runs unconditionally, and the
+    // divergence tracker needs this arm's sub-1.0 rows to ever observe a decline).
     for (let i = 0; i < deduped.length; i++) {
       const original = deduped[i];
       for (let j = i + 1; j < deduped.length; j++) {

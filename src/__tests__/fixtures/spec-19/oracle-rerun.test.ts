@@ -44,11 +44,11 @@ const ORACLE_SOLID_CONFIG: SOLIDAnalyzerConfig = {
   skipTestFiles: false,
 };
 
-// ── DRY config for structural-similarity positive control ────────────
-const DRY_STRUCTURAL_ENABLED: DRYAnalyzerConfig = {
+// ── DRY config: lower the line floor so the ~11-line API router methods ──
+// qualify (structural similarity is unconditional; there is no enable flag).
+const DRY_LOW_LINE_FLOOR: DRYAnalyzerConfig = {
   ...DEFAULT_DRY_CONFIG,
-  checkStructuralSimilarity: true,
-  minLineThreshold: 10, // lower threshold so ~20-line CRUD/api-router functions qualify
+  minLineThreshold: 10,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -317,8 +317,8 @@ describe('Oracle: Data-access true positives', () => {
 //   dry/duplicate fires on token-identical blocks (items 19, 20).
 //   duplicate-import, duplicate-string-literal are retired → 0 findings
 //     (items 21–23, 24–25).
-//   dry/structural-similarity is default-off → 0 findings (item 26).
-//   dry/structural-similarity fires when enabled (item 27 positive control).
+//   dry/structural-similarity fires unconditionally (items 26-27) — the
+//   default-off select-gate was removed.
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('Oracle: DRY items 19–27', () => {
@@ -380,19 +380,19 @@ describe('Oracle: DRY items 19–27', () => {
     ).toBe(0);
   });
 
-  // ── structural-similarity default-off → 0 / enabled → fires ─────────
+  // ── structural-similarity fires unconditionally ──────────────────────
 
-  it('item 26: CRUD handlers structurally similar → 0 dry/structural-similarity (default-off)', async () => {
+  it('item 26: CRUD handlers structurally similar → dry/structural-similarity fires (unconditional)', async () => {
     const r = await runDRYAnalyzer(fixturePath('item-26-crud-similar.ts'));
     expect(r.structuralSimilarity.length,
-      `Item 26: structural-similarity is default-off — MUST NOT fire (got ${r.structuralSimilarity.length})`
-    ).toBe(0);
+      `Item 26: structural-similarity is unconditional — MUST fire (got ${r.structuralSimilarity.length})`
+    ).toBeGreaterThan(0);
   });
 
-  it('item 27: API routers structurally similar → dry/structural-similarity fires when enabled', async () => {
-    const r = await runDRYAnalyzer(fixturePath('item-27-api-routers.ts'), DRY_STRUCTURAL_ENABLED);
+  it('item 27: API routers structurally similar → dry/structural-similarity fires (lower line floor)', async () => {
+    const r = await runDRYAnalyzer(fixturePath('item-27-api-routers.ts'), DRY_LOW_LINE_FLOOR);
     expect(r.structuralSimilarity.length,
-      'Item 27: two structurally similar API routers with enabled check — MUST fire'
+      'Item 27: two structurally similar API routers — MUST fire'
     ).toBeGreaterThan(0);
     expect(r.structuralSimilarity[0].severity).toBe('high');
   });

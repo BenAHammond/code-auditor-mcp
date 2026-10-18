@@ -50,8 +50,8 @@ async function run(sourceCode: string, overrides: Record<string, unknown> = {}):
 
 const structural = (vs: Violation[]) => vs.filter((v) => v.rule === 'dry/structural-similarity');
 
-/** Enable structural similarity with a low line floor so small fixtures qualify. */
-const ENABLED = { checkStructuralSimilarity: true, minLineThreshold: 3 };
+/** Lower the line floor so the small fixtures qualify (structural similarity is unconditional). */
+const ENABLED = { minLineThreshold: 3 };
 
 /**
  * Two structurally-identical top-level functions (same token-kind skeleton,

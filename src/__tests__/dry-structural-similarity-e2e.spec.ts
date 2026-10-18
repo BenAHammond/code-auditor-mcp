@@ -6,22 +6,25 @@
  * `mergeClusters`, `splitCluster`, and `killQuestion` all open with the same
  * five-step `withTx` body. The answer has two independent halves:
  *
- *   1. `checkStructuralSimilarity` defaults to `false` (defaults.ts `dry` block,
- *      and `DRY_BLOCK_DEFAULTS` here). But it is ALSO dead: the migrated
+ *   1. There is no structural select-gate to blame: `checkStructuralSimilarity`
+ *      was deleted (§15) and the rule runs unconditionally. The migrated
  *      `dryStructuralSimilarity` rule calls `detectStructuralDuplicates`
- *      unconditionally and never reads `checkStructuralSimilarity` (§10 — config
- *      tunes, never selects). So the default-off gate is not the zero-producer.
+ *      unconditionally, and the legacy analyzer's `reportStructuralDuplicates`
+ *      is no longer wrapped in the deleted flag.
  *
  *   2. The zero is produced by the rule's real thresholds: `minLineThreshold`
  *      (15) and `similarityThreshold` (0.85, bigram-Jaccard over structural
  *      skeletons). The real `mergeClusters`/`splitCluster` bodies are 31 lines
- *      each but only ~33% structurally similar — the shared five-step preamble
- *      is a minority of each body — so their Jaccard is far below 0.85.
+ *      each and score 0.6494 (~65%) structurally similar — the shared five-step
+ *      preamble is a minority of each 31-line body, and the diverging UPDATE
+ *      targets/keys break enough adjacent-token bigrams to land well below
+ *      0.85. The pair is genuinely not structurally similar by this rule's
+ *      measure, so the rule is behaving correctly.
  *
  * This spec proves the rule DOES fire end-to-end (through the live `runDrySlice`
- * phase path, with *default* thresholds — no `minLineThreshold`/`checkStructuralSimilarity`
- * override) on a pair of functions that share the five-step `withTx` preamble
- * AND a near-identical ≥15-line payload, which crosses both thresholds.
+ * phase path, with *default* thresholds — no `minLineThreshold` override) on a
+ * pair of functions that share the five-step `withTx` preamble AND a
+ * near-identical ≥15-line payload, which crosses both thresholds.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { initializeLanguages, initParsers } from '../languages/index.js';

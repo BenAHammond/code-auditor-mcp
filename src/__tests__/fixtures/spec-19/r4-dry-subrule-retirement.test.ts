@@ -6,8 +6,9 @@
  *   is normal ES module behavior)
  * - Item 24-25: duplicate-string-literal — never emitted (CSS class names
  *   and test fixture identifiers are intentionally reused)
- * - Item 26-27: dry/structural-similarity — default-off (CRUD handlers and
- *   API routers are structurally similar by design; fires when enabled)
+ * - Item 26-27: dry/structural-similarity — unconditional (CRUD handlers and
+ *   API routers are structurally similar by design; fires under default config
+ *   now that the default-off select-gate is removed)
  * - Positive control: dry/duplicate still fires for token-identical blocks
  */
 
@@ -93,9 +94,8 @@ export function Sidebar() {
 
 /**
  * File with structurally similar methods — same node-type sequence,
- * different identifiers/literals. dry/structural-similarity is default-off
- * (Spec-19 R4.2). Should produce zero findings with default config.
- * Fires when checkStructuralSimilarity is enabled.
+ * different identifiers/literals. dry/structural-similarity is unconditional
+ * (the default-off select-gate was removed), so this fires under default config.
  */
 const STRUCTURAL_SIMILAR = `
 export class UserController {
@@ -245,19 +245,11 @@ const TEST_CASES: TestCase[] = [
     requiredRules: {},
   },
   {
-    name: 'dry/structural-similarity — default-off produces zero (R4.2)',
-    files: { 'structural.ts': STRUCTURAL_SIMILAR },
-    subjectFile: 'structural.ts',
-    forbiddenRules: ['dry/structural-similarity'],
-    requiredRules: {},
-  },
-  {
-    name: 'dry/structural-similarity — fires when enabled (R4.2 positive control)',
+    name: 'dry/structural-similarity — fires unconditionally (R4.2 gate removed)',
     files: { 'structural.ts': STRUCTURAL_SIMILAR },
     subjectFile: 'structural.ts',
     forbiddenRules: [],
     requiredRules: { 'dry/structural-similarity': 1 },
-    configOverrides: { checkStructuralSimilarity: true, minLineThreshold: 15 },
   },
   {
     name: 'dry/duplicate — still fires (positive control)',

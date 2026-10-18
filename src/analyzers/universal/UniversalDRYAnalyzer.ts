@@ -48,8 +48,6 @@ export interface DRYAnalyzerConfig {
   excludePatterns?: string[];
   checkImports?: boolean;
   checkStrings?: boolean;
-  /** R4.2: Enables dry/structural-similarity analysis. Default false. */
-  checkStructuralSimilarity?: boolean;
   /**
    * #132: Enables dry/similar-expression analysis — near-identical object
    * literals and fluent call chains that share a field/method sequence. Default
@@ -92,8 +90,6 @@ export const DEFAULT_DRY_CONFIG: DRYAnalyzerConfig = {
   checkStrings: false,
   ignoreComments: true,
   ignoreWhitespace: true,
-  // R4.2: structural similarity off by default
-  checkStructuralSimilarity: false,
   // #132: expression similarity ON by default. Fluent library/builder chains
   // (query builders, schema builders, Zod validators, commander, promises, DOM
   // and stdlib method chains) are filtered out of the signal — they are the
@@ -796,9 +792,10 @@ export class UniversalDRYAnalyzer extends UniversalAnalyzer {
     const deduped = deduplicateBlocks(blocks);
 
     this.reportExactDuplicates(deduped, violations);
-    if (finalConfig.checkStructuralSimilarity) {
-      this.reportStructuralDuplicates(deduped, finalConfig, violations);
-    }
+    // `dry/structural-similarity` runs unconditionally (the `checkStructuralSimilarity`
+    // select-gate was removed — config tunes similarity, never selects which pairs
+    // are compared), matching the migrated rule's unconditional behavior.
+    this.reportStructuralDuplicates(deduped, finalConfig, violations);
     // #132: near-identical object literals and fluent call chains
     if (finalConfig.checkExpressionSimilarity) {
       const fragments = extractShapeFragments(ctx, finalConfig.minShapeNames || 4);

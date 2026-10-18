@@ -2,8 +2,8 @@
  * Spec-19 item 27 — dry/structural-similarity useless positive.
  * Two API version routers with similar shape (strategist-manager pattern).
  * Verdict: USELESS — API version routers are structured similarly by convention.
- * dry/structural-similarity is default-off → 0 violations with defaults.
- * When checkStructuralSimilarity is enabled → fires.
+ * dry/structural-similarity now runs unconditionally (the select-gate was
+ * removed), so these API routers fire regardless of config.
  *
  * Two exported router classes with near-identical handler method signatures,
  * parameter validation, error handling, and JSON response patterns.

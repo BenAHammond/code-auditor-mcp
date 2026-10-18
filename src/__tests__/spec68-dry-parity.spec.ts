@@ -49,7 +49,6 @@ async function parity(source: string) {
   }).analyzeAST(ast, adapter, {
     checkImports: true,
     checkStrings: false,
-    checkStructuralSimilarity: false,
     checkExpressionSimilarity: false,
   }, source);
   const old = oldRaw

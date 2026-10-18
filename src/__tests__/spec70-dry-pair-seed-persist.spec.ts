@@ -45,7 +45,7 @@ const RUNS = [
 ];
 
 const ROOT = '/tmp/code-auditor-drift-test';
-const CONFIG = { minLineThreshold: 3, similarityThreshold: 0.1, checkStructuralSimilarity: true };
+const CONFIG = { minLineThreshold: 3, similarityThreshold: 0.1 };
 
 let db: CodeIndexDB;
 

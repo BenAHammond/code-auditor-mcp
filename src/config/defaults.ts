@@ -303,7 +303,6 @@ export const DEFAULT_ANALYZER_CONFIGS = {
     checkStrings: false,
     ignoreComments: true,
     ignoreWhitespace: true,
-    checkStructuralSimilarity: false,
     checkExpressionSimilarity: true,
     minShapeNames: 4,
     // Spec 13 R5 — Diverging-clone detection. The pipeline reads this from the

@@ -2,6 +2,28 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.3.3] — 2026-10-18
+
+### Changed
+
+- **`dry/structural-similarity` now runs unconditionally in every path — the
+  dead `checkStructuralSimilarity` key is gone, not just unread.** The migrated
+  phase rule has ignored the key since the phase migration, but the legacy
+  `UniversalDRYAnalyzer` still read it and defaulted it off, so a config that
+  never mentioned it silently skipped the structural arm on that path. The key
+  (default, interface field, and reader) is deleted entirely, and both paths now
+  run the structural comparison unconditionally — the surviving, correct
+  behaviour. This is a **behaviour change, not a dead-key cleanup**: every user
+  whose config didn't explicitly enable structural similarity now sees
+  `dry/structural-similarity` findings they didn't before. At the default
+  `similarityThreshold: 0.85` that is 416 findings across the seven bench
+  corpora, concentrated in generated/repetitive code rather than hand-written
+  duplication. The threshold is unchanged: dropping it to catch the
+  `mergeClusters`/`splitCluster` near-twin in `endless-guessing` (31 lines each,
+  0.6494 bigram-Jaccard — well under 0.85) would add ~226 findings (a ~54%
+  increase) without meaningfully separating real duplication from template
+  repetition, so 0.85 stays.
+
 ## [5.3.2] — 2026-10-18
 
 ### Fixed

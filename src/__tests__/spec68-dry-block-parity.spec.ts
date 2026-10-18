@@ -15,10 +15,11 @@
  * and run their filter → dedupe → compare within one file.
  *
  * Each case lowers `minLineThreshold` to 5 (the default 15 would need a much
- * larger fixture) and isolates the rule under test by disabling the other two
- * check-gates (`checkStructuralSimilarity` / `checkExpressionSimilarity`), the
- * same as the legacy `checkImports`/`checkStrings` isolation in the sibling
- * dry-parity test. The normalization flags (`ignoreComments`/`ignoreWhitespace`)
+ * larger fixture) and isolates the rule under test by disabling
+ * `checkExpressionSimilarity` (structural similarity runs unconditionally — its
+ * select-gate was deleted), the same as the legacy `checkImports`/`checkStrings`
+ * isolation in the sibling dry-parity test. The normalization flags
+ * (`ignoreComments`/`ignoreWhitespace`)
  * are left at their defaults on both paths — the producer pins them true and
  * they are not part of the rules' declared threshold surface.
  */
@@ -90,7 +91,6 @@ describe('Spec 68 code-block DRY parity (new analyze(ctx) === old UniversalDRYAn
     ].join('\n');
     const { old, nu, fresh } = await parity(source, {
       minLineThreshold: 5,
-      checkStructuralSimilarity: false,
       checkExpressionSimilarity: false,
     });
     expect(nu).toEqual(old);
@@ -123,7 +123,6 @@ describe('Spec 68 code-block DRY parity (new analyze(ctx) === old UniversalDRYAn
     ].join('\n');
     const { old, nu, fresh } = await parity(source, {
       minLineThreshold: 5,
-      checkStructuralSimilarity: true,
       checkExpressionSimilarity: false,
     });
     expect(nu).toEqual(old);
@@ -140,7 +139,6 @@ describe('Spec 68 code-block DRY parity (new analyze(ctx) === old UniversalDRYAn
       'info.resultSummary = { completedAt: now, tables: t, tableCounts: tc, stagingCounts: sc, steps: st, durationMs: d };',
     ].join('\n');
     const { old, nu, fresh } = await parity(source, {
-      checkStructuralSimilarity: false,
       checkExpressionSimilarity: true,
     });
     expect(nu).toEqual(old);
@@ -153,44 +151,6 @@ describe('Spec 68 code-block DRY parity (new analyze(ctx) === old UniversalDRYAn
         '(5 shared fields: completedAt, tables, tableCounts, stagingCounts, steps). ' +
         'First occurrence at parity.ts:2',
     });
-  });
-
-  it('§10 — structural-similarity fires unconditionally (flag no longer gates it off)', async () => {
-    const source = [
-      'function process(rows) {',
-      '  for (const row of rows) {',
-      '    const id = row.id;',
-      '    const name = row.name;',
-      '    const value = row.value;',
-      '    pushA({ id, name, value });',
-      '  }',
-      '  for (const item of items) {',
-      '    const id = item.id;',
-      '    const name = item.name;',
-      '    const value = item.value;',
-      '    pushB({ id, name, value });',
-      '  }',
-      '}',
-    ].join('\n');
-
-    // §10 made the rule unconditional: the phase rule fires regardless of
-    // `checkStructuralSimilarity`. It reproduces the legacy finding with the
-    // legacy gate ON (the legacy analyzer is still gated until §15 deletes it).
-    const { old, nu } = await parity(source, {
-      minLineThreshold: 5,
-      checkStructuralSimilarity: true,
-      checkExpressionSimilarity: false,
-    });
-    expect(nu).toEqual(old);
-    expect(nu.length).toBe(1);
-
-    // The flag being off does NOT suppress the phase finding.
-    const off = await runDrySlice([{ path: 'parity.ts', content: source }], {
-      minLineThreshold: 5,
-      checkStructuralSimilarity: false,
-      checkExpressionSimilarity: false,
-    });
-    expect(off.filter((f) => f.ruleId === 'dry/structural-similarity').length).toBe(1);
   });
 
   it('does not compare blocks across different files (per-file grouping)', async () => {
@@ -211,7 +171,7 @@ describe('Spec 68 code-block DRY parity (new analyze(ctx) === old UniversalDRYAn
         { path: 'a.ts', content: block },
         { path: 'b.ts', content: block },
       ],
-      { minLineThreshold: 5, checkStructuralSimilarity: false, checkExpressionSimilarity: false },
+      { minLineThreshold: 5, checkExpressionSimilarity: false },
     );
     expect(fresh.filter((f) => BLOCK_RULES.has(f.ruleId))).toEqual([]);
   });
