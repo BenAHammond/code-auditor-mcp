@@ -2,6 +2,37 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.3.2] — 2026-10-18
+
+### Fixed
+
+- **`function-documentation`'s `docsMinLines` floor was removed entirely in
+  5.3.1 instead of scoped.** The floor is restored and applies to non-exported
+  functions only: an exported function with no doc comment is flagged at any
+  length (a one-line exported predicate is still part of the surface callers
+  import), while an unexported helper under the floor is below the bar. This keeps
+  the 5.3.1 intent — short exports like `hasRejectedTerm` are no longer swallowed —
+  without turning internal one-line helpers into documentation findings.
+- **`react` inline-function-prop gated only the `onClick` arm and missed
+  hyphenated custom elements.** The `isIntrinsicElement` discriminant now lives in
+  the shared inline-handler classifier so every `on*` handler prop goes through it,
+  and the tag predicate accepts hyphenated custom-element names (`<my-widget>`) as
+  intrinsic host elements.
+- **`BUILTIN_PATH_PROFILES` was left as an empty list instead of removed.** An
+  empty list invites the neighbouring reading "there are built-ins, there just
+  happen to be zero today"; the built-in merge and name-replacement machinery is
+  now deleted entirely, and the project-config path-profile mechanism is unchanged.
+- **`dry/structural-similarity` lacked an end-to-end pin.** Added an e2e check that
+  two functions sharing the same five-step transactional body report a
+  structural-similarity finding. The rule seeds unconditionally — `checkStructuralSimilarity`
+  defaults to `false` but is no longer read by the migrated rule, so the zero a
+  bare-config run produces comes from `minLineThreshold` / `similarityThreshold`,
+  not a default-off switch.
+- **The cache GC deleted directories silently.** The prune of superseded CLI copies
+  and abandoned project indexes ran fire-and-forget with its result discarded, so a
+  user whose index vanished could not see that the tool collected it. The audit
+  output now reports what the GC collected on that run.
+
 ## [5.3.1] — 2026-10-17
 
 ### Fixed

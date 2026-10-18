@@ -13,7 +13,7 @@
  * `dbWrapperNames`) becomes visible instead of being archaeology.
  */
 
-import { BUILTIN_PATH_PROFILES, DEFAULT_ANALYZER_CONFIGS } from './defaults.js';
+import { DEFAULT_ANALYZER_CONFIGS } from './defaults.js';
 import { resolvePathProfile, type PathProfile } from './pathProfiles.js';
 import type { Preset } from '../presets/presets.js';
 import { RULE_REGISTRY } from '../analyzers/ruleRegistry.js';
@@ -36,7 +36,6 @@ export type ConfigSource =
   | 'env'
   | 'cli'
   | `path-profile:${string}`
-  | `builtin:${string}`
   | `preset:${string}`;
 
 export interface EffectiveKey {
@@ -104,13 +103,10 @@ export const RUNTIME_DEFAULT_CONFIGS: Record<string, Record<string, unknown>> = 
   'cross-domain': CROSS_DOMAIN_DEFAULT,
 };
 
-const BUILTIN_NAMES = new Set(BUILTIN_PATH_PROFILES.map((p) => p.name));
-
-/** Classify a merged path profile as built-in or user-defined. */
+/** Classify a path profile's source. No built-in profiles ship, so every
+ *  matched profile is a user-defined path profile. */
 function profileSource(profile: PathProfile): ConfigSource {
-  return profile.builtin !== false && BUILTIN_NAMES.has(profile.name)
-    ? `builtin:${profile.name}`
-    : `path-profile:${profile.name}`;
+  return `path-profile:${profile.name}`;
 }
 
 /**

@@ -58,7 +58,8 @@ import { syncStyleIndex } from './styles/styleIndexer.js';
 
 import { CodeIndexDB } from './codeIndexDB.js';
 import { notifyLegacyIndexLocation } from './legacyIndexNotice.js';
-import { gcStaleCacheDirsOnce } from './cacheGc.js';import { writeAuditToLedger, detectRunInput } from './ledger.js';
+import { gcStaleCacheDirsOnce, type CacheGcResult } from './cacheGc.js';
+import { writeAuditToLedger, detectRunInput } from './ledger.js';
 
 // Pipeline imports (Spec 25 — pipeline replaces hand-rolled analyzer loop)
 import { runPipeline, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
@@ -1695,6 +1696,7 @@ interface FinalizeInputs {
   fileToFunctionsMap: Map<string, FunctionMetadata[]>;
   phaseCandidates: CandidateSite[];
   receiverResolutions: number;
+  cacheGc: CacheGcResult;
 }
 
 /**
@@ -1713,6 +1715,7 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
     pipelineInputPresence, pipelineRuleTiming, pipelineFileAccounting,
     pipelineTestCoverage, pipelineDeadClusters, pipelineSizeDistributions,
     collectedFunctions, fileToFunctionsMap, phaseCandidates, receiverResolutions,
+    cacheGc,
   } = inputs;
 
   // Spec 69 §10 R4 — count query-shaped call sites whose DB receiver is
@@ -1811,6 +1814,7 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
       ...(pipelineDeadClusters && pipelineDeadClusters.length > 0 && { deadClusters: pipelineDeadClusters }),
       ...(pipelineSizeDistributions && pipelineSizeDistributions.length > 0 && { sizeDistributions: pipelineSizeDistributions }),
       ...(phaseCandidates.length > 0 && { candidates: phaseCandidates }),
+      ...((cacheGc.removedCliVersions.length > 0 || cacheGc.removedProjects.length > 0) && { cacheGc }),
       ...(collectedFunctions.length > 0 && {
         collectedFunctions,
         fileToFunctionsMap: Object.fromEntries(fileToFunctionsMap)
@@ -1904,9 +1908,11 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // never deleted (see legacyIndexNotice.ts).
     notifyLegacyIndexLocation(root);
     // Bound the growth of the tool's own fallback cache: superseded pinned-CLI
-    // copies and abandoned project indexes. Fire-and-forget, process-scoped, never
-    // touches a user CODE_AUDITOR_DATA_DIR or the consuming repo (see cacheGc.ts).
-    gcStaleCacheDirsOnce();
+    // copies and abandoned project indexes. Process-scoped, never touches a user
+    // CODE_AUDITOR_DATA_DIR or the consuming repo (see cacheGc.ts). The result is
+    // captured (not fire-and-forget) so the audit output states what was collected
+    // — a silent delete of a 132 MB index is exactly the defect K10 forbids.
+    const cacheGc = gcStaleCacheDirsOnce();
     // Spec 44 — file accounting accumulator, owned by the run. Threaded through
     // discovery (full `all` scope) and the pipeline (stage 1/2) so every touched
     // file lands in exactly one terminal state and the balance can be asserted.
@@ -2028,6 +2034,7 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
       fileToFunctionsMap,
       phaseCandidates,
       receiverResolutions,
+      cacheGc,
     });
 
     // Report completion

@@ -185,14 +185,17 @@ function hasPropsValidation(component: ComponentMetadata): boolean {
 
 /**
  * True when a JSX tag name denotes an intrinsic DOM element rather than a React
- * component. React's JSX transform treats a lowercase single identifier
- * (`<button>`, `<div>`, `<img>`) as a DOM tag and any uppercase identifier or
- * member expression (`<Button>`, `<Foo.Bar>`) as a component. Intrinsic elements
- * are never memoized, which is the discriminant the inline-function-prop rule
- * depends on.
+ * component. React's JSX transform treats a lowercase identifier (`<button>`,
+ * `<div>`, `<img>`) or a hyphenated custom element (`<my-element>`) as a DOM
+ * tag, and any uppercase identifier or member expression (`<Button>`,
+ * `<Foo.Bar>`) as a component. Intrinsic elements are never memoized, which is
+ * the discriminant the inline-function-prop rule depends on. The hyphen arm is
+ * required: a custom element is an intrinsic host element just like `<div>`, and
+ * the old single-identifier pattern would have misclassified it as a component
+ * and flagged an inline handler it can never defeat.
  */
 function isIntrinsicElement(tagName: string): boolean {
-  return /^[a-z][a-zA-Z0-9]*$/.test(tagName);
+  return /^[a-z][a-zA-Z0-9]*(-[a-zA-Z0-9]+)*$/.test(tagName);
 }
 
 /**
@@ -225,30 +228,33 @@ function checkPerformanceIssues(
   }
 
   // Check for inline function props (causes re-renders).
-  // Honest, per-element signal: an `onClick` attribute whose value is an inline
-  // arrow/function expression (`onClick={() => …}` / `onClick={function …}`),
-  // not a bare identifier reference (`onClick={handleClick}`). Read from the
-  // AST-derived element details, so commented-out JSX never counts and the
-  // finding anchors to the `onClick` attribute's own line.
+  // Honest, per-element signal: any `on*` handler attribute whose value is an
+  // inline arrow/function expression (`onClick={() => …}` / `onFocus={function
+  // …}`), not a bare identifier reference (`onClick={handleClick}`). Read from
+  // the AST-derived element details, so commented-out JSX never counts and the
+  // finding anchors to the attribute's own line.
   //
   // The finding only holds when the *receiving* element is a memoized React
   // component: an inline function creates a fresh reference each render, which
   // defeats the receiver's memoization and forces a re-render. An intrinsic DOM
-  // element is never memoized, so `<button onClick={() => …}>` causes no such
-  // re-render and is excluded (the discriminant the old check lacked — it fired
-  // on any inline `onClick` regardless of receiver, 12/12 false on the fixture).
-  const onClickInline = (component.jsxElementDetails ?? []).find(el =>
-    !isIntrinsicElement(el.tagName) &&
-    el.attributes.some(a =>
-      a.name === 'onClick' && (a.valueKind === 'arrow' || a.valueKind === 'function')));
-  if (onClickInline) {
-    const attr = onClickInline.attributes.find(a =>
-      a.name === 'onClick' && (a.valueKind === 'arrow' || a.valueKind === 'function'))!;
+  // element (including a hyphenated custom element) is never memoized, so
+  // `<button onClick={() => …}>` and `<my-element onFocus={…}>` cause no such
+  // re-render and are excluded. The intrinsic discriminant is therefore part of
+  // the handler-prop classifier itself, so it gates *every* handler prop, not
+  // just `onClick` — the old check only ever looked at `onClick`, leaving an
+  // inline `onFocus` on a component unflagged and an intrinsic receiver untested
+  // for any non-`onClick` handler.
+  const isInlineHandler = (a: { name: string; valueKind: string }): boolean =>
+    /^on[A-Z]/.test(a.name) && (a.valueKind === 'arrow' || a.valueKind === 'function');
+  const handlerElement = (component.jsxElementDetails ?? []).find(el =>
+    !isIntrinsicElement(el.tagName) && el.attributes.some(isInlineHandler));
+  if (handlerElement) {
+    const attr = handlerElement.attributes.find(isInlineHandler)!;
     violations.push({
       file: component.filePath,
       line: attr.line,
       severity: 'high',
-      message: `Component '${component.name}' passes an inline function prop (onClick) causing unnecessary re-renders`,
+      message: `Component '${component.name}' passes an inline function prop (${attr.name}) causing unnecessary re-renders`,
       componentName: component.name,
       rule: 'performance',
       violationType: 'performance',

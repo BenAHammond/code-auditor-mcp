@@ -5,8 +5,9 @@
  * `name`, `paths` (glob patterns), and `overrides`. Files matching multiple
  * profiles merge in order — later wins.
  *
- * Built-in profiles (e.g. scripts-and-tests) ship with the tool and can be
- * disabled via `builtin: false` in config.
+ * No built-in profiles ship with the tool; every profile is user-defined. The
+ * `builtin: false` config key is retained only for surface compatibility — it
+ * selects nothing because there is nothing to select.
  */
 
 import picomatch from 'picomatch';
@@ -19,7 +20,7 @@ export interface PathProfile {
   paths: string[];
   /** Analyzer config overrides applied to files matching this profile. */
   overrides: Record<string, unknown>;
-  /** Set to false to replace a built-in profile of the same name. */
+  /** Inert — no built-in profiles ship; retained for config-surface compatibility. */
   builtin?: boolean;
 }
 

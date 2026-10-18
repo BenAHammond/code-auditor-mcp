@@ -831,6 +831,18 @@ export interface AuditResult {
       span: { line: number; column?: number };
       disposition: string;
     }[];
+    /**
+     * Directive K10 — what the cache GC collected on this run, so the audit
+     * output can state it rather than a silent delete. `removedCliVersions`
+     * are superseded `cli/<version>` runtime copies; `removedProjects` are
+     * abandoned `projects/<hash>` indexes (each > the age threshold). Absent
+     * when the GC removed nothing (or never ran — process-scoped, suppressed
+     * under a test harness).
+     */
+    cacheGc?: {
+      removedCliVersions: string[];
+      removedProjects: string[];
+    };
   };
 }
 

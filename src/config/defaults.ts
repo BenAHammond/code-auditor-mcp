@@ -445,59 +445,34 @@ export const DEFAULT_ANALYZER_CONFIGS = {
 };
 
 /**
- * Built-in path profiles shipped with the tool.
- *
- * Empty by design. The "scripts-and-tests" profile that excluded scripts,
- * tests, and fixtures from the blocking gate (Spec 36 R4) is removed: a
- * compiled-in glob list that marks `gateExcluded: true` is a hand-maintained
- * exemption list baked into the binary — the same defect as a suppression
- * file, just shipped instead of written per project. A script with a hardcoded
- * connection string or a fixture with dynamic SQL gates like any other file;
- * teams that want an opt-out declare it explicitly in their own
+ * No built-in path profiles ship with the tool. The "scripts-and-tests" profile
+ * that excluded scripts, tests, and fixtures from the blocking gate (Spec 36 R4)
+ * is removed: a compiled-in glob list that marks `gateExcluded: true` is a
+ * hand-maintained exemption list baked into the binary — the same defect as a
+ * suppression file, just shipped instead of written per project. A script with a
+ * hardcoded connection string or a fixture with dynamic SQL gates like any other
+ * file; teams that want an opt-out declare it explicitly in their own
  * `.codeauditor.json` as a user path profile.
  *
- * The `builtin` config key and the merge logic below remain as the seam for a
- * future built-in profile; today there are none, so `builtin: false` and the
- * built-in name-replacement rules are inert.
- */
-export const BUILTIN_PATH_PROFILES: PathProfile[] = [];
-
-/**
- * Merge built-in path profiles with user-configured profiles.
+ * There is therefore no built-in/user merge to perform, and the `builtin` config
+ * key that once selected a built-in profile is inert — it is still accepted (so
+ * a config that sets `builtin: false` validates and behaves as before) but it
+ * selects nothing, because there is nothing to select. The `BUILTIN_PATH_PROFILES`
+ * list and the built-in name-replacement machinery are deleted rather than left
+ * as an empty seam: an empty list invites the neighbouring reading "there are
+ * built-ins, there just happen to be zero today", when the truth is the
+ * mechanism itself is gone.
  *
- * - `builtin: false` at top level → no built-ins
- * - User profile with `builtin: false` → replaces built-in of same name
- * - Otherwise: built-ins come first, user profiles appended after
- *   (later wins on conflict)
- *
- * @param userProfiles The user-configured path profiles to merge.
- * @param builtinEnabled Whether the built-in profiles are enabled (false disables all).
- * @returns The merged profile array, or undefined if no profiles active
+ * @param userProfiles The user-configured path profiles to pass through.
+ * @param _builtinEnabled Inert — no built-in profile ships; retained only so a
+ *   config that sets `builtin: false` validates and behaves as before.
+ * @returns The user profiles when non-empty, otherwise undefined.
  */
 export function mergePathProfiles(
   userProfiles: PathProfile[] | undefined,
-  builtinEnabled: boolean | undefined
+  _builtinEnabled: boolean | undefined
 ): PathProfile[] | undefined {
-  // builtin: false disables all built-in profiles
-  if (builtinEnabled === false) {
-    return userProfiles && userProfiles.length > 0 ? userProfiles : undefined;
-  }
-
-  if (!userProfiles || userProfiles.length === 0) {
-    // No user profiles — use built-ins only
-    return BUILTIN_PATH_PROFILES.length > 0 ? [...BUILTIN_PATH_PROFILES] : undefined;
-  }
-
-  // Merge: built-ins first, user profiles appended (later wins)
-  const userReplaced = new Set(
-    userProfiles.filter((p) => p.builtin === false).map((p) => p.name)
-  );
-
-  const activeBuiltins = BUILTIN_PATH_PROFILES.filter(
-    (b) => !userReplaced.has(b.name)
-  );
-
-  return [...activeBuiltins, ...userProfiles];
+  return userProfiles && userProfiles.length > 0 ? userProfiles : undefined;
 }
 
 /**

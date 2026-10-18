@@ -302,6 +302,20 @@ function printAuditDiagnostics(result: AuditResult): void {
       console.log(chalk.gray(`  … and ${deadClusters.length - 10} more clusters`));
     }
   }
+
+  // ── Directive K10 — cache GC ─────────────────────────────────
+  // State what the GC collected so a silent delete of operator cache is visible.
+  const cacheGc = result.metadata?.cacheGc;
+  if (cacheGc && (cacheGc.removedCliVersions.length > 0 || cacheGc.removedProjects.length > 0)) {
+    const parts: string[] = [];
+    if (cacheGc.removedCliVersions.length > 0) {
+      parts.push(`${cacheGc.removedCliVersions.length} superseded CLI cop${cacheGc.removedCliVersions.length === 1 ? 'y' : 'ies'}`);
+    }
+    if (cacheGc.removedProjects.length > 0) {
+      parts.push(`${cacheGc.removedProjects.length} abandoned project index${cacheGc.removedProjects.length === 1 ? '' : 'es'}`);
+    }
+    console.log(chalk.gray(`── Cache GC ── collected ${parts.join(' and ')}`));
+  }
 }
 
 /**
@@ -2072,7 +2086,7 @@ configCmd
       const projectRoot = pathModule.resolve(options.path);
       const configPath = pathModule.join(projectRoot, '.codeauditor.json');
 
-      let profiles: { name: string; paths: string[]; overrides: Record<string, unknown>; builtin?: boolean }[] = [];
+      let profiles: { name: string; paths: string[]; overrides: Record<string, unknown> }[] = [];
 
       try {
         await fs.access(configPath);
@@ -2103,9 +2117,7 @@ configCmd
           } else {
             console.log(chalk.bold(`Profiles matching: ${options.file}`));
             for (const name of resolved.matchedProfileNames) {
-              const profile = profiles.find(p => p.name === name);
-              const builtinTag = profile?.builtin !== false && profiles.some(p => p.name === name) ? '' : '';
-              console.log(`  ${chalk.cyan(name)}${builtinTag ? chalk.gray(' (built-in)') : ''}`);
+              console.log(`  ${chalk.cyan(name)}`);
             }
             if (resolved.excludeFromGate) {
               console.log(chalk.yellow(`  excludeFromGate: true`));
@@ -2127,7 +2139,6 @@ configCmd
               name: p.name,
               paths: p.paths,
               overrides: p.overrides,
-              builtin: p.builtin !== false,
             })),
           }, null, 2) + '\n');
         } else {
@@ -2136,8 +2147,7 @@ configCmd
           } else {
             console.log(chalk.bold('Active path profiles:'));
             for (const p of profiles) {
-              const tag = p.builtin !== false ? chalk.gray(' [built-in]') : '';
-              console.log(`  ${chalk.cyan(p.name)}${tag}`);
+              console.log(`  ${chalk.cyan(p.name)}`);
               console.log(chalk.gray(`    paths: ${p.paths.join(', ')}`));
               if (p.overrides && Object.keys(p.overrides).length > 0) {
                 for (const [key, value] of Object.entries(p.overrides)) {

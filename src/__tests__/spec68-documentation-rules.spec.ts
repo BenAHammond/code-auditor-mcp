@@ -114,4 +114,25 @@ describe('Spec 68 documentation rules (live phase slice)', () => {
     expect(rule).toHaveLength(1);
     expect(rule[0].symbol).toBe('top');
   });
+
+  it('applies the docsMinLines floor to non-exported functions only (K8)', async () => {
+    // scope 'all' makes unexported functions candidates; docsMinLines 5 (the
+    // default) then floors only the unexported ones. An exported one-line
+    // function is flagged at any length; an unexported one-line function under
+    // the same config is not.
+    const fs = await runDocumentationSlice(
+      [
+        {
+          path: 'parity.ts',
+          content: [
+            'export function exported() { return 1; }',
+            'function internal() { return 1; }',
+          ].join('\n'),
+        },
+      ],
+      { exemptPatterns: [], scope: 'all', docsMinLines: 5 },
+    );
+    const rule = of(fs, 'function-documentation');
+    expect(rule.map((f) => f.symbol)).toEqual(['exported']);
+  });
 });

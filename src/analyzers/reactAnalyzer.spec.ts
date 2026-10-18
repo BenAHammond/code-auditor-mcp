@@ -121,6 +121,28 @@ describe('react performance — inline function props', () => {
     const perf = byRule(violations, 'performance');
     expect(perf.some((v) => v.message?.includes('inline function'))).toBe(true);
   });
+
+  it('flags a non-onClick inline handler on a component (classifier covers every handler prop)', async () => {
+    // `onFocus` is not `onClick`; the classifier must still flag it on a
+    // memoizable component. Before the classifier generalized over `on*`, an
+    // inline `onFocus` was never examined at all.
+    const violations = await analyze(
+      `export function Card() {\n  return <Button onFocus={() => go()} />;\n}\n`,
+    );
+    const perf = byRule(violations, 'performance');
+    expect(perf.some((v) => v.message?.includes('inline function'))).toBe(true);
+  });
+
+  it('does NOT flag a non-onClick inline handler on a hyphenated custom element (intrinsic)', async () => {
+    // A hyphenated custom element is an intrinsic host element, never memoized;
+    // a non-`onClick` handler on it must still be excluded. The intrinsic
+    // discriminant now gates every handler prop, not just `onClick`.
+    const violations = await analyze(
+      `export function Card() {\n  return <my-element onFocus={() => go()} />;\n}\n`,
+    );
+    const perf = byRule(violations, 'performance');
+    expect(perf.filter((v) => v.message?.includes('inline function')).length).toBe(0);
+  });
 });
 
 describe('react — comment-as-markup (JSX in comments never fires)', () => {
