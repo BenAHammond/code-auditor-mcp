@@ -8,12 +8,13 @@
 #   0 — clean pass, no fresh result yet (the daemon is seeding/indexing, or
 #       this edit hasn't been re-audited — feedback arrives one edit later), or
 #       a broken tool (the failure is written to the log file, not stderr)
-#   2 — a gating finding was read from the daemon's cache (Claude Code feeds
-#       stdout back)
-#   The hook never exits 1 and never writes stderr: a hook that can fail the
-#   edit is worse than one that reports nothing (Spec 68 §hook-contract). A
-#   broken tool is written to the log file, not stderr, and still exits 0 — a
-#   failure surfaces on the next explicit audit, never on the edit.
+#   2 — a gating finding was read from the daemon's cache (the finding is
+#       written to stderr — the channel Claude Code feeds back on exit 2)
+#   The hook never exits 1, and writes stderr only to surface a finding on
+#   exit 2. A hook that can fail the edit is worse than one that reports
+#   nothing (Spec 68 §hook-contract). A broken tool is written to the log
+#   file, not stderr, and still exits 0 — a failure surfaces on the next
+#   explicit audit, never on the edit.
 set -euo pipefail
 
 # Shared resolver + compatibility pinning (see hook-common.sh). Source it from
@@ -85,9 +86,9 @@ assert_compatible "${CODE_AUDIT_BIN}" || exit 0
 mkdir -p "$(hook_log_dir)" 2>/dev/null || true
 set +e
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-  echo "${file}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} changed --stdin --json -p "${CLAUDE_PROJECT_DIR}" 2>>"$(hook_log_file)"
+  finding="$(echo "${file}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} changed --stdin --json -p "${CLAUDE_PROJECT_DIR}" 2>>"$(hook_log_file)")"
 else
-  echo "${file}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} changed --stdin --json 2>>"$(hook_log_file)"
+  finding="$(echo "${file}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} changed --stdin --json 2>>"$(hook_log_file)")"
 fi
 exit_code=$?
 set -e
@@ -101,9 +102,14 @@ if [ "${exit_code}" -eq 0 ] || [ "${exit_code}" -eq 2 ]; then
   hook_log "[code-auditor] HOOK RAN"
 fi
 
-# Exit 2 = a finding read from the daemon cache; propagate so Claude Code feeds
-# stdout back.
+# Exit 2 = a finding read from the daemon cache. A PostToolUse hook's feedback
+# channel on exit 2 is stderr (stdout is discarded), so re-emit the finding
+# there before propagating exit 2 — otherwise the finding is lost and Claude
+# Code reports an empty-stderr block. The finding is also written to the hook
+# log so the diagnostic trail records what surfaced to the agent.
 if [ ${exit_code} -eq 2 ]; then
+  hook_log "[code-auditor] FINDING: ${finding}"
+  printf '%s\n' "${finding}" >&2
   exit 2
 fi
 

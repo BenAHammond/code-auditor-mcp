@@ -9,12 +9,15 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { readFileSync, readdirSync } from 'fs';
+import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync } from 'fs';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { resolve, dirname, join, relative } from 'path';
 import { fileURLToPath } from 'url';
 import { initializeLanguages } from './languages/index.js';
 import { getSourceExtensions } from './utils/fileDiscovery.js';
+import { HOOK_LOG_DIR_TAIL, HOOK_LOG_FILE } from './hookLogPath.generated.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_DIR = resolve(__dirname, '..', 'plugin');
@@ -158,17 +161,16 @@ describe('Hooks manifest (hooks.json)', () => {
     expect(inner.command).toContain('${CLAUDE_PLUGIN_ROOT}');
   });
 
-  it('guards an unset CLAUDE_PLUGIN_ROOT by logging and exiting 0, not blocking', () => {
-    // The command must never fail when the host leaves CLAUDE_PLUGIN_ROOT unset:
-    // it exits 0, writes nothing to stderr, and records the condition in the
-    // hook log (the same file hook-common.sh writes). A reader (src/hookLog.ts)
-    // surfaces the newest unresolved condition as a top-level notice on the next
-    // explicit audit — the hook could not locate the plugin and is not
-    // enqueueing. The 4.1.0 guard exited silently — that half was the bug.
+  it('guards an unset CLAUDE_PLUGIN_ROOT by failing loudly (stderr + non-zero)', () => {
+    // When the host leaves CLAUDE_PLUGIN_ROOT unset the guard must not degrade
+    // to a quiet success: it records the condition in the hook log (the file
+    // hook-common.sh writes — src/hookLog.ts surfaces it on the next explicit
+    // audit) AND writes the reason to stderr and exits non-zero so the failure
+    // is visible to the agent immediately, not silently suppressed.
     const inner = hooks.hooks.PostToolUse[0].hooks[0];
     expect(inner.command).toContain('[ -z "${CLAUDE_PLUGIN_ROOT}" ]');
-    expect(inner.command).toContain('exit 0');
-    expect(inner.command).not.toContain('>&2');
+    expect(inner.command).toContain('exit 1');
+    expect(inner.command).toContain('>&2');
     expect(inner.command).toContain('hook.log');
     expect(inner.command).toContain('HOOK NOT RUNNING');
     expect(inner.command).toContain('"${CLAUDE_PLUGIN_ROOT}"/scripts/hook-audit.sh');
@@ -191,11 +193,11 @@ describe('SessionStart warm hook (hook-warm.sh)', () => {
     expect(entry.hooks[0].command).toContain('hook-warm.sh');
   });
 
-  it('guards an unset CLAUDE_PLUGIN_ROOT by logging and exiting 0, not blocking', () => {
+  it('guards an unset CLAUDE_PLUGIN_ROOT by failing loudly (stderr + non-zero)', () => {
     const command = hooks.hooks.SessionStart[0].hooks[0].command;
     expect(command).toContain('[ -z "${CLAUDE_PLUGIN_ROOT}" ]');
-    expect(command).toContain('exit 0');
-    expect(command).not.toContain('>&2');
+    expect(command).toContain('exit 1');
+    expect(command).toContain('>&2');
     expect(command).toContain('hook.log');
     expect(command).toContain('HOOK NOT RUNNING');
     expect(command).toContain('"${CLAUDE_PLUGIN_ROOT}"/scripts/hook-warm.sh');
@@ -297,6 +299,88 @@ describe('Hook script (hook-audit.sh)', () => {
     expect(content).toContain('BASH_SOURCE[0]');
     expect(content).toContain('SCRIPT_DIR');
     expect(content).not.toContain('${CLAUDE_PLUGIN_ROOT}/scripts/hook-common.sh');
+  });
+});
+
+/**
+ * PostToolUse finding channel — behavioural. A PostToolUse hook's feedback on
+ * exit 2 is stderr (stdout is discarded), so the finding the CLI writes to
+ * stdout must be re-emitted to stderr before the hook propagates exit 2 —
+ * otherwise the finding is lost and Claude reports an empty-stderr block.
+ *
+ * This invokes each hook for real against a stub CLI that writes a known marker
+ * to stdout and exits 2. The stub is seeded at the version-pinned install path,
+ * so resolve_code_audit returns it via resolve_pinned_bin and assert_compatible
+ * short-circuits (the path is the version guarantee) — the stub needs no
+ * `--version` handling. CLAUDE_PLUGIN_ROOT points at a scratch plugin (the only
+ * thing plugin_root() requires is scripts/hook-common.sh) so resolution never
+ * sees this checkout's dist/ sibling.
+ */
+describe('Finding channel (exit 2 → stderr)', () => {
+  const MARKER = '__HOOK_FINDING_MARKER__';
+  const TEST_VERSION = '0.0.0-test';
+
+  function seedStub(pluginRoot: string, cacheRoot: string): void {
+    const pinDir = join(cacheRoot, 'code-auditor', 'cli', TEST_VERSION);
+    const stub = join(pinDir, 'node_modules', '.bin', 'code-audit');
+    mkdirSync(dirname(stub), { recursive: true });
+    writeFileSync(stub, `#!/usr/bin/env bash\nprintf '%s\\n' '${MARKER}'\nexit 2\n`);
+    chmodSync(stub, 0o755);
+
+    // plugin_root() honors CLAUDE_PLUGIN_ROOT only when this sentinel exists.
+    mkdirSync(join(pluginRoot, 'scripts'), { recursive: true });
+    writeFileSync(join(pluginRoot, 'scripts', 'hook-common.sh'), '');
+    mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ version: TEST_VERSION }),
+    );
+  }
+
+  function runHook(script: string, relativeFilePath: string) {
+    const tmp = mkdtempSync(join(tmpdir(), 'code-auditor-hook-'));
+    const pluginRoot = join(tmp, 'plugin');
+    const cacheRoot = join(tmp, 'cache');
+    const projectRoot = join(tmp, 'project');
+    mkdirSync(join(projectRoot, dirname(relativeFilePath)), { recursive: true });
+    seedStub(pluginRoot, cacheRoot);
+
+    const event = JSON.stringify({
+      tool_input: { file_path: join(projectRoot, relativeFilePath) },
+    });
+    const result = spawnSync('bash', [resolve(PLUGIN_DIR, 'scripts', script)], {
+      input: event,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_PLUGIN_ROOT: pluginRoot,
+        CLAUDE_PROJECT_DIR: projectRoot,
+        XDG_CACHE_HOME: cacheRoot,
+      },
+    });
+    return { result, tmp, cacheRoot };
+  }
+
+  it('each PostToolUse hook surfaces its finding to stderr and exits 2', () => {
+    const cases: Array<[string, string]> = [
+      ['hook-audit.sh', 'src/index.ts'],
+      ['hook-self-audit.sh', 'src/analyzers/foo.ts'],
+    ];
+    for (const [script, rel] of cases) {
+      const { result, tmp, cacheRoot } = runHook(script, rel);
+      expect(result.status, `${script} exit code`).toBe(2);
+      expect(result.stderr, `${script} stderr`).toContain(MARKER);
+
+      // The finding must also reach the hook log — surfacing to Claude with no
+      // log trace breaks the write/read symmetry (src/hookLog.ts).
+      const log = readFileSync(
+        join(cacheRoot, HOOK_LOG_DIR_TAIL, HOOK_LOG_FILE),
+        'utf-8',
+      );
+      expect(log, `${script} hook log`).toContain(MARKER);
+
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
@@ -549,13 +633,13 @@ describe('SessionStart drift-check hook (hook-drift-check.sh)', () => {
     expect(commands.some((c: string) => c.includes('hook-drift-check.sh'))).toBe(true);
   });
 
-  it('guards an unset CLAUDE_PLUGIN_ROOT by logging and exiting 0, not blocking', () => {
+  it('guards an unset CLAUDE_PLUGIN_ROOT by failing loudly (stderr + non-zero)', () => {
     const command = hooks.hooks.SessionStart[0].hooks
       .map((h: any) => h.command)
       .find((c: string) => c.includes('hook-drift-check.sh'));
     expect(command).toContain('[ -z "${CLAUDE_PLUGIN_ROOT}" ]');
-    expect(command).toContain('exit 0');
-    expect(command).not.toContain('>&2');
+    expect(command).toContain('exit 1');
+    expect(command).toContain('>&2');
     expect(command).toContain('hook.log');
     expect(command).toContain('HOOK NOT RUNNING');
     expect(command).toContain('"${CLAUDE_PLUGIN_ROOT}"/scripts/hook-drift-check.sh');

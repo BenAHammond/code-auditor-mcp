@@ -61,11 +61,10 @@ plugin_root() {
 
 # hook_log_dir / hook_log_file / hook_log — the hook's diagnostic log.
 #
-# The PostToolUse hook must never write stderr: the host may block on stderr
-# content, so a single warning could block the edit. Every diagnostic — info,
-# warnings, and failures alike — goes to this log file instead, and the hook
-# still exits 0. A broken install therefore surfaces on the next explicit audit
-# (and in this log), never on the edit itself.
+# Diagnostics (info, warnings, failures) go here, never to stderr, and the hook
+# still exits 0 — a broken install surfaces on the next explicit audit (and in
+# this log), never as a blocked edit. The one intentional stderr write is a
+# gating finding on exit 2, which is the hook's purpose, not a diagnostic.
 hook_log_dir() {
   printf '%s' "${XDG_CACHE_HOME:-$HOME/.cache}/${HOOK_LOG_DIR_TAIL}"
 }

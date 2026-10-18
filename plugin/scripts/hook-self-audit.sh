@@ -15,9 +15,11 @@
 # Exit codes:
 #   0 — clean pass, out of scope, or a broken tool (the failure is written to
 #       the log file, not stderr)
-#   2 — a blocking self-audit finding (Claude Code feeds stdout back)
-#   The hook never exits 1 and never writes stderr: a broken tool is written to
-#   the log file, not stderr, and still exits 0 (Spec 68 §hook-contract).
+#   2 — a blocking self-audit finding (the finding is written to stderr — the
+#       channel Claude Code feeds back on exit 2)
+#   The hook never exits 1, and writes stderr only to surface a finding on
+#   exit 2: a broken tool is written to the log file, not stderr, and still
+#   exits 0 (Spec 68 §hook-contract).
 set -euo pipefail
 
 # Shared resolver + compatibility pinning (see hook-common.sh). Source it from
@@ -85,9 +87,9 @@ assert_compatible "${CODE_AUDIT_BIN}" || exit 0
 mkdir -p "$(hook_log_dir)" 2>/dev/null || true
 set +e
 if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-  echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json -p "${CLAUDE_PROJECT_DIR}" 2>>"$(hook_log_file)"
+  finding="$(echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json -p "${CLAUDE_PROJECT_DIR}" 2>>"$(hook_log_file)")"
 else
-  echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json 2>>"$(hook_log_file)"
+  finding="$(echo "${file_abs}" | CODE_AUDITOR_HOOK=1 ${CODE_AUDIT_BIN} self-audit --stdin --json 2>>"$(hook_log_file)")"
 fi
 exit_code=$?
 set -e
@@ -101,8 +103,12 @@ if [ "${exit_code}" -eq 0 ] || [ "${exit_code}" -eq 2 ]; then
   hook_log "[code-auditor] HOOK RAN"
 fi
 
-# Exit 2 = a blocking self-audit finding; propagate so Claude Code feeds it back.
+# Exit 2 = a blocking self-audit finding; re-emit it to stderr — the channel
+# Claude Code feeds back on exit 2 — before propagating, and record it in the
+# hook log so the diagnostic trail shows what surfaced to the agent.
 if [ ${exit_code} -eq 2 ]; then
+  hook_log "[code-auditor] FINDING: ${finding}"
+  printf '%s\n' "${finding}" >&2
   exit 2
 fi
 
