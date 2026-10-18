@@ -1383,6 +1383,39 @@ export function checkUnresolvedQueries(unresolved: UnresolvedQuery[], filePath: 
 }
 
 /**
+ * The rules whose input facts a `cannot-fire` diagnostic renders unreadable —
+ * the discriminant the summary's *per-rule* unproven count keys on, instead of
+ * lumping every unproven site under the `schema` analyzer name (which answers
+ * "which analyzer produced this?" rather than "which rule may have
+ * under-reported?").
+ *
+ * `TABLE_REFERENCE_RULES` consume `schema-usage` (table read/write facts): a
+ * statement that cannot be parsed, or a receiver whose DB-ness cannot be
+ * established, yields no table reference for any of them.
+ *
+ * `DATA_ACCESS_RULES` consume `data-access-calls`: a receiver that cannot be
+ * proven a DB handle yields no data-access call for them, so they may report
+ * clean on access they could not observe. (`loop-query` and `too-many-queries`
+ * are deliberately not listed — they read `loop-queries`/`query-sites`, which
+ * are raw call-site counts, not gated on DB provenance.)
+ */
+const TABLE_REFERENCE_RULES: readonly string[] = [
+  'unknown-table',
+  'stale-table-reference',
+  'table-naming-convention',
+];
+
+const DATA_ACCESS_RULES: readonly string[] = [
+  'sql-injection-risk',
+  'complex-query',
+  'unfiltered-query',
+  'missing-org-filter',
+];
+
+/** Both rule families — a receiver whose DB provenance cannot be established. */
+const DB_PROVENANCE_RULES: readonly string[] = [...TABLE_REFERENCE_RULES, ...DATA_ACCESS_RULES];
+
+/**
  * Build `cannot-fire` coverage diagnostics for DB-call SQL whose static string
  * argument a named dialect cannot parse (`PRAGMA table_info(x)`, `VACUUM`,
  * `ANALYZE`, and other grammar gaps). These are the SQL-position siblings of the
@@ -1408,7 +1441,13 @@ export function checkUnparseableSql(unparseable: UnparseableSql[], filePath: str
       message: `SQL statement ${why} — its table read/write status is unreadable, so cross-domain lifecycle rules (unknown-table, stale-table-reference) may be unreliable for this file.`,
       file: filePath,
       line: u.location.line,
-      details: { sql: u.sqlText, reason: u.reason, kind: u.kind },
+      details: {
+        sql: u.sqlText,
+        reason: u.reason,
+        kind: u.kind,
+        cause: u.kind,
+        affectedRules: [...TABLE_REFERENCE_RULES],
+      },
     };
   });
 }
@@ -1450,7 +1489,13 @@ export function checkUnresolvedReceiverImports(
       // `reason` carries the same "why" the call-site shape (`checkUnprovenQueryReceivers`)
       // carries in `details.reason` — a consumer reading `details.reason` must never
       // see `undefined` for an unproven receiver, whichever emission path produced it.
-      details: { source: u.source, names: u.names, reason },
+      details: {
+        source: u.source,
+        names: u.names,
+        reason,
+        cause: 'unresolved-import',
+        affectedRules: [...DB_PROVENANCE_RULES],
+      },
     };
   });
 }
@@ -1481,7 +1526,13 @@ export function checkUnprovenQueryReceivers(
       `Query-shaped call \`.${u.method}()\` on ${u.receiver}: ${u.reason}`,
     file: filePath,
     line: u.line,
-    details: { receiver: u.receiver, method: u.method, reason: u.reason },
+    details: {
+      receiver: u.receiver,
+      method: u.method,
+      reason: u.reason,
+      cause: 'unproven-receiver',
+      affectedRules: [...DB_PROVENANCE_RULES],
+    },
   }));
 }
 

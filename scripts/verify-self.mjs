@@ -59,9 +59,16 @@ const APP_ROOT = process.cwd();
 
 // --- Run the self-audit ------------------------------------------------------
 const outDir = mkdtempSync(join(tmpdir(), 'ca-verify-self-'));
+// The audit writes its index to the fallback OS cache and, with the K10 cache GC
+// wired into the audit path, would reap superseded pinned-CLI copies and abandoned
+// project indexes there. Point XDG_CACHE_HOME at a throwaway dir so the self-audit
+// never touches the operator's real cache — the same isolation verify:daemon-smoke
+// already applies to its own run.
+const cacheDir = mkdtempSync(join(tmpdir(), 'ca-verify-self-cache-'));
 try {
   execFileSync('node', ['--expose-gc', CLI, 'audit', '--path', 'src', '-f', 'json', '-o', outDir], {
     stdio: 'inherit',
+    env: { ...process.env, XDG_CACHE_HOME: cacheDir },
   });
 } catch (err) {
   // The audit CLI may exit non-zero on violations; that is not a script error
@@ -123,6 +130,7 @@ for (const [rule, count] of [...byRule.entries()].sort((a, b) => b[1] - a[1])) {
 console.log('');
 
 rmSync(outDir, { recursive: true, force: true });
+rmSync(cacheDir, { recursive: true, force: true });
 
 // A scoped exemption is a decision about a finding, and a finding can stop
 // existing. If any (file, rule) pair in SCOPED_EXEMPTIONS no longer fires, the

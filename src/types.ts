@@ -727,6 +727,23 @@ export interface AuditSummary {
    */
   unprovenSites: number;
   /**
+   * Spec 69 §10 R4 (K9) — the site-level cannot-fire surface broken down by the
+   * *rule* each unproven site renders unreadable, with the cause. `byAnalyzer`
+   * answers "which analyzer produced these?"; this answers "which rule may have
+   * under-reported?" — the missing discriminant the 465 raw total hid. A site
+   * affects every rule in its `affectedRules` list (one unparseable SQL string
+   * blanks `unknown-table`, `stale-table-reference` *and*
+   * `table-naming-convention`), so a rule's `count` is the number of unproven
+   * sites that could have produced a finding under it, and `causes` tallies
+   * which of the three emission paths (`parse-failure`,
+   * `dialect-undetermined`, `unresolved-import`, `unproven-receiver`) drove
+   * them.
+   */
+  unprovenSitesByRule: Record<string, {
+    count: number;
+    causes: Record<string, number>;
+  }>;
+  /**
    * Number of readings excluded from the blocking gate by a path profile
    * (the built-in "scripts-and-tests" profile, or any user profile with
    * `excludeFromGate`). Named "held out by profile" in the headline — these

@@ -2,6 +2,60 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.3.1] — 2026-10-17
+
+### Fixed
+
+- **`react` inline-function-prop fired on intrinsic DOM elements.** The rule
+  reports an inline `onClick={() => …}` only because a fresh reference each render
+  defeats a *memoized* component's memoization. An intrinsic element (`<button>`,
+  `<div>`) is never memoized, so the old check — which fired on any inline prop
+  regardless of receiver — was 12/12 false on the fixture. It now keys on the
+  receiver's tag name and skips intrinsic elements.
+- **`duplicate-import` flagged a type-only import as a duplicate of a value
+  import.** `import type { X } from 'm'` beside `import { Y } from 'm'` is a
+  separate declaration kind (erases at compile time, emits no runtime binding), so
+  the two never collide. The import fact now carries `isTypeOnly`, and the rule
+  groups on `source` + import kind instead of `source` alone.
+- **`sql-injection-risk` missed two declaration shapes.** A `for (const t of
+  ['a', 'b'])` inline-literal iterable is now resolved as a static value (every
+  loop value is a compile-time constant), and a bare `if (!/regex/.test(x)) throw`
+  whitelist guard is now recognised as the inline analogue of a `validateX(x)`
+  guard call — both previously left a substitution reading as attacker-controlled.
+- **`duplicate-string-literal` flagged repeated markup attribute values.** An
+  SVG/JSX attribute value (`fill="var(--fleece)"`) is markup, not a factorable
+  code literal; the producer now marks it `isMarkupAttribute` from the node's
+  `jsx_attribute` parent, and the rule skips it.
+- **`conventions/error-handling` reported an opaque confidence percentage.** The
+  message named `N%` without naming the population the percentage was over. It now
+  states the raw counts (`X of Y error-handling functions in this directory`), so
+  the reader can size the population instead of an unreproducible figure.
+- **A compiled-in "scripts-and-tests" profile silently excluded scripts, tests,
+  and fixtures from the blocking gate.** That is a hand-maintained exemption list
+  baked into the binary — the same defect as a suppression file, just shipped.
+  `BUILTIN_PATH_PROFILES` is now empty; scripts/tests/fixtures gate like any other
+  file unless a team declares an explicit opt-out in its own `.codeauditor.json`.
+- **`dry/structural-similarity` pairs were only seeded behind
+  `checkStructuralSimilarity`.** §10 made config *tune* similarity, never *select*
+  which pairs the divergence tracker sees, so the migrated rule runs unconditionally
+  but the seed still gated — leaving `dry/diverging-clone` with no sub-1.0 rows to
+  observe a decline from. Structural pairs now seed unconditionally.
+- **`function-documentation` skipped short exported functions via a
+  `docsMinLines` size floor.** The floor answered "is this function long enough to
+  matter?" instead of the rule's own "is this function undocumented?", swallowing
+  short-but-real exports like `hasRejectedTerm`. The size gate is removed (it
+  survives only in the param/return *tag* completeness check).
+- **The `schema` unproven-site total surfaced nowhere as per-rule risk.** 465 raw
+  `cannot-fire` sites reported as a single analyzer total, hiding which rule may
+  have under-reported. Each site now carries its `affectedRules` and `cause`, and
+  `summary.unprovenSitesByRule` plus a CLI breakdown surface them per rule.
+- **The tool's own cache grew without bound.** Superseded pinned-CLI copies
+  (`cli/<version>`) and abandoned project indexes (`projects/<hash>`) accumulated
+  under the fallback OS cache with no reaping. A two-layer GC now prunes pinned-CLI
+  copies whose version differs from the running one and project indexes older than
+  30 days — process-scoped, fire-and-forget, and never touching a user
+  `CODE_AUDITOR_DATA_DIR` or the consuming repo.
+
 ## [5.3.0] — 2026-10-17
 
 ### Changed

@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { resolvePathProfile, PathProfile, ResolvedProfile } from '../config/pathProfiles.js';
 import { validateConfig } from '../config/configLoader.js';
-import { mergePathProfiles, BUILTIN_PATH_PROFILES } from '../config/defaults.js';
+import { mergePathProfiles } from '../config/defaults.js';
 import { initializeLanguages, initParsers } from '../languages/index.js';
 import { runAudit } from '../auditRunner.js';
 import type { AuditConfig } from '../types.js';
@@ -227,12 +227,12 @@ describe('validateConfig — pathProfiles', () => {
 });
 
 describe('mergePathProfiles', () => {
-  it('returns built-in profiles when no user profiles provided', () => {
+  it('returns undefined when no built-in or user profiles exist', () => {
     const result = mergePathProfiles(undefined, undefined);
-    expect(result).toEqual(BUILTIN_PATH_PROFILES);
+    expect(result).toBeUndefined();
   });
 
-  it('disables all built-in profiles when builtin is false', () => {
+  it('returns undefined when builtin is false and no user profiles exist', () => {
     const result = mergePathProfiles(undefined, false);
     expect(result).toBeUndefined();
   });
@@ -245,28 +245,25 @@ describe('mergePathProfiles', () => {
     expect(result).toEqual(userProfiles);
   });
 
-  it('replaces built-in profile when user profile has same name with builtin: false', () => {
+  it('keeps a user profile with builtin: false as a plain user profile (no built-in to replace)', () => {
     const userProfiles: PathProfile[] = [
       { name: 'scripts-and-tests', paths: ['custom/**'], overrides: { excludeFromGate: true }, builtin: false },
     ];
     const result = mergePathProfiles(userProfiles, undefined);
-    // Should have the user's scripts-and-tests, not the built-in
+    // No built-ins ship, so the user profile passes through unchanged.
     const profile = result?.find(p => p.name === 'scripts-and-tests');
     expect(profile?.paths).toEqual(['custom/**']);
     expect(profile?.overrides).toEqual({ excludeFromGate: true });
-    // Should not have any built-in profiles
     expect(result?.length).toBe(1);
   });
 
-  it('merges user profiles after built-ins (later wins)', () => {
+  it('returns user profiles when no built-ins ship', () => {
     const userProfiles: PathProfile[] = [
       { name: 'custom', paths: ['src/**'], overrides: { requireFunctionDocs: true } },
     ];
     const result = mergePathProfiles(userProfiles, undefined);
-    expect(result).toBeDefined();
-    // Built-in comes first, user profiles appended after
-    expect(result![0].name).toBe('scripts-and-tests');
-    expect(result![1].name).toBe('custom');
+    expect(result).toEqual(userProfiles);
+    expect(result![0].name).toBe('custom');
   });
 });
 
@@ -466,39 +463,16 @@ export function foo() { return something(); }
       .toEqual(v2.map((v: any) => v.symbol).sort());
   });
 
-  // Test 11: Built-in scripts-and-tests profile activates.
-  // A file in scripts/ matches the built-in profile and is gate-excluded.
-  it('built-in scripts-and-tests profile excludes from gate (Test 11)', async () => {
+  // Test 11: No compiled-in path profile ships (Directive K item 6).
+  // The built-in "scripts-and-tests" gate exemption was removed — a scripts/
+  // file's findings now gate like any other file's, absent an explicit user
+  // profile. Severity stays at its real `high`; nothing is gate-excluded.
+  it('scripts/ files are not gate-excluded by default (no compiled-in profile)', async () => {
     await mkdir(path.join(testDir, 'scripts'), { recursive: true });
 
     await writeFile(path.join(testDir, 'scripts', 'deploy.ts'), EXPORTED_FN_SRC, 'utf-8');
 
-    // Pass no user profiles — just the built-in.
-    const result = await runAudit({
-      projectRoot: testDir,
-      pathProfiles: BUILTIN_PATH_PROFILES,
-    });
-
-    const scriptsV = violationsFor(result, 'scripts/deploy.ts');
-    expect(scriptsV.length).toBeGreaterThan(0);
-
-    // Built-in excludes from gate; severity stays high
-    for (const v of scriptsV) {
-      expect(v.severity).toBe('high');
-      expect(v.profile).toBe('scripts-and-tests');
-      expect(v.gateExcluded).toBe(true);
-    }
-  });
-
-  // Test 12: Built-in scripts-and-tests profile is always active by default.
-  // A scripts/ file should be gate-excluded even without user-defined
-  // pathProfiles, because the built-in profile is always merged.
-  it('built-in profile excludes scripts violations from gate by default (Test 12)', async () => {
-    await mkdir(path.join(testDir, 'scripts'), { recursive: true });
-
-    await writeFile(path.join(testDir, 'scripts', 'deploy.ts'), EXPORTED_FN_SRC, 'utf-8');
-
-    // No pathProfiles — built-in scripts-and-tests still applies
+    // No user profiles, and no built-in profiles ship.
     const result = await runAudit({
       projectRoot: testDir,
     });
@@ -506,18 +480,16 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Built-in excludes from gate while severity stays at its real `high`
     for (const v of scriptsV) {
       expect(v.severity).toBe('high');
-      expect(v.profile).toBe('scripts-and-tests');
-      expect(v.gateExcluded).toBe(true);
+      expect(v.profile).toBeUndefined();
+      expect(v.gateExcluded).toBeUndefined();
     }
   });
 
-  // Test 12b: builtin: false disables built-in profiles.
-  // A scripts/ file should NOT be gate-excluded when built-in profiles are
-  // explicitly disabled.
-  it('builtin: false disables built-in scripts-and-tests exclusion (Test 12b)', async () => {
+  // Test 12b: `builtin: false` remains accepted config — now inert, since no
+  // built-in profile ships to disable.
+  it('builtin: false is accepted and leaves scripts/ files ungated (Test 12b)', async () => {
     await mkdir(path.join(testDir, 'scripts'), { recursive: true });
 
     await writeFile(path.join(testDir, 'scripts', 'deploy.ts'), EXPORTED_FN_SRC, 'utf-8');
@@ -530,8 +502,6 @@ export function foo() { return something(); }
     const scriptsV = violationsFor(result, 'scripts/deploy.ts');
     expect(scriptsV.length).toBeGreaterThan(0);
 
-    // Without built-in profile, severity stays at high and the file is NOT
-    // gate-excluded.
     for (const v of scriptsV) {
       expect(v.severity).toBe('high');
       expect(v.profile).toBeUndefined();

@@ -202,8 +202,12 @@ echo 'function add(a: number, b: number): number { return a + b; }' > fixtures/t
 CHANGED_OUT=""
 CHANGED_RC=0
 # Capture the exit code inside an `if` so a non-zero exit (the blocked-install
-# clear error) does not trip `set -e` before we can classify it.
-if CHANGED_OUT=$(node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1); then
+# clear error) does not trip `set -e` before we can classify it. The `changed`
+# command runs the real audit path, whose K10 cache GC would reap superseded
+# pinned-CLI copies and abandoned project indexes from the fallback OS cache, so
+# XDG_CACHE_HOME is pointed at the throwaway scratch dir (the same isolation
+# Guard 10 applies to the pinned-install fallback).
+if CHANGED_OUT=$(XDG_CACHE_HOME="$SCRATCH/cache" node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1); then
   CHANGED_RC=0
 else
   CHANGED_RC=$?
@@ -278,7 +282,7 @@ npm install "$TARBALL_PATH" --no-save --ignore-scripts >/dev/null 2>&1
 mkdir -p fixtures
 echo 'function add(a: number, b: number): number { return a + b; }' > fixtures/test.ts
 BLOCKED_RC=0
-if BLOCKED_OUT=$(node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1); then
+if BLOCKED_OUT=$(XDG_CACHE_HOME="$SCRATCH/cache" node node_modules/code-auditor-mcp/dist/cli.js changed --json --fail-on-zero-files fixtures/test.ts 2>&1); then
   BLOCKED_RC=0
 else
   BLOCKED_RC=$?

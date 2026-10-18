@@ -492,6 +492,13 @@ function mapRunRow(row: any): LedgerRunDetail {
   };
 }
 
+/**
+ * Fetch a single ledger run by its run ID.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param runId - The run ID to look up.
+ * @returns The mapped run detail, or null when no such run exists.
+ */
 export function getLedgerRun(db: SqliteDatabase, runId: string): LedgerRunDetail | null {
   const row = db.prepare(`SELECT ${RUN_DETAIL_SELECT} FROM findings_ledger_runs WHERE run_id = ?`).get(runId) as any;
   return row ? mapRunRow(row) : null;

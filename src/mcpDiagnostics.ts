@@ -79,10 +79,12 @@ export function logMcpInfo(phase: string, message: string, detail?: Record<strin
   logMcp('info', phase, message, detail);
 }
 
+/** Debug-level diagnostic — emitted only when CODE_AUDITOR_DEBUG=1|true. */
 export function logMcpDebug(phase: string, message: string, detail?: Record<string, unknown>): void {
   logMcp('debug', phase, message, detail);
 }
 
+/** Whether debug diagnostics are enabled (CODE_AUDITOR_DEBUG=1|true). */
 export function isMcpDebugEnabled(): boolean {
   return debugEnabled;
 }

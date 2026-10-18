@@ -50,16 +50,6 @@
       "severity": "severe"
     },
     {
-      "file": "src/accessibility.tsx",
-      "rule": "performance",
-      "severity": "high"
-    },
-    {
-      "file": "src/accessibility.tsx",
-      "rule": "performance",
-      "severity": "high"
-    },
-    {
       "file": "app-level",
       "rule": "no-error-boundary",
       "severity": "severe"
@@ -87,11 +77,6 @@
     {
       "file": "src/raw-element.tsx",
       "rule": "missing-props",
-      "severity": "high"
-    },
-    {
-      "file": "src/raw-element.tsx",
-      "rule": "performance",
       "severity": "high"
     },
     {
@@ -124,5 +109,5 @@
     "src/good-hook.tsx",
     "src/raw-element-near-miss.tsx"
   ],
-  "description": "React component analysis: 7 rules across 10 files, 21 expected violations. Complexity 12 triggers complexity + performance (memoization). Dashboard calls fetchUserData (no 'use' prefix) → hooks-naming. AlertBanner uses non-destructured props → missing-props. HeavyRenderer (complexity 6 > 5, requireMemoization) → performance (memoization). PhotoGallery (no alt) + ModalToggle (div onClick) → accessibility ×2. ModalToggle (div onClick) + AccessibleGallery (button onClick) → performance ×2 (inline-function findings, AST-derived per-element). App-level no-error-boundary (13 components, 0 boundaries) → no-error-boundary. raw-element: 4 raw <button> usages across LoginForm, SignupForm, DeleteButton, NavBar — exported Button wrapper auto-detected, minUsages=5 satisfied; plus 2 collateral raw-element (accessibility.tsx, performance.tsx). raw-element.tsx collateral: missing-props ×4 (non-PropTypes components), performance ×1 (DeleteButton inline onClick). Near-miss: good-hook.tsx (below complexity, no hooks), raw-element-near-miss.tsx (React.createElement with Button wrapper → no JSX nodes, no violations)."
+  "description": "React component analysis: 7 rules across 10 files, 18 expected violations. Complexity 12 triggers complexity + performance (memoization). Dashboard calls fetchUserData (no 'use' prefix) → hooks-naming. AlertBanner uses non-destructured props → missing-props. HeavyRenderer (complexity 6 > 5, requireMemoization) → performance (memoization). PhotoGallery (no alt) + ModalToggle (div onClick) → accessibility ×2. App-level no-error-boundary (13 components, 0 boundaries) → no-error-boundary. raw-element: 4 raw <button> usages across LoginForm, SignupForm, DeleteButton, NavBar — exported Button wrapper auto-detected, minUsages=5 satisfied; plus 2 collateral raw-element (accessibility.tsx, performance.tsx). raw-element.tsx collateral: missing-props ×4 (non-PropTypes components). Near-miss: good-hook.tsx (below complexity, no hooks), raw-element-near-miss.tsx (React.createElement with Button wrapper → no JSX nodes, no violations)."
 }

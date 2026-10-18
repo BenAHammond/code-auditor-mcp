@@ -79,9 +79,18 @@ type ClonePairNeeds = {
   readonly facts: readonly ['clone-pair-history'];
 };
 
-/** Re-homes `checkDuplicateImports`, grouping per file. */
+/** Re-homes `checkDuplicateImports`, grouping per file and per import *kind*.
+ *
+ *  A TypeScript `import type { X } from 'm'` beside `import { Y } from 'm'` is
+ *  NOT a duplicate: the type-only import is a separate declaration kind (it
+ *  erases at compile time and emits no runtime binding), so the two statements
+ *  never collide. Only repeats within one kind — two value imports, or two
+ *  type-only imports — of the same module are duplicates. */
 function detectDuplicateImport(facts: readonly ImportFact[]): Finding[] {
-  const byFile = new Map<string, Map<string, { line: number; column: number }[]>>();
+  const byFile = new Map<
+    string,
+    Map<string, { source: string; locs: { line: number; column: number }[] }>
+  >();
   for (const imp of facts) {
     // The `imports` fact is shared with the Go `import-organization`/`import-style`
     // rules (a mixed corpus concatenates both producers' output). This rule is
@@ -89,19 +98,22 @@ function detectDuplicateImport(facts: readonly ImportFact[]): Finding[] {
     // import), the TS producer leaves it absent, so `alias !== undefined` marks
     // a Go import and it is skipped here.
     if (imp.alias !== undefined) continue;
+    // The kind discriminant: a type-only import and a value import of the same
+    // module key differently, so they never read as duplicates of each other.
+    const key = imp.source + '\u0000' + (imp.isTypeOnly ? 'type' : 'value');
     let fileMap = byFile.get(imp.file);
     if (!fileMap) {
       fileMap = new Map();
       byFile.set(imp.file, fileMap);
     }
-    const locs = fileMap.get(imp.source) ?? [];
-    locs.push({ line: imp.line, column: imp.column });
-    fileMap.set(imp.source, locs);
+    const entry = fileMap.get(key) ?? { source: imp.source, locs: [] };
+    entry.locs.push({ line: imp.line, column: imp.column });
+    fileMap.set(key, entry);
   }
 
   const findings: Finding[] = [];
   for (const [file, fileMap] of byFile) {
-    for (const [source, locs] of fileMap) {
+    for (const { source, locs } of fileMap.values()) {
       if (locs.length <= 1) continue;
       findings.push({
         ruleId: 'duplicate-import',
@@ -170,6 +182,7 @@ function detectDuplicateStringLiteral(facts: readonly StringLiteralFact[]): Find
   for (const lit of facts) {
     if (lit.value.length <= 10) continue; // non-trivial strings only
     if (isNameLiteral(lit.value)) continue; // a name (vocabulary/path), not a value
+    if (lit.isMarkupAttribute) continue; // markup attribute value, not factorable code
     let fileMap = byFile.get(lit.file);
     if (!fileMap) {
       fileMap = new Map();
@@ -656,18 +669,28 @@ function computePairFingerprint(original: CodeBlockBlock, block: CodeBlockBlock)
 /**
  * Seed the `dry_pair_history` rows the legacy `createDryVisitor` accumulated,
  * from the phase `code-block` fact. This re-homes the pair half of the legacy
- * `analyzeAST` — per-file filter → dedupe → compare — over the projected data,
- * and writes the *legacy* gates:
+ * `analyzeAST` — per-file filter → dedupe → compare — over the projected data:
  *
  *   - exact-duplicate pairs (`dry/duplicate`, similarity 1.0) always seed;
- *   - structural pairs (`dry/structural-similarity`) seed only when
- *     `checkStructuralSimilarity` is true, with the legacy bare-token-set Jaccard
- *     (not the migrated rule's bigram) and the legacy `similarityThreshold`.
+ *   - structural pairs (`dry/structural-similarity`) also always seed, with the
+ *     legacy bare-token-set Jaccard (not the migrated rule's bigram) and the
+ *     legacy `similarityThreshold`.
+ *
+ * The legacy `checkStructuralSimilarity` gate is NOT re-homed here. §10 made
+ * config *tune* similarity, never *select* which pairs the divergence tracker
+ * sees, and the migrated `dry/structural-similarity` rule already runs
+ * unconditionally — so the write must too. A pair that is only ever
+ * structurally similar (never an exact duplicate) still has to produce a
+ * similarity series, or `dry/diverging-clone` can never observe a decline:
+ * exact-duplicate pairs are pinned at 1.0 and either stay 1.0 or drop out of
+ * the seed entirely once they stop being exact, so the structural arm is the
+ * only source of the sub-1.0 rows a decline is made of.
  *
  * The three block *rules* re-apply `minLineThreshold`/`similarityThreshold` in
  * `detectExactDuplicates`/`detectStructuralDuplicates`; the seed repeats the
  * same per-file filter/dedupe so the written `(fingerprint, contentHash, line)`
- * tuple is byte-identical to what the legacy visitor accumulated.
+ * tuple is byte-identical to what the legacy visitor accumulated (with its
+ * gate on).
  *
  * @param codeBlocks - The assembled `code-block` corpus fact.
  * @param config - The default-merged dry config (the rule's `resolveBlockConfig`).
@@ -716,18 +739,19 @@ export function seedDryPairs(codeBlocks: readonly CodeBlockFact[], config: DryBl
       }
     }
 
-    // Structural similarity — legacy-gated, bare-token-set Jaccard.
-    if (config.checkStructuralSimilarity) {
-      for (let i = 0; i < deduped.length; i++) {
-        const original = deduped[i];
-        for (let j = i + 1; j < deduped.length; j++) {
-          const block = deduped[j];
-          if (original.hash === block.hash) continue;
-          if (spansOverlap(original, block)) continue;
-          const similarity = computeBareTokenJaccard(original.structuralSkeleton, block.structuralSkeleton);
-          if (similarity < threshold) continue;
-          seed(original, block, similarity, 'dry/structural-similarity');
-        }
+    // Structural similarity — bare-token-set Jaccard, seeded unconditionally
+    // (§10 removed `checkStructuralSimilarity` as a select-gate; the migrated
+    // rule runs unconditionally, and the divergence tracker needs this arm's
+    // sub-1.0 rows to ever observe a decline).
+    for (let i = 0; i < deduped.length; i++) {
+      const original = deduped[i];
+      for (let j = i + 1; j < deduped.length; j++) {
+        const block = deduped[j];
+        if (original.hash === block.hash) continue;
+        if (spansOverlap(original, block)) continue;
+        const similarity = computeBareTokenJaccard(original.structuralSkeleton, block.structuralSkeleton);
+        if (similarity < threshold) continue;
+        seed(original, block, similarity, 'dry/structural-similarity');
       }
     }
   }

@@ -721,7 +721,13 @@ describe('findTableReferences — PRAGMA/VACUUM is unreadable, not "no tables" (
     expect(v[0].file).toBe('src/a.ts');
     expect(v[0].line).toBe(3);
     expect(v[0].message).toContain('cannot be parsed');
-    expect(v[0].details).toEqual({ sql: 'PRAGMA table_info(stadium_builds)', reason: 'Expected ...', kind: 'parse-failure' });
+    expect(v[0].details).toEqual({
+      sql: 'PRAGMA table_info(stadium_builds)',
+      reason: 'Expected ...',
+      kind: 'parse-failure',
+      cause: 'parse-failure',
+      affectedRules: ['unknown-table', 'stale-table-reference', 'table-naming-convention'],
+    });
   });
 
   it('checkUnparseableSql builds a dialect-undetermined cannot-fire diagnostic naming the reason', () => {
@@ -732,6 +738,12 @@ describe('findTableReferences — PRAGMA/VACUUM is unreadable, not "no tables" (
     expect(v).toHaveLength(1);
     expect(v[0].kind).toBe('cannot-fire');
     expect(v[0].message).toContain('dialect undetermined');
-    expect(v[0].details).toEqual({ sql: 'PRAGMA table_info(stadium_builds)', reason: 'dialect undetermined (no database driver in package.json or wrangler.toml)', kind: 'dialect-undetermined' });
+    expect(v[0].details).toEqual({
+      sql: 'PRAGMA table_info(stadium_builds)',
+      reason: 'dialect undetermined (no database driver in package.json or wrangler.toml)',
+      kind: 'dialect-undetermined',
+      cause: 'dialect-undetermined',
+      affectedRules: ['unknown-table', 'stale-table-reference', 'table-naming-convention'],
+    });
   });
 });

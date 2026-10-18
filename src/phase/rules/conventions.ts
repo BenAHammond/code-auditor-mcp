@@ -159,12 +159,16 @@ function detectErrorHandling(findings: Finding[], facts: readonly FunctionIndexF
     if (!shape) continue; // no error handling → skip
     if (shape === conv.pattern) continue; // matches convention
 
-    const pct = Math.round(conv.confidence * 100);
+    // Name the population explicitly: `support`/`total_cases` are the dominant
+    // shape's count and the count of all functions-with-error-handling in this
+    // directory (`detectErrorHandlingShape` non-null). A bare `confidence`
+    // percentage would be computed over exactly that filtered population — an
+    // opaque figure the reader can't size — so the raw counts stand in its place.
     findings.push({
       ruleId: 'conventions/error-handling',
       severity: 'high',
       message:
-        `${pct}% of error-handling functions in \`${directory}/\` use ` +
+        `${conv.support} of ${conv.total_cases} error-handling functions in \`${directory}/\` use ` +
         `\`${conv.pattern}\` — this function uses \`${shape}\`${exemplarRef(conv)}`,
       file: fact.file,
       line: fact.line,

@@ -113,6 +113,11 @@ func TestProcessOrder(t *testing.T) {
 // would silently exempt both files and the guard would assert against nothing.
 const outDir = mkdtempSync(join(tmpdir(), 'ca-verify-langs-out-'));
 const fixtureDir = mkdtempSync(join(tmpdir(), 'ca-verify-langs-src-'));
+// Phase A runs the real audit path, which writes its index to the fallback OS
+// cache and (with the K10 cache GC wired in) would reap superseded pinned-CLI
+// copies and abandoned project indexes there. Point XDG_CACHE_HOME at a throwaway
+// dir so the audit never touches the operator's real cache.
+const cacheDir = mkdtempSync(join(tmpdir(), 'ca-verify-langs-cache-'));
 writeFileSync(join(fixtureDir, 'main.go'), GO_SOURCE);
 writeFileSync(join(fixtureDir, 'sample_test.go'), GO_TEST_SOURCE);
 writeFileSync(join(fixtureDir, 'index.ts'), TS_SOURCE);
@@ -122,6 +127,7 @@ let report;
 try {
   execFileSync('node', ['--expose-gc', CLI, 'audit', '--path', fixtureDir, '-f', 'json', '-o', outDir], {
     stdio: 'pipe',
+    env: { ...process.env, XDG_CACHE_HOME: cacheDir },
   });
   report = JSON.parse(readFileSync(join(outDir, 'audit-report.json'), 'utf8'));
 } catch (err) {
@@ -226,6 +232,7 @@ console.log('');
 // Clean up all temp dirs before asserting.
 rmSync(outDir, { recursive: true, force: true });
 rmSync(dataDir, { recursive: true, force: true });
+rmSync(cacheDir, { recursive: true, force: true });
 
 const failures = [];
 

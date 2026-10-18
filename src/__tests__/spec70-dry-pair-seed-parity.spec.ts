@@ -10,6 +10,13 @@
  * and, load-bearing, the legacy **bare-token-set** Jaccard for the structural
  * arm (the migrated `dry/structural-similarity` rule uses a bigram Jaccard, a
  * deliberate divergence that the *write* must not inherit).
+ *
+ * One §10 divergence is now pinned here too: `seedDryPairs` seeds structural
+ * pairs *unconditionally* (the `checkStructuralSimilarity` gate was removed as
+ * a select-gate so `dry/diverging-clone` can observe a similarity decline),
+ * whereas the legacy analyzer still gates its structural arm on that flag. The
+ * "off" test below therefore asserts `legacy.length === 0` but `seeded.length
+ * === 1` — the write is liveness-correct where the legacy reader is gated.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -118,7 +125,7 @@ describe('Spec 70 dry-pair seed parity (seedDryPairs === legacy UniversalDRYAnal
     expect(seeded.map(key).sort()).toEqual(legacy.map(key).sort());
   });
 
-  it('does not seed a structural pair when checkStructuralSimilarity is off (legacy gate)', async () => {
+  it('seeds a structural pair unconditionally when checkStructuralSimilarity is off (legacy gate removed)', async () => {
     const source = [
       'function process(rows) {',
       '  for (const row of rows) {',
@@ -140,9 +147,13 @@ describe('Spec 70 dry-pair seed parity (seedDryPairs === legacy UniversalDRYAnal
       checkStructuralSimilarity: false,
       checkExpressionSimilarity: false,
     });
-    // No exact duplicate (different identifiers) and no structural seed (gate off).
+    // No exact duplicate (different identifiers). The legacy analyzer still gates
+    // its structural arm on the flag (0 rows), but the migrated seed is
+    // unconditional (1 structural pair) — §10 removed the gate so
+    // `dry/diverging-clone` can observe a decline.
     expect(legacy.length).toBe(0);
-    expect(seeded.length).toBe(0);
+    expect(seeded.length).toBe(1);
+    expect(seeded[0].rule).toBe('dry/structural-similarity');
   });
 
   it('does not compare blocks across files (per-file seed, mirroring analyzeAST)', async () => {

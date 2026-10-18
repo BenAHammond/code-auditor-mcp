@@ -2,12 +2,12 @@
  * Spec 44 R1 reason 7 — `path profile excluded`.
  *
  * `excludeFromAnalysis` is the analysis-time sibling of `excludeFromGate`.
- * No built-in profile sets it (Spec 36 R4's scripts-and-tests only marks
- * violations gate-excluded), so reason 7 has no live site on the four corpora —
- * it ships "written but never run" unless this fixture exercises it. This test
- * is the sole live exercise of the branch: a user path profile opts a matching
- * file out of analysis entirely, and the file is recorded `path profile
- * excluded` rather than analyzed.
+ * No built-in profile sets it (and no built-in profile ships at all — the
+ * compiled-in "scripts-and-tests" gate exemption was removed), so reason 7 has
+ * no live site on the four corpora — it ships "written but never run" unless
+ * this fixture exercises it. This test is the sole live exercise of the branch:
+ * a user path profile opts a matching file out of analysis entirely, and the
+ * file is recorded `path profile excluded` rather than analyzed.
  */
 import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, writeFile, mkdir, rm } from 'fs/promises';

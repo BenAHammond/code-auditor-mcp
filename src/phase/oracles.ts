@@ -382,6 +382,13 @@ export function countGoPackageBindings(file: ParsedFile): number {
  *  measure nothing). */
 const ORM_BUILDER_CALL_RE = /\b(?:pgTable|mysqlTable|sqliteTable)\s*\(/g;
 
+/**
+ * Upper-bound oracle: count ORM-builder (`pgTable`/`mysqlTable`/`sqliteTable`)
+ * call sites off the source text — a superset of the producer's emitted bindings.
+ *
+ * @param file The parsed file to count over.
+ * @returns The number of ORM-builder call sites.
+ */
 export function countSchemaObjects(file: ParsedFile): number {
   return [...file.source.matchAll(ORM_BUILDER_CALL_RE)].length;
 }
@@ -401,6 +408,13 @@ export function countSchemaObjects(file: ParsedFile): number {
 const DDL_HEADER_RE =
   /\b(?:CREATE|DROP)\s+(?:VIRTUAL\s+)?TABLE\b|\bALTER\s+TABLE\b[^;]*?\bRENAME\s+TO\b/gi;
 
+/**
+ * Upper-bound oracle: count DDL op-producing statement headers (CREATE/DROP TABLE
+ * and `ALTER TABLE … RENAME TO`) — a superset of the producer's emitted ops.
+ *
+ * @param file The parsed file to count over.
+ * @returns The number of DDL op headers.
+ */
 export function countDdlOps(file: ParsedFile): number {
   return [...file.source.matchAll(DDL_HEADER_RE)].length;
 }
@@ -468,6 +482,13 @@ export const countLoopQueries = countNodeTypes([
  *  candidate count. Residual = safe/parameterized query/execute calls. */
 const DYNAMIC_SQL_CALL_RE = /\b(?:query|execute)\s*\(/g;
 
+/**
+ * Upper-bound oracle: count `query(`/`execute(` call sites off the source text —
+ * a superset of the producer's dangerous-SQL candidates.
+ *
+ * @param file The parsed file to count over.
+ * @returns The number of dynamic-SQL call sites.
+ */
 export function countDynamicSql(file: ParsedFile): number {
   return [...file.source.matchAll(DYNAMIC_SQL_CALL_RE)].length;
 }
@@ -481,6 +502,13 @@ export function countDynamicSql(file: ParsedFile): number {
  *  (which the producer strips) + the DB-context gate the producer applies. */
 const ALL_MEMBER_CALLS_RE = /\.\w+\s*\(/g;
 
+/**
+ * Upper-bound oracle: count member-call sites plus SQL keyword occurrences — two
+ * coarse supersets of the producer's located query-site scan.
+ *
+ * @param file The parsed file to count over.
+ * @returns The member-call count plus the SQL-keyword occurrence count.
+ */
 export function countQuerySites(file: ParsedFile): number {
   const calls = (file.source.match(ALL_MEMBER_CALLS_RE) || []).length;
   return calls + countSqlKeywordOccurrences(file.source);

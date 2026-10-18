@@ -93,16 +93,16 @@ describe('computeEffectiveConfig — source attribution (Spec 38 R1)', () => {
     expect(key.differsFromDefault).toBe(true);
   });
 
-  it('resolves built-in profiles as `builtin:` source', () => {
+  it('resolves a user path profile with excludeFromGate', () => {
     const result = computeEffectiveConfig({
       filePath: `${ROOT}/scripts/hook.sh`,
       projectRoot: ROOT,
       pathProfiles: [
-        { name: 'scripts-and-tests', paths: ['scripts/**'], overrides: { excludeFromGate: true } },
+        { name: 'scripts', paths: ['scripts/**'], overrides: { excludeFromGate: true } },
       ],
     });
 
-    expect(result.matchedProfiles).toEqual(['scripts-and-tests']);
+    expect(result.matchedProfiles).toEqual(['scripts']);
     expect(result.excludeFromGate).toBe(true);
   });
 

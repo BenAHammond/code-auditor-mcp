@@ -190,6 +190,13 @@ async function main(): Promise<number> {
   initializeLanguages();
   await initParsers();
 
+  // The bench runs the real audit path in-process (via `runAudit`), whose K10
+  // cache GC would reap superseded pinned-CLI copies and abandoned project indexes
+  // from the fallback OS cache. Point XDG_CACHE_HOME at a throwaway dir so the run
+  // never touches the operator's real cache (mirrors verify:daemon-smoke's isolation).
+  const cacheDir = await mkdtemp(join(tmpdir(), 'ca-bench-cache-'));
+  process.env.XDG_CACHE_HOME = cacheDir;
+
   const corpora = (await readdirSafe(CORPUS_ROOT)).filter((d) =>
     // Only dirs carrying an expected.json participate.
     true,
@@ -230,6 +237,7 @@ async function main(): Promise<number> {
 
   console.log(lines.join('\n'));
   console.log(`\nTotal drift lines: ${totalDrift}`);
+  await rm(cacheDir, { recursive: true, force: true });
   return totalDrift > 0 ? 1 : 0;
 }
 

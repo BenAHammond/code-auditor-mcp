@@ -111,6 +111,14 @@ export interface ImportInfo {
   source: string;
   specifiers: ImportSpecifier[];
   location: SourceLocation;
+  /**
+   * True for a TypeScript `import type …` statement (the `type` keyword sits on
+   * the import itself). A type-only import is a separate declaration kind — it
+   * erases at compile time and emits no runtime binding — so it is never a
+   * duplicate of a value import of the same module. Go has no type-only imports
+   * and leaves this absent.
+   */
+  isTypeOnly?: boolean;
 }
 
 /**

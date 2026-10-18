@@ -447,39 +447,20 @@ export const DEFAULT_ANALYZER_CONFIGS = {
 /**
  * Built-in path profiles shipped with the tool.
  *
- * "scripts-and-tests" excludes scripts, tests, and test fixtures from the
- * blocking gate (Spec 36 R4) — grounded in the Spec 11 triage numbers showing
- * these directories produce noise, not signal. Findings still report at their
- * real severity; the gate simply does not block on them. This replaced the
- * `severityCap` soften-in-place mechanism, which made findings invisible by
- * capping them to "suggestion".
+ * Empty by design. The "scripts-and-tests" profile that excluded scripts,
+ * tests, and fixtures from the blocking gate (Spec 36 R4) is removed: a
+ * compiled-in glob list that marks `gateExcluded: true` is a hand-maintained
+ * exemption list baked into the binary — the same defect as a suppression
+ * file, just shipped instead of written per project. A script with a hardcoded
+ * connection string or a fixture with dynamic SQL gates like any other file;
+ * teams that want an opt-out declare it explicitly in their own
+ * `.codeauditor.json` as a user path profile.
  *
- * Disable entirely via `"builtin": false` in .codeauditor.json.
- * Replace a specific built-in via a user profile with the same name
- * and `"builtin": false`.
+ * The `builtin` config key and the merge logic below remain as the seam for a
+ * future built-in profile; today there are none, so `builtin: false` and the
+ * built-in name-replacement rules are inert.
  */
-export const BUILTIN_PATH_PROFILES: PathProfile[] = [
-  {
-    name: 'scripts-and-tests',
-    paths: [
-      'scripts/**',
-      'tests/**',
-      'test/**',
-      '__tests__/**',
-      'fixtures/**',
-      // Type-test suites use their own directory and extension conventions.
-      // They exercise types, not behavior — a hardcoded connection string or
-      // dynamic SQL in a `.test-d.ts`/`.tst.ts` file is the file doing its job.
-      'test-tsd/**',
-      'test-tstyche/**',
-      '**/*.test-d.ts',
-      '**/*.tst.ts',
-      '*.test.*',
-      '*.spec.*',
-    ],
-    overrides: { excludeFromGate: true },
-  },
-];
+export const BUILTIN_PATH_PROFILES: PathProfile[] = [];
 
 /**
  * Merge built-in path profiles with user-configured profiles.

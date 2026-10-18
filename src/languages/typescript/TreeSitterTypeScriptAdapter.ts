@@ -658,10 +658,20 @@ class TsExtraction extends TsNameDocumentation {
       this.collectImportSpecifiers(child, specifiers);
     }
 
+    // `import type { X } from '…'` puts an anonymous `type` keyword on the import
+    // statement itself (distinct from `import { type X }`, whose `type` lives on the
+    // specifier). A type-only import is a separate declaration kind — it erases at
+    // compile time — so it must never read as a duplicate of a value import of the
+    // same module.
+    const isTypeOnly = node.children.some(
+      (child) => !child.isNamed && child.type === 'type',
+    );
+
     return {
       source,
       specifiers,
       location: toSourceLocation(node),
+      isTypeOnly,
     };
   }
 
@@ -1637,19 +1647,27 @@ class TsConstantResolution extends TsDynamicStringConstruction {
         // static array literal (all elements static ⇒ all tuple positions static).
         const isDestructured = left && left.type === 'array_pattern'
           && (left.namedChildren ?? []).some((c: TreeSitterNode) => c.type === 'identifier' && c.text === idName);
-        if ((isBare || isDestructured) && right && right.type === 'identifier') {
-          const iterName = right.text;
-          const iterDecl = this.resolveDeclaration(scopeRoot, enclosing, ast, iterName);
-          if (iterDecl) {
-            const iterRaw = getRawNode(iterDecl);
-            const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
-            const iterLine = iterDecl.location.start.line;
-            const iterReassigned = this.hasReassignment(scopeRoot, iterName, iterLine)
-              || (enclosing && enclosing !== ast.root ? this.hasReassignment(ast.root, iterName, iterLine) : false);
-            if (!iterReassigned && this.isStaticValueNode(iterValue)) {
-              const initText = iterValue ? sourceCode.slice(iterValue.startIndex, iterValue.endIndex).trim() : '';
-              return { initText, isStatic: true, declLine: iterDecl.location.start.line };
+        if (isBare || isDestructured) {
+          if (right && right.type === 'identifier') {
+            const iterName = right.text;
+            const iterDecl = this.resolveDeclaration(scopeRoot, enclosing, ast, iterName);
+            if (iterDecl) {
+              const iterRaw = getRawNode(iterDecl);
+              const iterValue = (iterRaw as any).childForFieldName?.('value') as TreeSitterNode | null;
+              const iterLine = iterDecl.location.start.line;
+              const iterReassigned = this.hasReassignment(scopeRoot, iterName, iterLine)
+                || (enclosing && enclosing !== ast.root ? this.hasReassignment(ast.root, iterName, iterLine) : false);
+              if (!iterReassigned && this.isStaticValueNode(iterValue)) {
+                const initText = iterValue ? sourceCode.slice(iterValue.startIndex, iterValue.endIndex).trim() : '';
+                return { initText, isStatic: true, declLine: iterDecl.location.start.line };
+              }
             }
+          } else if (right && this.isStaticValueNode(right)) {
+            // Inline literal iterable: `for (const t of ['a', 'b'])`.  Every
+            // possible loop value is a compile-time constant, so the loop
+            // variable can never carry attacker data into a `${…}` substitution.
+            const initText = sourceCode.slice(right.startIndex, right.endIndex).trim();
+            return { initText, isStatic: true, declLine: identifierNode.location.start.line };
           }
         }
         break;
@@ -1761,6 +1779,79 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     return guardLine;
   }
 
+  /** Walk `scopeRoot` for the first `if (!/regex/.test(x)) throw` (or the
+   *  `=== false` / `!== true` variants) that validates `idText` against a
+   *  literal regex whitelist and precedes the use at `idRaw`; return that
+   *  statement's line, or -1.  The negative-test-then-throw is the inline
+   *  analogue of a `validateX(x)` guard call: execution past the throw proves
+   *  `x` matched the whitelist, so `x` cannot carry attacker data into a
+   *  `${…}` substitution.  This is exactly what `findGuardLine` misses — it
+   *  only recognises guard *calls*, not a bare `!/regex/.test(x)` throw. */
+  protected findRegexValidationThrowLine(
+    scopeRoot: ASTNode,
+    idRaw: TreeSitterNode,
+    idText: string,
+  ): number {
+    let line = -1;
+    this.walk(scopeRoot, (node) => {
+      if (line !== -1) return;
+      const raw = getRawNode(node);
+      if (raw.type !== 'if_statement') return;
+      if (raw.startIndex >= idRaw.startIndex) return;
+      if (!this.isRegexWhitelistThrow(raw, idText)) return;
+      line = node.location.start.line;
+    });
+    return line;
+  }
+
+  /** True when `ifRaw` is a validating-throw: its consequence throws, and its
+   *  condition is `!/regex/.test(x)` (or `regex.test(x) === false` /
+   *  `regex.test(x) !== true`) where `regex` is a literal and `x` is `idText`. */
+  protected isRegexWhitelistThrow(ifRaw: TreeSitterNode, idText: string): boolean {
+    const consequence = (ifRaw as any).childForFieldName?.('consequence') as TreeSitterNode | null;
+    if (!consequence) return false;
+    const throws = consequence.type === 'throw_statement'
+      || (consequence.type === 'statement_block'
+        && (consequence.namedChildren ?? []).some((c: TreeSitterNode) => c.type === 'throw_statement'));
+    if (!throws) return false;
+
+    let cond = (ifRaw as any).childForFieldName?.('condition') as TreeSitterNode | null;
+    if (!cond) return false;
+    while (cond.type === 'parenthesized_expression') {
+      const inner = cond.namedChild(0) as TreeSitterNode | null;
+      if (!inner) return false;
+      cond = inner;
+    }
+
+    let testCall: TreeSitterNode | null = null;
+    if (cond.type === 'unary_expression') {
+      const op = (cond as any).childForFieldName?.('operator') as TreeSitterNode | null;
+      if (!op || op.text !== '!') return false;
+      testCall = (cond as any).childForFieldName?.('argument') as TreeSitterNode | null;
+    } else if (cond.type === 'binary_expression') {
+      const op = (cond as any).childForFieldName?.('operator') as TreeSitterNode | null;
+      const right = (cond as any).childForFieldName?.('right') as TreeSitterNode | null;
+      const left = (cond as any).childForFieldName?.('left') as TreeSitterNode | null;
+      if (!op || !right || !left) return false;
+      const failOnFalse = right.type === 'false' && op.text === '===';
+      const failOnTrue = right.type === 'true' && op.text === '!==';
+      if (!failOnFalse && !failOnTrue) return false;
+      testCall = left;
+    } else {
+      return false;
+    }
+
+    if (!testCall || testCall.type !== 'call_expression') return false;
+    const fn = (testCall as any).childForFieldName?.('function') as TreeSitterNode | null;
+    if (!fn || fn.type !== 'member_expression') return false;
+    const prop = (fn as any).childForFieldName?.('property') as TreeSitterNode | null;
+    const obj = (fn as any).childForFieldName?.('object') as TreeSitterNode | null;
+    if (!prop || !obj || prop.text !== 'test' || obj.type !== 'regex') return false;
+    const args = (testCall as any).childForFieldName?.('arguments') as TreeSitterNode | null;
+    const first = args?.namedChildren?.[0] ?? null;
+    return first != null && first.type === 'identifier' && first.text === idText;
+  }
+
   /** True when the identifier names the enclosing function's parameter AND a
    *  guard call (assert/validate/check/ensure/guard-prefixed) is invoked on it
    *  before its use.  Guards throw on invalid input, so a parameter that has
@@ -1772,11 +1863,12 @@ class TsConstantResolution extends TsDynamicStringConstruction {
     if (!enclosing || enclosing === ast.root) return false;
     if (!this.getParamNames(enclosing).includes(paramName)) return false;
 
-    return this.findGuardLine(
+    if (this.findGuardLine(
       enclosing,
       idRaw,
       (first) => first.type === 'identifier' && first.text === paramName,
-    ) !== -1;
+    ) !== -1) return true;
+    return this.findRegexValidationThrowLine(enclosing, idRaw, paramName) !== -1;
   }
 
   /** True when the member expression names a class field (`this.X`) that a
@@ -1844,9 +1936,13 @@ class TsConstantResolution extends TsDynamicStringConstruction {
       idRaw,
       (first) => first.type === 'identifier' && first.text === name,
     );
-    if (guardLine === -1) return false;
+    const regexLine = this.findRegexValidationThrowLine(scopeRoot, idRaw, name);
+    const effective = guardLine === -1
+      ? regexLine
+      : (regexLine === -1 ? guardLine : Math.min(guardLine, regexLine));
+    if (effective === -1) return false;
     // A guard on an old value does not protect a later reassignment.
-    return !this.hasReassignment(scopeRoot, name, guardLine);
+    return !this.hasReassignment(scopeRoot, name, effective);
   }
 }
 

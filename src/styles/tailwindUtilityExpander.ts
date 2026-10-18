@@ -464,6 +464,10 @@ export function getTailwindExpander(): TailwindUtilityExpander {
   return _instance;
 }
 
+/**
+ * Drop the cached singleton so the next getTailwindExpander() re-reads the
+ * utility map from disk — used by tests to reset between config mutations.
+ */
 export function resetTailwindExpander(): void {
   _instance = null;
 }

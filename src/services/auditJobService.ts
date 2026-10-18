@@ -105,6 +105,14 @@ export function createAuditJob(
   return toAuditJobRecord(getLedgerRun(db, runId)!);
 }
 
+/**
+ * Fetch an audit job by run ID, translating the underlying ledger run to the job
+ * shape.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param jobId - The job (run) ID to fetch.
+ * @returns The job record, or undefined when the job is not found.
+ */
 export function getAuditJob(db: SqliteDatabase, jobId: string): AuditJobRecord | undefined {
   const detail = getLedgerRun(db, jobId);
   return detail ? toAuditJobRecord(detail) : undefined;
@@ -137,6 +145,13 @@ export function patchAuditJob(
   return getAuditJob(db, jobId);
 }
 
+/**
+ * Patch a job's progress field; a no-op when the job is not found.
+ *
+ * @param db - The better-sqlite3 database handle.
+ * @param jobId - The job (run) ID to patch.
+ * @param progress - The progress payload to persist.
+ */
 export function setAuditJobProgress(db: SqliteDatabase, jobId: string, progress: AuditJobProgress): void {
   if (!getLedgerRun(db, jobId)) return;
   patchLedgerRun(db, jobId, { progressJson: JSON.stringify(progress) });

@@ -1183,6 +1183,10 @@ export function makeVisitorStatus(filesProcessed: number) {
   return { status: 'visitor-ran' as const, filesProcessed };
 }
 
+/**
+ * Canonical factory for a `reducer-ran` status — the reducer counterpart to
+ * makeVisitorStatus. Use it instead of hand-constructing the status discriminant.
+ */
 export function makeReducerStatus(factsConsumed: number) {
   return { status: 'reducer-ran' as const, factsConsumed };
 }

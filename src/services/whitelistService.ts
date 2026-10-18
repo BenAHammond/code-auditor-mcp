@@ -287,6 +287,13 @@ function matchesLibrary(dep: string, libs: readonly string[]): boolean {
 // Export singleton instance methods for convenience
 export const whitelistService = WhitelistService.getInstance();
 
+/**
+ * Query whitelist entries via the singleton service.
+ *
+ * @param type - Optional whitelist type to filter by.
+ * @param status - Optional status to filter by.
+ * @returns The matching whitelist entries.
+ */
 export async function getWhitelist(type?: WhitelistType, status?: WhitelistStatus) {
   return whitelistService.getWhitelist(type, status);
 }
@@ -309,14 +316,35 @@ export async function addWhitelistEntry(
   return whitelistService.addEntry(name, type, description, patterns);
 }
 
+/**
+ * Update a whitelist entry's status via the singleton service.
+ *
+ * @param name - The entry name to update.
+ * @param status - The new status.
+ * @returns The updated entry.
+ */
 export async function updateWhitelistStatus(name: string, status: WhitelistStatus) {
   return whitelistService.updateStatus(name, status);
 }
 
+/**
+ * Detect whitelist candidates from a project's package.json via the singleton
+ * service.
+ *
+ * @param projectPath - The project root to scan.
+ * @returns The detected candidates.
+ */
 export async function detectWhitelistCandidates(projectPath: string) {
   return whitelistService.detectFromPackageJson(projectPath);
 }
 
+/**
+ * Auto-populate the whitelist from a project's dependencies via the singleton
+ * service.
+ *
+ * @param projectPath - The project root to scan.
+ * @returns The populated entries.
+ */
 export async function autoPopulateWhitelist(projectPath: string) {
   return whitelistService.autoPopulateWhitelist(projectPath);
 }

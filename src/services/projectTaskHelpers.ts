@@ -112,6 +112,13 @@ export function coerceSortOrder(value: unknown): number {
   return 0;
 }
 
+/**
+ * Read the stored sort order, coerced to a finite number (0 when absent or
+ * non-numeric — legacy docs may omit the field).
+ *
+ * @param doc - The stored project task document.
+ * @returns The sort order as a finite number.
+ */
 export function storedSortOrder(doc: ProjectTaskDocument): number {
   return coerceSortOrder(doc.sortOrder);
 }

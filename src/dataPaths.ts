@@ -101,8 +101,13 @@ export function resolveMcpDevLogPath(): string {
   return path.join(getFallbackCacheRoot(), 'logs', 'mcp-server.log');
 }
 
-/** OS-specific cache root (gitignored by convention, wiped by clean installs). */
-function getFallbackCacheRoot(): string {
+/**
+ * OS-specific cache root (gitignored by convention, wiped by clean installs).
+ * Honors XDG_CACHE_HOME first, then the per-platform default.
+ *
+ * @returns The fallback cache directory for the running platform.
+ */
+export function getFallbackCacheRoot(): string {
   const xdg = process.env.XDG_CACHE_HOME?.trim();
   if (xdg) {
     return path.join(path.resolve(xdg), 'code-auditor');
@@ -115,6 +120,20 @@ function getFallbackCacheRoot(): string {
     return path.join(local ? path.resolve(local) : os.homedir(), 'code-auditor', 'Cache');
   }
   return path.join(os.homedir(), '.cache', 'code-auditor');
+}
+
+/**
+ * Parent directory of the pinned-CLI runtime copies (`cli/<version>/`).
+ *
+ * Deliberately NOT `getFallbackCacheRoot()`: the marketplace hook (`hook-common.sh`)
+ * computes this path as `${XDG_CACHE_HOME:-$HOME/.cache}/code-auditor/cli`, so the
+ * warm target in `installer.ts` and the hook's last-resort install must agree on
+ * the *same* root or they would write to two different caches. Kept as the single
+ * source of truth so `warmPinnedCli` and cache GC can never drift from the shell.
+ */
+export function getPinnedCliRoot(): string {
+  const xdg = process.env.XDG_CACHE_HOME?.trim();
+  return path.join(xdg ? path.resolve(xdg) : path.join(os.homedir(), '.cache'), 'code-auditor', 'cli');
 }
 
 /**

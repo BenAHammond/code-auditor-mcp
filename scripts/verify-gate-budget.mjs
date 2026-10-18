@@ -30,8 +30,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 const CLI = resolve(process.cwd(), 'dist/cli.js');
 const REPRESENTATIVE_FILE = 'src/analyzers/universal/UniversalSOLIDAnalyzer.ts';
@@ -42,14 +43,20 @@ if (!existsSync(CLI)) {
 }
 
 function runGate() {
+  // The `changed` command runs the real audit path, whose K10 cache GC would reap
+  // superseded pinned-CLI copies and abandoned project indexes from the fallback
+  // OS cache. Point XDG_CACHE_HOME at a throwaway dir so this gate never touches
+  // the operator's real cache.
+  const cacheDir = mkdtempSync(join(tmpdir(), 'ca-gate-budget-cache-'));
   const result = spawnSync(
     'node',
     [CLI, 'changed', REPRESENTATIVE_FILE, '--json'],
     {
       encoding: 'utf-8',
-      env: { ...process.env, CODE_AUDITOR_RULE_TIMING: '1' },
+      env: { ...process.env, CODE_AUDITOR_RULE_TIMING: '1', XDG_CACHE_HOME: cacheDir },
     },
   );
+  rmSync(cacheDir, { recursive: true, force: true });
   if (result.error) {
     return { work: null, budget: null, stderr: '', error: result.error.message };
   }

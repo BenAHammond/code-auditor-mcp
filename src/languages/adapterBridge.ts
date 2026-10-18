@@ -254,26 +254,37 @@ const VARIABLE_TYPES = new Set([
   'variable_declaration', 'variable_declarator', 'lexical_declaration',
 ]);
 
+/**
+ * Whether `node` is any function-like node: function/generator declarations,
+ * function and arrow expressions, and method definitions. The single seam
+ * analyzers use instead of comparing `node.type` strings directly, so a
+ * tree-sitter grammar rename is absorbed here rather than at every call site.
+ */
 export function isFunctionNode(node: ASTNode): boolean {
   return FUNCTION_TYPES.has(node.type);
 }
 
+/** Whether `node` is a class declaration or class expression (tree-sitter `class`). */
 export function isClassNode(node: ASTNode): boolean {
   return CLASS_TYPES.has(node.type);
 }
 
+/** Whether `node` is an import statement/declaration. */
 export function isImportNode(node: ASTNode): boolean {
   return IMPORT_TYPES.has(node.type);
 }
 
+/** Whether `node` is one of the four loop kinds: `for`, `for…in`, `while`, `do`. */
 export function isLoopNode(node: ASTNode): boolean {
   return LOOP_TYPES.has(node.type);
 }
 
+/** Whether `node` branches: `if`, `switch`, ternary expression, or `switch` case. */
 export function isConditionalNode(node: ASTNode): boolean {
   return CONDITIONAL_TYPES.has(node.type);
 }
 
+/** Whether `node` is a variable declaration/declarator (incl. `let`/`const` lexical declarations). */
 export function isVariableNode(node: ASTNode): boolean {
   return VARIABLE_TYPES.has(node.type);
 }

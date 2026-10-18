@@ -30,13 +30,22 @@ export function extractStringLiterals(file: AstFile): StringLiteralFact[] {
   const nodes = file.adapter.findNodes(file.ast, {
     custom: (node) => node.type === 'string' || node.type === 'template_string',
   });
-  return nodes.map((node) => ({
-    file: file.file,
-    value: file.adapter.getNodeText(node, file.source),
-    line: node.location.start.line,
-    column: node.location.start.column,
-    enclosingFunction: functionIdentityLabel(
-      findEnclosingFunctionIdentity(node, file.adapter, file.file),
-    ),
-  }));
+  return nodes.map((node) => {
+    // A `string` node whose parent is a `jsx_attribute` is a markup attribute
+    // value (`fill="var(--fleece)"`), not a factorable code literal. `getParent`
+    // + `getNodeType` read the AST here, before it is gone. (A `template_string`
+    // can only appear in markup inside a `jsx_expression`, so it never qualifies.)
+    const parent = file.adapter.getParent(node);
+    const isMarkupAttribute = parent !== null && file.adapter.getNodeType(parent) === 'jsx_attribute';
+    return {
+      file: file.file,
+      value: file.adapter.getNodeText(node, file.source),
+      line: node.location.start.line,
+      column: node.location.start.column,
+      enclosingFunction: functionIdentityLabel(
+        findEnclosingFunctionIdentity(node, file.adapter, file.file),
+      ),
+      isMarkupAttribute,
+    };
+  });
 }

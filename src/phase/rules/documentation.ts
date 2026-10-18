@@ -244,7 +244,14 @@ const functionDocumentation: RuleDefinition<DocumentationNeeds> = {
       if (isExempt(f.file, cfg.exemptPatterns)) continue;
       if (f.isAnonymousOrCallback) continue;
       if (cfg.scope === 'public' && !f.isExported) continue;
-      if (f.lineCount < cfg.docsMinLines) continue;
+      // No `docsMinLines` size gate here. The rule's question is "is this
+      // function undocumented?", and a size floor answers the neighbouring
+      // question "is this function long enough to matter?" instead — it swallowed
+      // short-but-real exported functions (e.g. `hasRejectedTerm`, a 4-line
+      // set-membership predicate). Its siblings `class-documentation` and
+      // `method-documentation` have no size gate either; `docsMinLines` remains
+      // only in `tagEligibleItems`, where it floors the param/return *tag*
+      // completeness check on functions that already carry a substantive doc.
       if (isSubstantiveDoc(f.jsDoc || '')) continue;
       const reason = f.isExported
         ? `exported function '${f.name}' lacks a documentation comment`

@@ -184,6 +184,18 @@ function hasPropsValidation(component: ComponentMetadata): boolean {
 }
 
 /**
+ * True when a JSX tag name denotes an intrinsic DOM element rather than a React
+ * component. React's JSX transform treats a lowercase single identifier
+ * (`<button>`, `<div>`, `<img>`) as a DOM tag and any uppercase identifier or
+ * member expression (`<Button>`, `<Foo.Bar>`) as a component. Intrinsic elements
+ * are never memoized, which is the discriminant the inline-function-prop rule
+ * depends on.
+ */
+function isIntrinsicElement(tagName: string): boolean {
+  return /^[a-z][a-zA-Z0-9]*$/.test(tagName);
+}
+
+/**
  * Check for performance issues
  */
 function checkPerformanceIssues(
@@ -218,7 +230,15 @@ function checkPerformanceIssues(
   // not a bare identifier reference (`onClick={handleClick}`). Read from the
   // AST-derived element details, so commented-out JSX never counts and the
   // finding anchors to the `onClick` attribute's own line.
+  //
+  // The finding only holds when the *receiving* element is a memoized React
+  // component: an inline function creates a fresh reference each render, which
+  // defeats the receiver's memoization and forces a re-render. An intrinsic DOM
+  // element is never memoized, so `<button onClick={() => …}>` causes no such
+  // re-render and is excluded (the discriminant the old check lacked — it fired
+  // on any inline `onClick` regardless of receiver, 12/12 false on the fixture).
   const onClickInline = (component.jsxElementDetails ?? []).find(el =>
+    !isIntrinsicElement(el.tagName) &&
     el.attributes.some(a =>
       a.name === 'onClick' && (a.valueKind === 'arrow' || a.valueKind === 'function')));
   if (onClickInline) {

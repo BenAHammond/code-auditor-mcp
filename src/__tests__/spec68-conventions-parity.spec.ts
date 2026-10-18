@@ -340,3 +340,59 @@ describe('Spec 68 conventions parity (new analyze(ctx) === old UniversalConventi
     });
   });
 });
+
+describe('conventions/error-handling — names the population (Directive K item 5)', () => {
+  // The `confidence` figure the legacy message printed was the dominant shape's
+  // mode share over exactly the filtered population the rule itself defines —
+  // functions whose body `detectErrorHandlingShape` classifies. A bare "95%"
+  // over that population is an opaque figure a reader can't size. The message
+  // must name the population with the raw counts instead of a percentage.
+
+  const ERROR_CONV: MinedConvention = {
+    domain: 'error-handling',
+    rule_id: 'conventions/error-handling',
+    antecedent: null,
+    consequent: null,
+    pattern: 'try-catch',
+    directory: '/p/errors',
+    file_path: null,
+    line: null,
+    support: 2,
+    total_cases: 3,
+    confidence: 0.6667,
+    exemplar_file: '/p/errors/e1.ts',
+    exemplar_line: 10,
+  };
+
+  function errorFact(body: string): FunctionIndexFact {
+    return {
+      file: '/p/errors/e3.ts',
+      name: 'e3',
+      line: 30,
+      endLine: 30,
+      entityType: 'function',
+      componentType: null,
+      isExported: false,
+      complexity: 0,
+      body,
+      functionCalls: [],
+      usedImports: [],
+      language: 'typescript',
+    };
+  }
+
+  it('reports "2 of 3 error-handling functions", not a percentage', async () => {
+    // e3 uses `promise-catch` while the directory convention is `try-catch`.
+    const findings = await analyzeConventions(
+      [errorFact("{ return fetch('/x').catch((e) => null); }")],
+      [ERROR_CONV],
+      [],
+      [],
+    );
+    const eh = findings.filter((f) => f.ruleId === 'conventions/error-handling');
+    expect(eh.length).toBe(1);
+    expect(eh[0].message).toContain('2 of 3 error-handling functions');
+    expect(eh[0].message).toContain('`try-catch`');
+    expect(eh[0].message).not.toMatch(/\d+% of error-handling functions/);
+  });
+});

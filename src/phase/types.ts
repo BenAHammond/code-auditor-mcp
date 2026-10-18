@@ -355,6 +355,13 @@ export type ImportFact = {
   line: number;
   column: number;
   alias?: string | null;
+  /**
+   * True for a TypeScript `import type …` statement. A type-only import is a
+   * separate declaration kind (erases at compile time, no runtime binding), so
+   * `duplicate-import` groups on this and never counts a type-only import as a
+   * duplicate of a value import of the same module.
+   */
+  isTypeOnly?: boolean;
 };
 
 /**
@@ -447,6 +454,14 @@ export type ExportSymbolFact = {
  * (`functionIdentityLabel(findEnclosingFunctionIdentity(...))`) the producer
  * computes where the AST still lived; `hardcoded-connection` uses it for its
  * symbol. Top-level literals carry `'top-level'`.
+ *
+ * `isMarkupAttribute` is true when the literal is the direct value of a JSX/TSX
+ * attribute (`fill="var(--fleece)"`) — markup, not a factorable code literal. The
+ * producer computes it from the node's parent (`jsx_attribute`) where the AST
+ * still lives; `duplicate-string-literal` skips those, since an SVG/JSX attribute
+ * value repeated across markup is not extractable duplication. A string inside a
+ * JSX *expression* container (`fill={"var(--fleece)"}`) is a code literal and
+ * keeps `isMarkupAttribute: false`.
  */
 export type StringLiteralFact = {
   file: string;
@@ -454,6 +469,7 @@ export type StringLiteralFact = {
   line: number;
   column: number;
   enclosingFunction: string;
+  isMarkupAttribute: boolean;
 };
 
 /**

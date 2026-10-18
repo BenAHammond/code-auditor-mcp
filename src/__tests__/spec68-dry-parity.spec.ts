@@ -142,3 +142,115 @@ describe('Spec 68 dry parity (new analyze(ctx) === old checkDuplicateImports)', 
     expect(fresh.filter((f) => f.ruleId === 'duplicate-import')).toEqual([]);
   });
 });
+
+describe('duplicate-import — type-only discriminant (Directive K item 2)', () => {
+  // A TypeScript `import type { X } from 'm'` beside `import { Y } from 'm'` is
+  // NOT a duplicate: the type-only import erases at compile time and emits no
+  // runtime binding, so it is a separate declaration kind from the value import.
+  // This diverges from the legacy `checkDuplicateImports` (which keyed only on
+  // the module source), so these pin the new rule directly rather than via the
+  // parity helper above.
+
+  it('does NOT fire on a type-only import beside a value import of the same module', async () => {
+    const fresh = await runDrySlice([
+      {
+        path: 'mixed.tsx',
+        content: [
+          "import type { ReactNode } from 'react';",
+          "import { Component } from 'react';",
+          '',
+        ].join('\n'),
+      },
+    ], { checkImports: true });
+    expect(fresh.filter((f) => f.ruleId === 'duplicate-import')).toEqual([]);
+  });
+
+  it('still fires on two value imports of the same module', async () => {
+    const fresh = await runDrySlice([
+      {
+        path: 'v.ts',
+        content: [
+          "import { Component } from 'react';",
+          "import { useState } from 'react';",
+          '',
+        ].join('\n'),
+      },
+    ], { checkImports: true });
+    const dups = fresh.filter((f) => f.ruleId === 'duplicate-import');
+    expect(dups.length).toBe(1);
+    expect(dups[0]).toMatchObject({ symbol: 'react', message: 'Module "react" is imported 2 times' });
+  });
+
+  it('still fires on two type-only imports of the same module (same kind)', async () => {
+    const fresh = await runDrySlice([
+      {
+        path: 't.ts',
+        content: [
+          "import type { ReactNode } from 'react';",
+          "import type { FC } from 'react';",
+          '',
+        ].join('\n'),
+      },
+    ], { checkImports: true });
+    const dups = fresh.filter((f) => f.ruleId === 'duplicate-import');
+    expect(dups.length).toBe(1);
+    expect(dups[0]).toMatchObject({ symbol: 'react' });
+  });
+});
+
+describe('duplicate-string-literal — markup attribute discriminant (Directive K item 4)', () => {
+  // A `string` node whose parent is a `jsx_attribute` is a markup attribute value
+  // (`fill="var(--fleece)"`), not a factorable code literal: `duplicate-string-literal`
+  // must skip it. A string inside a JSX *expression* container (`fill={"var(--fleece)"}`)
+  // is a code literal and must still fire — the discriminant is "direct attribute
+  // value", not "any string under a JSX element".
+
+  async function dups(path: string, content: string): Promise<unknown[]> {
+    const fresh = await runDrySlice([{ path, content }]);
+    return fresh.filter((f) => f.ruleId === 'duplicate-string-literal');
+  }
+
+  it('does NOT fire on a bare SVG attribute value repeated across markup', async () => {
+    const content = [
+      'export function Icon() {',
+      '  return (',
+      '    <svg>',
+      '      <path fill="var(--fleece)" />',
+      '      <rect fill="var(--fleece)" />',
+      '      <circle fill="var(--fleece)" />',
+      '    </svg>',
+      '  );',
+      '}',
+      '',
+    ].join('\n');
+    expect(await dups('icon.tsx', content)).toEqual([]);
+  });
+
+  it('still fires on a duplicated code string literal', async () => {
+    const content = [
+      "export function a() { return 'var(--fleece)'; }",
+      "export function b() { return 'var(--fleece)'; }",
+      "export function c() { return 'var(--fleece)'; }",
+      '',
+    ].join('\n');
+    const found = await dups('code.ts', content);
+    expect(found.length).toBe(1);
+  });
+
+  it('still fires on a string inside a JSX expression container (a code literal)', async () => {
+    const content = [
+      'export function Icon() {',
+      '  return (',
+      '    <svg>',
+      '      <path fill={"var(--fleece)"} />',
+      '      <rect fill={"var(--fleece)"} />',
+      '      <circle fill={"var(--fleece)"} />',
+      '    </svg>',
+      '  );',
+      '}',
+      '',
+    ].join('\n');
+    const found = await dups('icon.tsx', content);
+    expect(found.length).toBe(1);
+  });
+});

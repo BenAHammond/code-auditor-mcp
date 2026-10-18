@@ -79,6 +79,28 @@ describe('Spec 69 §10 R4 — summary.byAnalyzer unproven-site count', () => {
   });
 });
 
+describe('K9 — per-rule unproven-site breakdown with cause', () => {
+  it('counts one unproven site against every affected rule, keyed by cause', () => {
+    const analyzerResults: Record<string, AnalyzerResult> = {
+      schema: emptyResult('schema'),
+    };
+    const unprovenSitesByRule = new Map<string, { count: number; causes: Map<string, number> }>([
+      ['unknown-table', { count: 2, causes: new Map([['unproven-receiver', 2]]) }],
+      ['stale-table-reference', { count: 2, causes: new Map([['unproven-receiver', 2]]) }],
+      ['sql-injection-risk', { count: 1, causes: new Map([['parse-failure', 1]]) }],
+    ]);
+    const summary = generateSummary(analyzerResults, 10, new Map([['schema', 2]]), unprovenSitesByRule);
+
+    expect(summary.unprovenSitesByRule['unknown-table']).toEqual({ count: 2, causes: { 'unproven-receiver': 2 } });
+    expect(summary.unprovenSitesByRule['sql-injection-risk']).toEqual({ count: 1, causes: { 'parse-failure': 1 } });
+  });
+
+  it('defaults to an empty per-rule map when none is passed', () => {
+    const summary = generateSummary({ schema: emptyResult('schema') }, 1);
+    expect(summary.unprovenSitesByRule).toEqual({});
+  });
+});
+
 describe('Spec 69 §10 R4 follow-up — headline coverage totals', () => {
   it('sums the per-analyzer unproven-site counts into a top-level total', () => {
     const analyzerResults: Record<string, AnalyzerResult> = {

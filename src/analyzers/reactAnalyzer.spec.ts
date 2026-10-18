@@ -101,6 +101,26 @@ describe('react performance — inline function props', () => {
     const perf = byRule(violations, 'performance');
     expect(perf.filter((v) => v.message?.includes('inline function')).length).toBe(0);
   });
+
+  it('does NOT flag an inline handler on an intrinsic element (never memoized)', async () => {
+    // An intrinsic DOM element is never a memoized component, so an inline
+    // function prop cannot force a re-render there — the finding only holds
+    // when the receiver is memoized. Before the memoized-receiver discriminant
+    // this fired 12/12 false on <button onClick={() => …}>.
+    const violations = await analyze(
+      `export function Card() {\n  return <button className="btn btn-ghost" onClick={() => { this.setState({ error: null }); navigate('/play'); }}>play</button>;\n}\n`,
+    );
+    const perf = byRule(violations, 'performance');
+    expect(perf.filter((v) => v.message?.includes('inline function')).length).toBe(0);
+  });
+
+  it('still flags an inline handler on a component reference (memoizable receiver)', async () => {
+    const violations = await analyze(
+      `export function Card() {\n  return <Button onClick={() => go()} />;\n}\n`,
+    );
+    const perf = byRule(violations, 'performance');
+    expect(perf.some((v) => v.message?.includes('inline function'))).toBe(true);
+  });
 });
 
 describe('react — comment-as-markup (JSX in comments never fires)', () => {

@@ -58,7 +58,7 @@ import { syncStyleIndex } from './styles/styleIndexer.js';
 
 import { CodeIndexDB } from './codeIndexDB.js';
 import { notifyLegacyIndexLocation } from './legacyIndexNotice.js';
-import { writeAuditToLedger, detectRunInput } from './ledger.js';
+import { gcStaleCacheDirsOnce } from './cacheGc.js';import { writeAuditToLedger, detectRunInput } from './ledger.js';
 
 // Pipeline imports (Spec 25 — pipeline replaces hand-rolled analyzer loop)
 import { runPipeline, makeVisitorStatus, getFilesProcessed, isVisitorStatus } from './pipeline.js';
@@ -231,8 +231,10 @@ async function resolveRunConfig(
     presets: resolvedPresets,
   });
 
-  // Always merge built-in path profiles — corpus audits and projects without
-  // .codeauditor.json must still get the built-in scripts-and-tests profile.
+  // Always merge built-in path profiles (none ship today — the compiled-in
+  // "scripts-and-tests" gate exemption was removed). This stays as the seam
+  // that would apply any future built-in profile to corpus audits and to
+  // projects without a .codeauditor.json.
   mergedOptions.pathProfiles = mergePathProfiles(
     mergedOptions.pathProfiles,
     (mergedOptions as any).builtin
@@ -1718,9 +1720,30 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
   // instrument (`schema`). This is the site-level `cannot-fire` surface that
   // `summary.byAnalyzer[].unprovenSites` carries per analyzer.
   const unprovenSitesByAnalyzer = new Map<string, number>();
+  // K9 — the same site-level `cannot-fire` surface, keyed by the *rule* each
+  // unproven site renders unreadable (from `details.affectedRules`) and the
+  // *cause* that produced it (`details.cause`). `byAnalyzer[].unprovenSites`
+  // answers "which analyzer produced these?"; this answers "which rule may have
+  // under-reported?" — the discriminant the raw 465-site total hid. One site
+  // affects every rule in its `affectedRules` list, so the per-rule `count` is
+  // the number of unproven sites that could have produced a finding under it.
+  const unprovenSitesByRule = new Map<string, { count: number; causes: Map<string, number> }>();
   for (const d of pipelineDiagnostics ?? []) {
     if (d.kind !== 'cannot-fire' || d.analyzerName !== 'schema') continue;
     unprovenSitesByAnalyzer.set(d.analyzerName, (unprovenSitesByAnalyzer.get(d.analyzerName) ?? 0) + 1);
+    const affectedRules = d.details?.affectedRules;
+    if (!Array.isArray(affectedRules)) continue;
+    const cause = typeof d.details?.cause === 'string' ? d.details.cause : 'unknown';
+    for (const rule of affectedRules) {
+      if (typeof rule !== 'string') continue;
+      let entry = unprovenSitesByRule.get(rule);
+      if (!entry) {
+        entry = { count: 0, causes: new Map() };
+        unprovenSitesByRule.set(rule, entry);
+      }
+      entry.count++;
+      entry.causes.set(cause, (entry.causes.get(cause) ?? 0) + 1);
+    }
   }
 
   // A bare `changed` scope that found no baseline to diff against (an empty
@@ -1738,7 +1761,7 @@ function buildAuditResult(inputs: FinalizeInputs): AuditResult {
       }]
     : [];
 
-  const summary = generateSummary(ordered, files.length, unprovenSitesByAnalyzer);
+  const summary = generateSummary(ordered, files.length, unprovenSitesByAnalyzer, unprovenSitesByRule);
 
   return {
     timestamp: new Date(),
@@ -1880,6 +1903,10 @@ export function createAuditRunner(options: AuditRunnerOptions = {}) {
     // `node_modules/.cache/code-auditor`) left by a pre-move build — reported once,
     // never deleted (see legacyIndexNotice.ts).
     notifyLegacyIndexLocation(root);
+    // Bound the growth of the tool's own fallback cache: superseded pinned-CLI
+    // copies and abandoned project indexes. Fire-and-forget, process-scoped, never
+    // touches a user CODE_AUDITOR_DATA_DIR or the consuming repo (see cacheGc.ts).
+    gcStaleCacheDirsOnce();
     // Spec 44 — file accounting accumulator, owned by the run. Threaded through
     // discovery (full `all` scope) and the pipeline (stage 1/2) so every touched
     // file lands in exactly one terminal state and the balance can be asserted.
@@ -2202,11 +2229,13 @@ export async function resolveFilesScope(
  * @param analyzerResults per-analyzer results, keyed by analyzer name
  * @param filesAnalyzed total number of files processed this run
  * @param unprovenSitesByAnalyzer per-analyzer count of unproven (cannot-fire) sites
+ * @param unprovenSitesByRule per-rule count + cause of unproven (cannot-fire) sites (K9)
  */
 export function generateSummary(
   analyzerResults: Record<string, AnalyzerResult>,
   filesAnalyzed: number,
   unprovenSitesByAnalyzer: ReadonlyMap<string, number> = new Map(),
+  unprovenSitesByRule: ReadonlyMap<string, { count: number; causes: ReadonlyMap<string, number> }> = new Map(),
 ) {
   let totalViolations = 0;
   let criticalIssues = 0;
@@ -2259,6 +2288,15 @@ export function generateSummary(
   let unprovenSites = 0;
   for (const n of unprovenSitesByAnalyzer.values()) unprovenSites += n;
 
+  // K9 — materialize the per-rule cannot-fire breakdown as a plain object so
+  // the summary carries it through the JSON/HTML/report surfaces. Keys are the
+  // affected rule ids; `count` is the number of unproven sites that could have
+  // produced a finding under that rule, and `causes` names the emission path.
+  const unprovenSitesByRuleOut: Record<string, { count: number; causes: Record<string, number> }> = {};
+  for (const [rule, entry] of unprovenSitesByRule) {
+    unprovenSitesByRuleOut[rule] = { count: entry.count, causes: Object.fromEntries(entry.causes) };
+  }
+
   return {
     totalFiles: filesAnalyzed,
     totalViolations,
@@ -2269,6 +2307,7 @@ export function generateSummary(
     byAnalyzer,
     topIssues,
     unprovenSites,
+    unprovenSitesByRule: unprovenSitesByRuleOut,
     heldOut
   };
 }

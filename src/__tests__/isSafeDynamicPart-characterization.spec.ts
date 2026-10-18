@@ -157,6 +157,37 @@ export function search() {
   });
 });
 
+describe('isSafeDynamicPart — Directive K item 3: declaration resolution', () => {
+  // `sql-injection-risk` must consult declaration resolution before a verdict:
+  // an interpolated value that resolves to a validating-throw-guarded value or a
+  // loop variable over a hardcoded literal array is structural, not attacker
+  // data. These are the two fixtures the feedback run flagged.
+
+  it('a value validated by a regex `.test()` throw (schema-name whitelist)', async () => {
+    const code = `${HANDLE}function schemaName(): string {
+  const s = process.env.CAG_SCHEMA ?? 'crowd_answer_game_dev';
+  if (!/^[a-z_][a-z0-9_]*$/.test(s)) { throw new Error('invalid schema'); }
+  return s;
+}
+export function migrate() {
+  const schema = schemaName();
+  return connection.execute(\`SELECT count(*) AS n FROM "\${schema}".schema_migrations\`);
+}
+`;
+    expect(await inj(code)).toBe(0);
+  });
+
+  it('a loop variable iterating an inline hardcoded literal array', async () => {
+    const code = `${HANDLE}export function migrate() {
+  for (const target of ['crowd_answer_game_dev', 'crowd_answer_game_test']) {
+    connection.execute(\`SELECT count(*) AS n FROM \${target}.questions\`);
+  }
+}
+`;
+    expect(await inj(code)).toBe(0);
+  });
+});
+
 describe('isSafeDynamicPart — the deleted substring short-circuit must not clear value-bearing interpolations', () => {
   // Each query's *text* contains one of the removed `parameterizedQueries`
   // magic strings, but the `${…}` interpolation is value-bearing. The deleted

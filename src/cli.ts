@@ -218,6 +218,28 @@ function printAuditDiagnostics(result: AuditResult): void {
     }
   }
 
+  // ── Per-rule unproven breakdown (K9) ──────────────────────────
+  // The raw unproven-site total answers "which analyzer produced these?"
+  // (`schema`); this answers the question the finding actually asks — "which
+  // rule may have under-reported?" One unproven site blanks every rule in its
+  // `affectedRules` set, so a rule's `count` is the number of sites that could
+  // have produced a finding under it, with `causes` naming the emission path
+  // that drove each (parse-failure / dialect-undetermined / unresolved-import /
+  // unproven-receiver). This is the missing discriminant: it surfaces the 465
+  // sites as *per-rule under-report risk*, not a single opaque analyzer total.
+  const unprovenByRule = result.summary?.unprovenSitesByRule;
+  if (unprovenByRule && Object.keys(unprovenByRule).length > 0) {
+    console.log(chalk.yellow(`── Unproven sites by rule ──`));
+    const ruleRows = Object.entries(unprovenByRule).sort(([, a], [, b]) => b.count - a.count);
+    for (const [rule, entry] of ruleRows) {
+      const causes = Object.entries(entry.causes)
+        .sort(([, a], [, b]) => b - a)
+        .map(([cause, n]) => `${n} ${cause}`)
+        .join(' · ');
+      console.log(chalk.yellow(`   ${rule} — ${entry.count} site(s): ${causes}`));
+    }
+  }
+
   // ── Coverage gaps (Spec 58 follow-up) ─────────────────────────
   const otherCoverageGaps = allDiagnostics.filter(
     (d: any) => d.kind === 'unresolved-query' || d.kind === 'unresolved-dynamic-import' || d.kind === 'undefined-class-not-found'
@@ -694,16 +716,6 @@ program
       printUnparsedAndSkipped(result);
 
       printPipelineStages(result, options);
-
-      // Spec-20 R4: built-in profile visibility — silent behavior changes
-      // are never acceptable. Notify when scripts-and-tests excludes findings
-      // from the blocking gate.
-      const builtinCapped = Object.values(result.analyzerResults)
-        .reduce((count, ar) => count + ar.violations.filter(v => v.profile === 'scripts-and-tests').length, 0);
-      if (builtinCapped > 0) {
-        console.log(chalk.blue(`\nℹ️  ${builtinCapped.toLocaleString()} readings excluded from the blocking gate by built-in profile "scripts-and-tests" (scripts/tests/fixtures).`));
-        console.log(chalk.gray(`   Set ${chalk.cyan('"builtin": false')} in .codeauditor.json to disable.`));
-      }
 
       await writeReport(result, options);
 

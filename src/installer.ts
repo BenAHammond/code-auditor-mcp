@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import chalk from 'chalk';
 import { PACKAGE_VERSION } from './constants.js';
+import { getPinnedCliRoot } from './dataPaths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -182,12 +183,7 @@ export async function runInstall(options: InstallOptions): Promise<void> {
  * @returns A promise that resolves when the warm completes (or fails/times out non-fatally).
  */
 export function warmPinnedCli(packageVersion: string): Promise<void> {
-  const dir = join(
-    process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'),
-    'code-auditor',
-    'cli',
-    packageVersion,
-  );
+  const dir = join(getPinnedCliRoot(), packageVersion);
   return new Promise<void>((resolve) => {
     let settled = false;
     const done = () => {

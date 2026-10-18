@@ -23,5 +23,6 @@ export function extractImports(file: AstFile): ImportFact[] {
     source: imp.source,
     line: imp.location.start.line,
     column: imp.location.start.column,
+    isTypeOnly: imp.isTypeOnly,
   }));
 }
