@@ -4,12 +4,12 @@
   "runs": [
     {
       "automationDetails": {
-        "id": "code-auditor-mcp/5.3.3"
+        "id": "code-auditor-mcp/5.4.0"
       },
       "tool": {
         "driver": {
           "name": "code-auditor-mcp",
-          "version": "5.3.3",
+          "version": "5.4.0",
           "informationUri": "https://github.com/BenAHammond/code-auditor-mcp",
           "rules": [
             {

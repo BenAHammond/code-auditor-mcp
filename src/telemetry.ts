@@ -9,8 +9,11 @@
  *
  * The rules that make this safe and invisible to the gate:
  *
- *   - **opt-in** — nothing is sent unless the user opts in via the `telemetry` MCP
- *     tool, and the payload is *printed before sending* so the user can review it.
+ *   - **opt-in** — nothing is sent unless the user opts in via one of three
+ *     methods (the `telemetry` MCP tool, the `code-audit telemetry enable` command,
+ *     the `CODE_AUDITOR_TELEMETRY` env var, or the per-invocation `--telemetry`
+ *     flag — see `resolveTelemetryConfig`), and the payload is *printed before
+ *     sending* so the user can review it.
  *   - **offline never blocks** — `sendTelemetry` is best-effort: any network error
  *     resolves to `{ sent: false }`, never throws, never affects the exit code.
  *   - **no content** — the payload type has no field for a path, identifier,
@@ -27,6 +30,7 @@ import {
   hasTelemetryDecision,
   PRIVACY_MESSAGE,
   resolveTelemetryEndpoint,
+  DEFAULT_TELEMETRY_ENDPOINT,
 } from './installConfig.js';
 import type { Severity } from './types.js';
 
@@ -154,22 +158,54 @@ export interface TelemetryConfig {
 }
 
 /**
- * Resolve opt-in from the user-level config (see `installConfig.ts`): OFF unless
- * the user explicitly enabled it via the `code-audit telemetry enable` command
- * (or the telemetry MCP tool, which shares the same toggle). `opts.endpoint` is
- * a caller override (e.g. the local-dev `--telemetry-endpoint` flag).
+ * Read the `CODE_AUDITOR_TELEMETRY` env override, if set. This is the middle
+ * opt-in method: it sits above the persisted user config (so a headless/CI
+ * machine can opt in without running the interactive `telemetry enable`) and
+ * below the per-invocation `--telemetry` / `--no-telemetry` flag. Truthy values
+ * are `1`/`true`/`on`/`yes`; falsy are `0`/`false`/`off`/`no`; anything else
+ * (including unset) returns `undefined` — no override.
  *
- * @param opts - Optional endpoint override and config directory.
+ * @returns `true`/`false` for an explicit override, or `undefined` when the
+ * variable is unset or unrecognised.
+ */
+export function telemetryEnvOverride(): boolean | undefined {
+  const raw = process.env.CODE_AUDITOR_TELEMETRY;
+  if (raw === undefined) return undefined;
+  const v = raw.trim().toLowerCase();
+  if (v === '1' || v === 'true' || v === 'on' || v === 'yes') return true;
+  if (v === '0' || v === 'false' || v === 'off' || v === 'no') return false;
+  return undefined;
+}
+
+/**
+ * Resolve opt-in across the three opt-in methods, in precedence order:
+ *
+ *   1. per-invocation `opts.force` — the `--telemetry` / `--no-telemetry` flag;
+ *   2. env var `CODE_AUDITOR_TELEMETRY` (machine-level default);
+ *   3. persisted user config (`installConfig.ts`) — set by `telemetry enable`.
+ *
+ * `opts.endpoint` is a caller override (e.g. the local-dev `--telemetry-endpoint`
+ * flag). When enabled resolves ON but no endpoint is configured — as with a bare
+ * `--telemetry` or env-var opt-in — the shipped default endpoint is used so a
+ * one-shot opt-in still has somewhere to send.
+ *
+ * @param opts - Optional endpoint override, config directory, and force flag.
  * @returns The resolved telemetry opt-in configuration.
  */
 export function resolveTelemetryConfig(
-  opts: { endpoint?: string; dir?: string } = {},
+  opts: { endpoint?: string; dir?: string; force?: boolean } = {},
 ): TelemetryConfig {
   const optIn = getTelemetryOptIn(opts.dir);
-  return {
-    enabled: optIn.enabled,
-    endpoint: opts.endpoint ?? optIn.endpoint,
-  };
+  const env = telemetryEnvOverride();
+
+  let enabled = optIn.enabled;
+  if (env !== undefined) enabled = env;
+  if (opts.force !== undefined) enabled = opts.force;
+
+  let endpoint = opts.endpoint ?? optIn.endpoint;
+  if (enabled && !endpoint) endpoint = DEFAULT_TELEMETRY_ENDPOINT;
+
+  return { enabled, endpoint };
 }
 
 // ── Send (best-effort, offline-safe) ─────────────────────────────────────────

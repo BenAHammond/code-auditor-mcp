@@ -2,6 +2,32 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.4.0] — 2026-10-23
+
+### Added
+
+- **Dismissal telemetry opt-in now has three methods, applied in precedence
+  order.** A per-invocation flag (`code-audit dismiss --telemetry` sends just
+  that one dismissal; `--no-telemetry` suppresses one), an environment default
+  (`CODE_AUDITOR_TELEMETRY=1|0` for headless/CI runs), and the persisted choice
+  (`code-audit telemetry enable|disable`, or the `telemetry` MCP tool). The
+  per-invocation flag wins over the env var, which wins over the persisted
+  config — and nothing is sent without one of the three.
+
+- **A bare opt-in now "just works" against the hosted feedback service.** When
+  telemetry resolves ON but no endpoint is configured — as with a one-shot
+  `--telemetry` or an env-var opt-in — the shipped default endpoint
+  (`https://code-auditor-dismissals.ben-a-hammond.workers.dev/ingest`) is used.
+  Self-hosting remains an opt-out override via `--telemetry-endpoint` or the
+  `telemetry enable --endpoint` value.
+
+### Fixed
+
+- **`--no-telemetry` was advertised but not registered.** Commander does not
+  auto-negate a `--telemetry` flag into `--no-telemetry`, so the documented
+  `--no-telemetry` produced an "unknown option" parse error. Both flags are now
+  declared explicitly, giving the true tri-state (absent / on / off).
+
 ## [5.3.3] — 2026-10-18
 
 ### Changed

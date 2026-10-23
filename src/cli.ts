@@ -1522,6 +1522,8 @@ program
   .requiredOption('--reason <reason>', 'Why this finding is dismissed (required — a dismissal without a reason is a config error)')
   .option('-p, --path <path>', OPTION_PROJECT_PATH, process.cwd())
   .option('--telemetry-endpoint <url>', 'Feedback service endpoint override (defaults to the opt-in endpoint recorded by the `code-audit telemetry` command)')
+  .option('--telemetry', 'Send this dismissal to the feedback service even if opt-in is off (one-shot opt-in)')
+  .option('--no-telemetry', 'Do not send telemetry for this dismissal even if opt-in is on')
   .option('--json', OPTION_OUTPUT_AS_JSON)
   .action(async (fingerprintArg: string, options: Record<string, any>) => {
     try {
@@ -1559,10 +1561,11 @@ program
       const dismissals = upsertDismissal(projectRoot, entry);
 
       // Spec 57 — opt-in telemetry. Nothing is sent unless the user opted in via
-      // the `code-audit telemetry enable` command (default OFF) AND an endpoint is
-      // configured. The payload is printed for review before sending; any send
-      // failure is silent and never affects the dismissal or the exit code.
-      const telemetry = resolveTelemetryConfig({ endpoint: options.telemetryEndpoint });
+      // one of three methods (per-invocation `--telemetry` flag, the
+      // `CODE_AUDITOR_TELEMETRY` env var, or `code-audit telemetry enable`) AND an
+      // endpoint is configured. The payload is printed for review before sending;
+      // any send failure is silent and never affects the dismissal or the exit code.
+      const telemetry = resolveTelemetryConfig({ endpoint: options.telemetryEndpoint, force: options.telemetry });
       if (telemetry.enabled && telemetry.endpoint) {
         const signature = signatureForFinding(
           match.file,

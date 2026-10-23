@@ -94,4 +94,11 @@ describe('code-audit telemetry subcommand', () => {
     expect(res.exitCode).not.toBe(0);
     expect(res.stderr).toMatch(/https/);
   });
+
+  it('dismiss advertises the tri-state --telemetry/--no-telemetry flag (regression: commander does not auto-negate)', () => {
+    const res = run('dismiss --help', configHome);
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain('--telemetry');
+    expect(res.stdout).toContain('--no-telemetry');
+  });
 });

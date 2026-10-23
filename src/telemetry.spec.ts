@@ -23,7 +23,7 @@ import {
   sendTelemetry,
   signatureForFinding,
 } from './telemetry.js';
-import { setTelemetryOptIn } from './installConfig.js';
+import { setTelemetryOptIn, DEFAULT_TELEMETRY_ENDPOINT } from './installConfig.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -144,6 +144,62 @@ describe('resolveTelemetryConfig', () => {
     setTelemetryOptIn({ enabled: true, endpoint: 'http://x/ingest' }, dir);
     const config = resolveTelemetryConfig({ dir, endpoint: 'http://override/ingest' });
     expect(config.endpoint).toBe('http://override/ingest');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('env var 1 opts in even with no persisted config, falling back to the default endpoint', () => {
+    process.env.CODE_AUDITOR_TELEMETRY = '1';
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'ca-tele-'));
+      const config = resolveTelemetryConfig({ dir });
+      expect(config.enabled).toBe(true);
+      expect(config.endpoint).toBe(DEFAULT_TELEMETRY_ENDPOINT);
+      rmSync(dir, { recursive: true, force: true });
+    } finally {
+      delete process.env.CODE_AUDITOR_TELEMETRY;
+    }
+  });
+
+  it('env var 0 opts out even when the persisted config is enabled', () => {
+    process.env.CODE_AUDITOR_TELEMETRY = '0';
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'ca-tele-'));
+      setTelemetryOptIn({ enabled: true, endpoint: 'http://x/ingest' }, dir);
+      expect(resolveTelemetryConfig({ dir }).enabled).toBe(false);
+      rmSync(dir, { recursive: true, force: true });
+    } finally {
+      delete process.env.CODE_AUDITOR_TELEMETRY;
+    }
+  });
+
+  it('an unrecognized env value is ignored (no override)', () => {
+    process.env.CODE_AUDITOR_TELEMETRY = 'maybe';
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'ca-tele-'));
+      expect(resolveTelemetryConfig({ dir }).enabled).toBe(false);
+      rmSync(dir, { recursive: true, force: true });
+    } finally {
+      delete process.env.CODE_AUDITOR_TELEMETRY;
+    }
+  });
+
+  it('force (the --telemetry/--no-telemetry flag) wins over the env var', () => {
+    process.env.CODE_AUDITOR_TELEMETRY = '0';
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'ca-tele-'));
+      expect(resolveTelemetryConfig({ dir, force: true }).enabled).toBe(true);
+      expect(resolveTelemetryConfig({ dir, force: false }).enabled).toBe(false);
+      rmSync(dir, { recursive: true, force: true });
+    } finally {
+      delete process.env.CODE_AUDITOR_TELEMETRY;
+    }
+  });
+
+  it('force:true with no configured endpoint falls back to the default endpoint', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ca-tele-'));
+    const config = resolveTelemetryConfig({ dir, force: true });
+    expect(config.enabled).toBe(true);
+    expect(config.endpoint).toBe(DEFAULT_TELEMETRY_ENDPOINT);
     rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -166,7 +166,13 @@ The `<fingerprint>` comes from the JSON report (every violation carries a `finge
 
 The reason an agent gives for dismissing a finding is the most useful signal for improving the rules. Code Auditor can send dismissed findings to an anonymous feedback service that collects them.
 
-It is **off by default** and turned on only by an explicit opt-in — `code-audit telemetry status|enable|disable` (or the `telemetry` MCP tool), which records the choice in your user config dir. `enable` needs no arguments: it opts in against the built-in service endpoint (overridable for self-hosting). Opting in generates an **anonymous install ID**: a random value generated locally, never derived from your machine, user, or project, used only to group submissions by source.
+It is **off by default** and turned on only by an explicit opt-in, via any of three methods (in precedence order):
+
+1. **per-invocation** — `code-audit dismiss --telemetry …` sends just that one dismissal; `--no-telemetry` suppresses one.
+2. **environment** — `CODE_AUDITOR_TELEMETRY=1` (or `0`) as a machine-level default for headless/CI runs.
+3. **persisted** — `code-audit telemetry status|enable|disable` (or the `telemetry` MCP tool), which records the choice in your user config dir.
+
+`telemetry enable` needs no arguments: it opts in against the built-in service endpoint (overridable for self-hosting). Opting in generates an **anonymous install ID**: a random value generated locally, never derived from your machine, user, or project, used only to group submissions by source.
 
 **What is sent** — the tool version, the rule ID, the urgency level, the dismissal reason exactly as typed, a structural AST signature (grammar kinds only, never their contents), a coarse language hint, a timestamp, and the anonymous install ID. **What is never sent** — source code, identifiers, literals, file paths, or anything derived from your code or environment. Sending is best-effort: offline or an unreachable endpoint is silent and never blocks an edit or fails a gate.
 
