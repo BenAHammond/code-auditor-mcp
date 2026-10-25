@@ -95,6 +95,20 @@ const RESOLVE_EXTENSIONS = [
 
 const INDEX_BASENAMES = RESOLVE_EXTENSIONS.map((ext) => `index${ext}`);
 
+/**
+ * NodeNext ESM convention: a `.js`/`.jsx` specifier names the compiled output,
+ * while the source lives under the matching TypeScript extension. When the
+ * literal compiled file is absent, rewrite the JS extension to each TS source
+ * extension so `import './types.js'` resolves to `./types.ts`. `.mjs`/`.cjs`
+ * are deliberately left out: their correct targets (`.mts`/`.cts`) sit outside
+ * `RESOLVE_EXTENSIONS`, so mapping them to `.ts` would be wrong (and mapping
+ * them to extensions the file walker never indexes would be dead).
+ */
+const JS_TO_TS_EXTENSIONS: Readonly<Record<string, readonly string[]>> = {
+  '.js': ['.ts', '.tsx', '.d.ts'],
+  '.jsx': ['.tsx', '.ts', '.d.ts'],
+};
+
 /** Declaration node types an `export` statement may wrap. */
 const EXPORT_DECLARATION_TYPES = new Set([
   'class_declaration',
@@ -493,6 +507,14 @@ export function makeHeritageResolver(
 /** Resolve a base path (with or without extension) to a known in-repo file. */
 function resolveFile(base: string, filesByPath: ReadonlySet<string>): string | null {
   const candidates: string[] = [base, ...RESOLVE_EXTENSIONS.map((e) => base + e)];
+  // NodeNext: a `.js`/`.jsx` specifier whose literal file is absent resolves to
+  // the TS source under the matching extension (see JS_TO_TS_EXTENSIONS above).
+  const ext = path.extname(base);
+  const tsAliases = JS_TO_TS_EXTENSIONS[ext];
+  if (tsAliases) {
+    const stem = base.slice(0, -ext.length);
+    candidates.push(...tsAliases.map((e) => stem + e));
+  }
   for (const candidate of candidates) {
     if (filesByPath.has(candidate)) return candidate;
     for (const idx of INDEX_BASENAMES) {

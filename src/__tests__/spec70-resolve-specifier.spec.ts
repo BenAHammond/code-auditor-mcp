@@ -79,6 +79,53 @@ describe('Spec 70 B1 — resolveSpecifier: tsconfig-`paths` bare resolution', ()
   });
 });
 
+// ── NodeNext `.js`/`.jsx` → TS-source extension resolution ───────────────────
+
+describe('Spec 70 B1 — resolveSpecifier: NodeNext `.js` specifiers resolve to TS source', () => {
+  const importer = '/repo/src/main.ts';
+
+  it('resolves `./types.js` to `./types.ts` when only the TS source exists', () => {
+    const filesByPath = new Set(['/repo/src/types.ts']);
+    expect(resolveSpecifier('./types.js', importer, filesByPath)).toEqual({
+      kind: 'in-repo',
+      path: '/repo/src/types.ts',
+    });
+  });
+
+  it('resolves `./types.js` to `./types.tsx` (and `./types.d.ts`) by extension order', () => {
+    expect(resolveSpecifier('./types.js', importer, new Set(['/repo/src/types.tsx']))).toEqual({
+      kind: 'in-repo',
+      path: '/repo/src/types.tsx',
+    });
+    expect(resolveSpecifier('./types.js', importer, new Set(['/repo/src/types.d.ts']))).toEqual({
+      kind: 'in-repo',
+      path: '/repo/src/types.d.ts',
+    });
+  });
+
+  it('prefers the literal compiled `.js` file when it exists', () => {
+    const filesByPath = new Set(['/repo/src/types.js', '/repo/src/types.ts']);
+    expect(resolveSpecifier('./types.js', importer, filesByPath)).toEqual({
+      kind: 'in-repo',
+      path: '/repo/src/types.js',
+    });
+  });
+
+  it('resolves `./component.jsx` to `./component.tsx`', () => {
+    const filesByPath = new Set(['/repo/src/component.tsx']);
+    expect(resolveSpecifier('./component.jsx', importer, filesByPath)).toEqual({
+      kind: 'in-repo',
+      path: '/repo/src/component.tsx',
+    });
+  });
+
+  it('does not map `.mjs`/`.cjs` to `.ts` (no false in-repo resolution)', () => {
+    const filesByPath = new Set(['/repo/src/worker.ts']);
+    expect(resolveSpecifier('./worker.mjs', importer, filesByPath)).toEqual({ kind: 'unresolved' });
+    expect(resolveSpecifier('./worker.cjs', importer, filesByPath)).toEqual({ kind: 'unresolved' });
+  });
+});
+
 // ── vendor resolution (synthetic node_modules fixture) ───────────────────────
 
 describe('Spec 70 B1 — resolveSpecifier: node_modules vendor resolution', () => {
