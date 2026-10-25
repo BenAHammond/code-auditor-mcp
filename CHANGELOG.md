@@ -2,6 +2,22 @@
 
 All notable changes to the Code Auditor MCP project.
 
+## [5.4.1] — 2026-10-25
+
+### Fixed
+
+- **NodeNext `.js`/`.jsx` import specifiers now resolve to their TypeScript
+  source.** In a NodeNext ESM project the import `import { SimplifiedConfig }
+  from './types.js'` names the *compiled* `.js` output, but the source on disk
+  is `types.ts` — so the resolver reported `does not resolve to an in-repo file`
+  and left every dependent site `unproven`. `resolveFile` (the one
+  `resolveSpecifier` seam shared by `receiverProvenance` and
+  `receiverResolution`) now strips a `.js` specifier back to `.ts`/`.tsx`/`.d.ts`
+  (and `.jsx` to `.tsx`/`.ts`/`.d.ts`) in extension order, preferring the literal
+  compiled file when it exists. This closes GH #10: 72 `unresolved-import` sites
+  and ~1000 `unproven` sites on a 53-file ESM TypeScript project now resolve to
+  real in-repo declarations.
+
 ## [5.4.0] — 2026-10-23
 
 ### Added
